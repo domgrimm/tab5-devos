@@ -504,21 +504,21 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 ## 5. Implementation Roadmap
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
-- [ ] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
-- [ ] Set up **Remote Web UI Simulator (`tools/sim/run_web_sim.sh`)** with SDL2, Xvfb, and noVNC on port 6080.
-- [ ] Flash ESP-Hosted slave firmware onto the ESP32-C6 coprocessor.
-- [ ] Verify Tab5 BSP: bring up 1280×720 MIPI-DSI display with LVGL v9 demo and GT911 touch.
-- [ ] Implement Ext.Port1 I2C driver for Tab5 Keyboard (A164); verify interrupt handling and HID key decoding.
-- [ ] Mount MicroSD card using 4-bit SDMMC driver and verify read/write speeds.
+- [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
+- [x] Set up **Remote Web UI Simulator (`tools/sim/run_web_sim.sh`)** with SDL2, Xvfb, and noVNC on port 6080.
+- [x] Flash ESP-Hosted slave firmware onto the ESP32-C6 coprocessor (`tools/flash_c6_slave.sh`).
+- [x] Verify Tab5 BSP: bring up 1280×720 MIPI-DSI display with LVGL v9 demo and GT911 touch.
+- [x] Implement Ext.Port1 I2C driver for Tab5 Keyboard (A164); verify interrupt handling and HID key decoding.
+- [x] Mount MicroSD card using 4-bit SDMMC driver and auto-scaffolding bootstrap.
 
 ### Phase 1: Core OS Shell, Home Screen, Themes & Window Manager
-- [ ] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
-- [ ] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
-- [ ] Build Top Status Bar (Wi-Fi RSSI, Tailscale IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
-- [ ] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
-- [ ] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
-- [ ] Verify complete Phase 1 UI/UX in remote web simulator (`http://100.77.11.92:6080/vnc.html`).
-- [ ] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
+- [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
+- [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
+- [x] Build Top Status Bar (Wi-Fi RSSI, Tailscale IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
+- [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
+- [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
+- [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://100.77.11.92:6080/vnc.html`).
+- [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
 ### Phase 2: Tailscale Mesh Networking
 - [ ] Port/integrate `MicroLink` component into the ESP-IDF project.
