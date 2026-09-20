@@ -1,0 +1,11 @@
+# Build artifacts
+build/
+build_sim/
+sim_sdcard/
+*.log
+.cache/
+compile_commands.json
+
+# IDE
+.vscode/
+.idea/
