@@ -148,6 +148,13 @@ The Home Screen serves as the operational dashboard and application launcher for
     *   **Arrow Key Navigation:** Highlight cards with arrow keys and press `Enter` to open.
     *   **Global Return:** Pressing `Fn + H`, `Esc`, or tapping the top-left `[devOS]` logo from within any application returns to the Home Screen.
     *   **Multitasking:** Background tasks (SSH sessions, streaming agent tokens, Tailscale tunnels) continue running when returning to the Home Screen.
+*   **Tile & Widget Re-arrangement Mode:**
+    *   **Interactive Customization:** Users can re-order and customize the 2×3 launcher grid to place their most-used tools into preferred slots.
+    *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the header or via keyboard shortcut `Fn + E` (or pressing `E` while on the Home Screen).
+    *   **Touch / Click Reordering:** Tap any tile to select it (highlighted with an amber `#FFB300` border), then tap the destination tile to immediately swap their positions.
+    *   **Keyboard Reordering:** Pressing `1` through `6` selects a source slot; pressing a second slot key (`1`–`6`) executes the swap.
+    *   **Reset & Exit:** Press `R` or tap `[↺ Defaults]` to revert to the factory layout. Press `Esc` or tap `[✓ Done]` to finalize.
+    *   **MicroSD Layout Persistence:** Slot mappings are automatically saved as JSON in `/sdcard/.devos/launcher_layout.json` (and `./sim_sdcard/.devos/launcher_layout.json` in simulation) and loaded at boot.
 
 ---
 
@@ -516,6 +523,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
 - [x] Build Top Status Bar (Wi-Fi RSSI, Tailscale IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
+- [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
 - [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
 - [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://100.77.11.92:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).

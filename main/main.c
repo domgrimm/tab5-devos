@@ -59,6 +59,11 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key(']', DEVOS_MOD_FN);
             return 0;
         }
+        if (sym == SDLK_F5 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_e)) {
+            /* Simulate Fn + E (Arrange Mode) */
+            devos_core_dispatch_key('e', DEVOS_MOD_FN);
+            return 0;
+        }
         if (sym == SDLK_ESCAPE || sym == SDLK_HOME) {
             devos_core_dispatch_key(LV_KEY_ESC, DEVOS_MOD_NONE);
             return 0;
@@ -67,7 +72,7 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
         /* Pass general keys */
         if (sym >= SDLK_1 && sym <= SDLK_6) {
             devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), devos_mods);
-        } else if (sym == SDLK_y || sym == SDLK_n || sym == SDLK_a) {
+        } else if (sym == SDLK_y || sym == SDLK_n || sym == SDLK_a || sym == SDLK_e || sym == SDLK_r) {
             devos_core_dispatch_key((uint32_t)sym, devos_mods);
         }
     }
