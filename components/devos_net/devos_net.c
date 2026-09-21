@@ -240,6 +240,69 @@ int devos_net_socket_close(int sock)
     return -1;
 }
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+int devos_net_socket_send_all(int sock, const void *data, size_t len)
+{
+    if (sock < 0 || !data) return -1;
+    size_t sent = 0;
+    while (sent < len) {
+        int n = send(sock, (const char *)data + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0) return -1;
+        sent += (size_t)n;
+    }
+    return 0;
+}
+
+int devos_net_http_get(const char *host, int port, const char *path,
+                       char *resp, size_t cap, int timeout_ms,
+                       int *status_out)
+{
+    if (!host || !path || !resp || cap < 64) return -1;
+    if (status_out) *status_out = 0;
+    resp[0] = '\0';
+
+    int fd = devos_net_socket_connect(host, port, timeout_ms);
+    if (fd < 0) return -1;
+
+    char req[512];
+    int hlen = snprintf(req, sizeof(req),
+                        "GET %s HTTP/1.1\r\nHost: %s:%d\r\n"
+                        "Connection: close\r\n\r\n",
+                        path, host, port);
+    int rc = -1;
+    size_t total = 0;
+    if (hlen > 0 &&
+        devos_net_socket_send_all(fd, req, (size_t)hlen) == 0) {
+        for (;;) {
+            size_t room = cap - 1 - total;
+            if (room == 0) break;
+            size_t want = room > 1024 ? 1024 : room;
+            int n = devos_net_socket_recv(fd, resp + total, want, timeout_ms);
+            if (n <= 0) break;
+            total += (size_t)n;
+        }
+        resp[total] = '\0';
+        rc = 0;
+    }
+    devos_net_socket_close(fd);
+    if (rc != 0) return -1;
+
+    int status = 0;
+    if (sscanf(resp, "HTTP/%*d.%*d %d", &status) != 1 &&
+        sscanf(resp, "HTTP/%*d %d", &status) != 1) {
+        return -1;
+    }
+    if (status_out) *status_out = status;
+    char *eoh = strstr(resp, "\r\n\r\n");
+    if (!eoh) return -1;
+    size_t bl = strlen(eoh + 4);
+    memmove(resp, eoh + 4, bl + 1);
+    return 0;
+}
+
 /* Non-blocking connect split across poll ticks so the UI task never stalls
  * on SYN timeouts. Portable across BSD sockets and lwIP. */
 int devos_net_socket_connect_start(const char *host, int port)

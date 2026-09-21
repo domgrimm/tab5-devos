@@ -44,6 +44,11 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
         ${CMAKE_CURRENT_SOURCE_DIR}/components/opendev_client
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_json
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/agy_client
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_power
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ota
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mdview
         ${CMAKE_CURRENT_SOURCE_DIR}/components/quirc
     )
 
@@ -74,6 +79,11 @@ else()
         components/devos_net/devos_net.c
         components/libssh2_port/libssh2_port.c
         components/opendev_client/opendev_client.c
+        components/devos_json/devos_json.c
+        components/agy_client/agy_client.c
+        components/devos_power/devos_power.c
+        components/devos_ota/devos_ota.c
+        components/devos_mdview/devos_mdview.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})

@@ -1,5 +1,6 @@
 #include "devos_core.h"
 #include "devos_theme.h"
+#include "devos_power.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -171,6 +172,9 @@ void devos_telemetry_tick_sim(void)
 
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 {
+    /* Any keypress is activity: wakes from dim/sleep, resets idle. */
+    devos_power_activity();
+
     /* 1. Global Hotkey: Home Screen Return (Fn + H) */
     if ((modifiers & DEVOS_MOD_FN) && (key == 'h' || key == 'H')) {
         devos_core_switch_app(DEVOS_APP_LAUNCHER);

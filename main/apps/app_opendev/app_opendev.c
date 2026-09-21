@@ -2,6 +2,7 @@
 #include "devos_config.h"
 #include "devos_theme.h"
 #include "devos_agent_viewport.h"
+#include "devos_mdview.h"
 #include "opendev_client.h"
 #include "app_editor.h"
 #include "bsp_tab5_camera.h"
@@ -422,9 +423,29 @@ static void refresh_all(void)
                                                    : p->surface_border);
                 if (user) {
                     lv_obj_set_style_bg_color(card, p->surface_active, 0);
+                    chat_text(card, b->text, p->text_primary,
+                              &lv_font_montserrat_14);
+                } else {
+                    /* ponytail: agent output renders through the shared
+                     * markdown engine; absolute blocks need a measured
+                     * inner container + explicit card height */
+                    lv_obj_update_layout(card);
+                    lv_obj_t *inner = lv_obj_create(card);
+                    lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
+                    lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_width(inner, 0, 0);
+                    lv_obj_set_style_pad_all(inner, 0, 0);
+                    lv_obj_update_layout(inner);
+                    int endy = devos_md_render(inner, b->text);
+                    if (endy <= 0) {
+                        lv_obj_delete(inner);
+                        chat_text(card, b->text, p->text_primary,
+                                  &lv_font_montserrat_14);
+                    } else {
+                        lv_obj_set_height(inner, endy);
+                        lv_obj_set_height(card, endy + 20);
+                    }
                 }
-                chat_text(card, b->text, p->text_primary,
-                          &lv_font_montserrat_14);
             }
             i++;
         }

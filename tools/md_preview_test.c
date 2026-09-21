@@ -1,10 +1,10 @@
-/* Ponytail check: pure markdown helpers from app_editor.c (no display needed).
+/* Ponytail check: pure markdown helpers from devos_mdview.c (no display).
  *
  * Covers table row splitting, delimiter detection, marker stripping,
- * and emphasis flanking rules. Run after touching the editor renderer:
+ * and emphasis flanking rules. Run after touching the renderer:
  *
  *   gcc -o /tmp/md_preview_test tools/md_preview_test.c -I. -Imain/include \
- *     -Imain/apps/app_editor -Icomponents/opendev_client -Icomponents/lvgl \
+ *     -Icomponents/devos_mdview -Icomponents/lvgl \
  *     -Icomponents/devos_core -Icomponents/devos_ui build_sim/lib/liblvgl.a -lm \
  *     && /tmp/md_preview_test
  *
@@ -14,12 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Stub out everything LVGL/devOS before including the unit under test */
-typedef int lv_obj_t_hack;
-#define lvgl_h_stubbed 1
-/* Pull only the pure helpers by faking the app file's deps is messy;
- * instead re-declare: we #include the .c with stub headers on the path. */
-#include "app_editor.c"
+#include "devos_mdview.c"
 
 /* Link stubs for devOS fns referenced by non-test code in the unit */
 const lv_font_t lv_font_nimbus_mono_14;
@@ -31,10 +26,6 @@ int devos_theme_add_listener(devos_theme_change_cb_t cb, void *ud)
 }
 devos_theme_type_t devos_theme_get_type(void) { return DEVOS_THEME_DARK; }
 bool devos_theme_is_dark(void) { return true; }
-static devos_telemetry_t stub_telemetry;
-const devos_telemetry_t *devos_telemetry_get(void) { return &stub_telemetry; }
-void devos_telemetry_update(const devos_telemetry_t *t) { (void)t; }
-int opendev_client_send(const char *t) { (void)t; return 0; }
 
 static int failures = 0;
 #define CHECK(cond) do { \
@@ -123,12 +114,12 @@ int main(void)
     CHECK(md_is_delim_line("| a | b |") == false);
     CHECK(md_is_delim_line("") == false);
 
-    /* md_trunc_ok never splits a codepoint: "é" = C3 A9 */
+    /* devos_md_trunc_ok never splits a codepoint: "é" = C3 A9 */
     const char e2[] = {'a', (char)0xC3, (char)0xA9, 'b', '\0'};
-    CHECK(md_trunc_ok(e2, 3) == 3);
-    CHECK(md_trunc_ok(e2, 2) == 1);
-    CHECK(md_trunc_ok(e2, 1) == 1);
-    CHECK(md_trunc_ok(e2, 0) == 0);
+    CHECK(devos_md_trunc_ok(e2, 3) == 3);
+    CHECK(devos_md_trunc_ok(e2, 2) == 1);
+    CHECK(devos_md_trunc_ok(e2, 1) == 1);
+    CHECK(devos_md_trunc_ok(e2, 0) == 0);
 
     if (failures == 0) printf("md unit tests: ALL PASS\n");
     return failures != 0;

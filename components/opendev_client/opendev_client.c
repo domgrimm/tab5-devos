@@ -8,6 +8,7 @@
  *   unknown fields and events are ignored, never fatal.
  */
 #include "opendev_client.h"
+#include "devos_json.h"
 #include "devos_net.h"
 #include "devos_config.h"
 #include <stdio.h>
@@ -159,200 +160,11 @@ static void config_load(void)
 #endif
 }
 
-/* ------------------------------------------------------- minimal JSON I/O */
-static const char *js_ws(const char *p, const char *end)
-{
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-    return p;
-}
-
-/* Parse "..." at p (expects quote); returns pos after closing quote or NULL */
-static const char *js_parse_str(const char *p, const char *end, char *out,
-                                size_t cap)
-{
-    if (p >= end || *p != '"') return NULL;
-    p++;
-    size_t o = 0;
-    while (p < end && *p != '"') {
-        char c = *p;
-        if (c == '\\' && p + 1 < end) {
-            p++;
-            switch (*p) {
-            case '"': c = '"'; break;
-            case '\\': c = '\\'; break;
-            case '/': c = '/'; break;
-            case 'b': c = '\b'; break;
-            case 'f': c = '\f'; break;
-            case 'n': c = '\n'; break;
-            case 'r': c = '\r'; break;
-            case 't': c = '\t'; break;
-            case 'u': {
-                /* ponytail: BMP only, no surrogate math; enough for chat */
-                unsigned v = 0;
-                for (int k = 0; k < 4 && p + 1 + k < end; k++) {
-                    char h = p[1 + k];
-                    v <<= 4;
-                    if (h >= '0' && h <= '9') v |= (unsigned)(h - '0');
-                    else if (h >= 'a' && h <= 'f') v |= (unsigned)(h - 'a' + 10);
-                    else if (h >= 'A' && h <= 'F') v |= (unsigned)(h - 'A' + 10);
-                    else break;
-                }
-                p += 4;
-                if (v < 0x80) c = (char)v;
-                else if (v < 0x800 && o + 2 < cap) {
-                    if (o + 1 < cap) out[o++] = (char)(0xC0 | (v >> 6));
-                    c = (char)(0x80 | (v & 0x3F));
-                } else if (o + 3 < cap) {
-                    if (o + 1 < cap) out[o++] = (char)(0xE0 | (v >> 12));
-                    if (o + 1 < cap) out[o++] = (char)(0x80 | ((v >> 6) & 0x3F));
-                    c = (char)(0x80 | (v & 0x3F));
-                } else {
-                    c = '?';
-                }
-                break;
-            }
-            default: break; /* keep the char after backslash as-is */
-            }
-        }
-        if (o + 1 < cap) out[o++] = c;
-        p++;
-    }
-    if (p >= end) return NULL;
-    out[o] = '\0';
-    return p + 1;
-}
-
-/* Find "key": in [p,end), string-aware; returns value start or NULL */
-static const char *js_find_key(const char *p, const char *end, const char *key)
-{
-    size_t klen = strlen(key);
-    while (p < end) {
-        if (*p == '"') {
-            if ((size_t)(end - p) > klen + 1 && memcmp(p + 1, key, klen) == 0 &&
-                p[1 + klen] == '"') {
-                const char *q = js_ws(p + 2 + klen, end);
-                if (q < end && *q == ':') return js_ws(q + 1, end);
-            }
-            /* skip the string */
-            p++;
-            while (p < end && *p != '"') {
-                if (*p == '\\' && p + 1 < end) p++;
-                p++;
-            }
-            if (p < end) p++;
-        } else {
-            p++;
-        }
-    }
-    return NULL;
-}
-
-/* Balanced span of the {...} or [...] starting at p (p points at opener) */
-static const char *js_span(const char *p, const char *end)
-{
-    if (p >= end || (*p != '{' && *p != '[')) return NULL;
-    char open = *p;
-    char close = (open == '{') ? '}' : ']';
-    int depth = 0;
-    while (p < end) {
-        if (*p == '"') {
-            p++;
-            while (p < end && *p != '"') {
-                if (*p == '\\' && p + 1 < end) p++;
-                p++;
-            }
-            if (p < end) p++;
-        } else {
-            if (*p == open) depth++;
-            else if (*p == close && --depth == 0) return p + 1;
-            p++;
-        }
-    }
-    return NULL;
-}
-
-/* First string occurrence of key anywhere in [js,js+len) */
-static int js_get_str(const char *js, size_t len, const char *key, char *out,
-                      size_t cap)
-{
-    const char *end = js + len;
-    const char *v = js_find_key(js, end, key);
-    if (!v || v >= end || *v != '"') return -1;
-    return js_parse_str(v, end, out, cap) ? 0 : -1;
-}
-
-/* Iterate top-level elements of the array starting at p (points at '[') */
-static void js_array_each(const char *p, size_t len,
-                          void (*cb)(const char *, size_t, void *), void *ud)
-{
-    const char *end = p + len;
-    if (!p || p >= end || *p != '[') return;
-    p++;
-    while (p < end) {
-        p = js_ws(p, end);
-        if (p < end && *p == ']') return;
-        if (p < end && *p == ',') { p++; continue; }
-        const char *q = p;
-        if (*q == '{' || *q == '[') {
-            q = js_span(p, end);
-            if (!q) return;
-        } else {
-            while (q < end && *q != ',' && *q != ']') q++;
-        }
-        cb(p, (size_t)(q - p), ud);
-        p = q;
-    }
-}
-
-/* JSON-escape src into dst (cap incl. NUL); returns used length */
-static size_t js_escape(const char *src, char *dst, size_t cap)
-{
-    size_t o = 0;
-    for (const char *s = src; *s && o + 1 < cap; s++) {
-        char c = *s;
-        const char *esc = NULL;
-        char tmp[7];
-        switch (c) {
-        case '"': esc = "\\\""; break;
-        case '\\': esc = "\\\\"; break;
-        case '\n': esc = "\\n"; break;
-        case '\r': esc = "\\r"; break;
-        case '\t': esc = "\\t"; break;
-        default:
-            if ((unsigned char)c < 0x20) {
-                snprintf(tmp, sizeof(tmp), "\\u%04x", c);
-                esc = tmp;
-            }
-            break;
-        }
-        if (esc) {
-            size_t el = strlen(esc);
-            if (o + el + 1 > cap) break;
-            memcpy(dst + o, esc, el);
-            o += el;
-        } else {
-            dst[o++] = c;
-        }
-    }
-    dst[o] = '\0';
-    return o;
-}
 
 /* ------------------------------------------------------------------- HTTP */
 static int send_all(int fd, const char *buf, size_t len)
 {
-    /* ponytail: NOSIGNAL where available — a server RST between poll ticks
-     * must return -1, never SIGPIPE-kill the UI task */
-#ifndef MSG_NOSIGNAL
-#define MSG_NOSIGNAL 0
-#endif
-    size_t sent = 0;
-    while (sent < len) {
-        int n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return -1;
-        sent += (size_t)n;
-    }
-    return 0;
+    return devos_net_socket_send_all(fd, buf, len);
 }
 
 /* Minimal HTTP/1.1 client. Returns 0 with status+body, -1 on transport error.
@@ -510,20 +322,20 @@ static void on_sse_event(const char *name, const char *data, size_t dlen)
     }
     if (strcmp(name, "session.idle") == 0) {
         char sid[OPENDEV_ID_MAX] = "";
-        js_get_str(data, dlen, "sessionID", sid, sizeof(sid));
+        devos_json_get_str(data, dlen, "sessionID", sid, sizeof(sid));
         set_busy(sid[0] ? sid : NULL, false);
         return;
     }
     if (strcmp(name, "session.status") == 0) {
         char sid[OPENDEV_ID_MAX] = "";
-        js_get_str(data, dlen, "sessionID", sid, sizeof(sid));
+        devos_json_get_str(data, dlen, "sessionID", sid, sizeof(sid));
         const char *end = data + dlen;
-        const char *st = js_find_key(data, end, "status");
+        const char *st = devos_json_find_key(data, end, "status");
         bool busy = false;
         if (st && st < end && *st == '{') {
-            const char *sp = js_span(st, end);
+            const char *sp = devos_json_span(st, end);
             char type[32] = "";
-            if (sp) js_get_str(st, (size_t)(sp - st), "type", type, sizeof(type));
+            if (sp) devos_json_get_str(st, (size_t)(sp - st), "type", type, sizeof(type));
             busy = strcmp(type, "busy") == 0;
         }
         set_busy(sid[0] ? sid : NULL, busy);
@@ -533,7 +345,7 @@ static void on_sse_event(const char *name, const char *data, size_t dlen)
         strcmp(name, "message.part.updated") == 0) {
         /* ponytail: refetch (debounced) beats tracking part-ID deltas */
         char sid[OPENDEV_ID_MAX] = "";
-        js_get_str(data, dlen, "sessionID", sid, sizeof(sid));
+        devos_json_get_str(data, dlen, "sessionID", sid, sizeof(sid));
         if (s_active >= 0 && s_active < s_session_count &&
             (!sid[0] || strcmp(s_sessions[s_active].id, sid) == 0)) {
             s_want_messages = true;
@@ -545,12 +357,12 @@ static void on_sse_event(const char *name, const char *data, size_t dlen)
         char pid[OPENDEV_ID_MAX] = "";
         char sid[OPENDEV_ID_MAX] = "";
         char title[256] = "";
-        if (js_get_str(data, dlen, "id", pid, sizeof(pid)) != 0) {
-            js_get_str(data, dlen, "permissionID", pid, sizeof(pid));
+        if (devos_json_get_str(data, dlen, "id", pid, sizeof(pid)) != 0) {
+            devos_json_get_str(data, dlen, "permissionID", pid, sizeof(pid));
         }
-        js_get_str(data, dlen, "sessionID", sid, sizeof(sid));
-        if (js_get_str(data, dlen, "title", title, sizeof(title)) != 0) {
-            js_get_str(data, dlen, "text", title, sizeof(title));
+        devos_json_get_str(data, dlen, "sessionID", sid, sizeof(sid));
+        if (devos_json_get_str(data, dlen, "title", title, sizeof(title)) != 0) {
+            devos_json_get_str(data, dlen, "text", title, sizeof(title));
         }
         if (pid[0]) {
             s_perm.active = true;
@@ -638,12 +450,12 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     if (s_session_count >= OPENDEV_MAX_SESSIONS) return;
     opendev_session_t *s = &s_sessions[s_session_count];
     memset(s, 0, sizeof(*s));
-    if (js_get_str(obj, len, "id", s->id, sizeof(s->id)) != 0) return;
-    if (js_get_str(obj, len, "title", s->title, sizeof(s->title)) != 0) {
+    if (devos_json_get_str(obj, len, "id", s->id, sizeof(s->id)) != 0) return;
+    if (devos_json_get_str(obj, len, "title", s->title, sizeof(s->title)) != 0) {
         snprintf(s->title, sizeof(s->title), "%.8s", s->id);
     }
-    js_get_str(obj, len, "modelID", s->model, sizeof(s->model));
-    if (!s->model[0]) js_get_str(obj, len, "model", s->model, sizeof(s->model));
+    devos_json_get_str(obj, len, "modelID", s->model, sizeof(s->model));
+    if (!s->model[0]) devos_json_get_str(obj, len, "model", s->model, sizeof(s->model));
     s_session_count++;
 }
 
@@ -664,7 +476,7 @@ int opendev_client_refresh_sessions(void)
         memcpy(ids[i], s_sessions[i].id, sizeof(ids[i]));
     }
     s_session_count = 0;
-    js_array_each(resp, strlen(resp), sessions_each_cb, NULL);
+    devos_json_array_each(resp, strlen(resp), sessions_each_cb, NULL);
     for (int i = 0; i < s_session_count; i++) {
         for (int j = 0; j < before; j++) {
             if (strcmp(s_sessions[i].id, ids[j]) == 0) {
@@ -687,22 +499,22 @@ static void messages_each_cb(const char *obj, size_t len, void *ud)
 {
     (void)ud;
     char role[16] = "";
-    js_get_str(obj, len, "role", role, sizeof(role));
+    devos_json_get_str(obj, len, "role", role, sizeof(role));
     s_msg_role_tmp =
         (strcmp(role, "user") == 0) ? OPENDEV_ROLE_USER : OPENDEV_ROLE_ASST;
     const char *end = obj + len;
-    const char *pv = js_find_key(obj, end, "parts");
+    const char *pv = devos_json_find_key(obj, end, "parts");
     if (!pv || pv >= end || *pv != '[') {
         char direct[OPENDEV_BLOCK_MAX] = "";
-        if (js_get_str(obj, len, "content", direct, sizeof(direct)) == 0 ||
-            js_get_str(obj, len, "text", direct, sizeof(direct)) == 0) {
+        if (devos_json_get_str(obj, len, "content", direct, sizeof(direct)) == 0 ||
+            devos_json_get_str(obj, len, "text", direct, sizeof(direct)) == 0) {
             push_block(s_msg_role_tmp, OPENDEV_KIND_TEXT, direct);
         }
         return;
     }
-    const char *stop = js_span(pv, end);
+    const char *stop = devos_json_span(pv, end);
     if (!stop) return;
-    js_array_each(pv, (size_t)(stop - pv), opendev_parts_cb, NULL);
+    devos_json_array_each(pv, (size_t)(stop - pv), opendev_parts_cb, NULL);
 }
 
 static void opendev_parts_cb(const char *obj, size_t len, void *ud)
@@ -718,31 +530,31 @@ static void opendev_parts_cb(const char *obj, size_t len, void *ud)
 static void parts_each_cb(const char *obj, size_t len, opendev_block_t *tmp)
 {
     char type[32] = "";
-    js_get_str(obj, len, "type", type, sizeof(type));
+    devos_json_get_str(obj, len, "type", type, sizeof(type));
     if (strcmp(type, "text") == 0) {
         tmp->kind = OPENDEV_KIND_TEXT;
-        js_get_str(obj, len, "text", tmp->text, sizeof(tmp->text));
+        devos_json_get_str(obj, len, "text", tmp->text, sizeof(tmp->text));
     } else if (strcmp(type, "reasoning") == 0) {
         tmp->kind = OPENDEV_KIND_THINK;
-        js_get_str(obj, len, "text", tmp->text, sizeof(tmp->text));
+        devos_json_get_str(obj, len, "text", tmp->text, sizeof(tmp->text));
         if (!tmp->text[0]) {
-            js_get_str(obj, len, "reasoning", tmp->text, sizeof(tmp->text));
+            devos_json_get_str(obj, len, "reasoning", tmp->text, sizeof(tmp->text));
         }
     } else if (strncmp(type, "tool", 4) == 0) {
         tmp->kind = OPENDEV_KIND_TOOL;
         char name[96] = "";
-        if (js_get_str(obj, len, "tool", name, sizeof(name)) != 0) {
-            js_get_str(obj, len, "name", name, sizeof(name));
+        if (devos_json_get_str(obj, len, "tool", name, sizeof(name)) != 0) {
+            devos_json_get_str(obj, len, "name", name, sizeof(name));
         }
         char detail[512] = "";
-        if (js_get_str(obj, len, "input", detail, sizeof(detail)) != 0) {
-            if (js_get_str(obj, len, "command", detail, sizeof(detail)) != 0 &&
-                js_get_str(obj, len, "path", detail, sizeof(detail)) != 0 &&
-                js_get_str(obj, len, "query", detail, sizeof(detail)) != 0) {
-                js_get_str(obj, len, "state", detail, sizeof(detail));
+        if (devos_json_get_str(obj, len, "input", detail, sizeof(detail)) != 0) {
+            if (devos_json_get_str(obj, len, "command", detail, sizeof(detail)) != 0 &&
+                devos_json_get_str(obj, len, "path", detail, sizeof(detail)) != 0 &&
+                devos_json_get_str(obj, len, "query", detail, sizeof(detail)) != 0) {
+                devos_json_get_str(obj, len, "state", detail, sizeof(detail));
             }
         }
-        if (js_get_str(obj, len, "title", detail, sizeof(detail)) == 0) {
+        if (devos_json_get_str(obj, len, "title", detail, sizeof(detail)) == 0) {
             /* prefer human title when present */
         }
         snprintf(tmp->text, sizeof(tmp->text), "%s%s%s",
@@ -751,7 +563,7 @@ static void parts_each_cb(const char *obj, size_t len, opendev_block_t *tmp)
     } else {
         /* ponytail: unknown part types surface as text, never vanish */
         tmp->kind = OPENDEV_KIND_TEXT;
-        if (js_get_str(obj, len, "text", tmp->text, sizeof(tmp->text)) != 0) {
+        if (devos_json_get_str(obj, len, "text", tmp->text, sizeof(tmp->text)) != 0) {
             tmp->text[0] = '\0';
         }
     }
@@ -770,7 +582,7 @@ static int fetch_messages(void)
         return -1;
     }
     s_block_count = 0;
-    js_array_each(resp, strlen(resp), messages_each_cb, NULL);
+    devos_json_array_each(resp, strlen(resp), messages_each_cb, NULL);
     bump();
     return 0;
 }
@@ -1132,7 +944,7 @@ int opendev_client_new_session(void)
         return -1;
     }
     char id[OPENDEV_ID_MAX] = "";
-    if (js_get_str(resp, strlen(resp), "id", id, sizeof(id)) != 0) {
+    if (devos_json_get_str(resp, strlen(resp), "id", id, sizeof(id)) != 0) {
         return -1;
     }
     opendev_client_refresh_sessions();
@@ -1158,7 +970,7 @@ int opendev_client_send(const char *text)
 
     static char body[4096];
     char esc[3600];
-    js_escape(text, esc, sizeof(esc));
+    devos_json_escape(text, esc, sizeof(esc));
     snprintf(body, sizeof(body),
              "{\"parts\":[{\"type\":\"text\",\"text\":\"%s\"}]}", esc);
     char path[160];
