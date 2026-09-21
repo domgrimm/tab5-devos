@@ -134,7 +134,7 @@ graph TD
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
 *   **Visual Layout (1280×720):**
-    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not)**, battery percentage, and RTC clock.
+    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, theme toggle button, battery percentage, and RTC clock.
     *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
     *   **Interactive App Grid (2×3 Cards):**
         1.  `[1] OpenDev`: AI coding agent terminal (shows active session title and agent status; connects directly over LAN or optional mesh).
@@ -522,7 +522,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 ### Phase 1: Core OS Shell, Home Screen, Themes & Window Manager
 - [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
 - [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
-- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
+- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock, Theme toggle button).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
 - [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
