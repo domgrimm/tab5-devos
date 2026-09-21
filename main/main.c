@@ -7,6 +7,7 @@
 #include "tab5_keyboard.h"
 #include "devos_net.h"
 #include "microlink.h"
+#include "libssh2_port.h"
 
 /* Apps */
 #include "apps/app_launcher/app_launcher.h"
@@ -71,16 +72,65 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             return 0;
         }
 
-        if (((devos_mods & (DEVOS_MOD_ALT | DEVOS_MOD_CTRL))) && sym >= SDLK_1 && sym <= SDLK_6) {
+        /* Ctrl + 1..6 or F1..F6 simulates Fn + 1..6 (Global App Switcher) */
+        if ((devos_mods & DEVOS_MOD_CTRL) && sym >= SDLK_1 && sym <= SDLK_6) {
             devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), DEVOS_MOD_FN);
             return 0;
         }
 
-        /* Pass general keys */
-        if (sym >= SDLK_1 && sym <= SDLK_6) {
-            devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), devos_mods);
-        } else if (sym == SDLK_y || sym == SDLK_n || sym == SDLK_a || sym == SDLK_e || sym == SDLK_r) {
-            devos_core_dispatch_key((uint32_t)sym, devos_mods);
+        /* Alt + 1..9 (Multi-Session SSH Switcher) */
+        if ((devos_mods & DEVOS_MOD_ALT) && sym >= SDLK_1 && sym <= SDLK_9) {
+            devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), DEVOS_MOD_ALT);
+            return 0;
+        }
+
+        /* Control sequences */
+        if (devos_mods & DEVOS_MOD_CTRL) {
+            if (sym == SDLK_c) { devos_core_dispatch_key(0x03, devos_mods); return 0; }
+            if (sym == SDLK_d) { devos_core_dispatch_key(0x04, devos_mods); return 0; }
+            if (sym == SDLK_z) { devos_core_dispatch_key(0x1a, devos_mods); return 0; }
+            if (sym == SDLK_l) { devos_core_dispatch_key(0x0c, devos_mods); return 0; }
+        }
+
+        /* Special terminal keys */
+        if (sym == SDLK_RETURN || sym == SDLK_KP_ENTER) {
+            devos_core_dispatch_key('\r', devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_BACKSPACE) {
+            devos_core_dispatch_key('\b', devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_TAB) {
+            devos_core_dispatch_key('\t', devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_UP) {
+            devos_core_dispatch_key(LV_KEY_UP, devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_DOWN) {
+            devos_core_dispatch_key(LV_KEY_DOWN, devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_LEFT) {
+            devos_core_dispatch_key(LV_KEY_LEFT, devos_mods);
+            return 0;
+        }
+        if (sym == SDLK_RIGHT) {
+            devos_core_dispatch_key(LV_KEY_RIGHT, devos_mods);
+            return 0;
+        }
+
+        /* Printable ASCII characters */
+        if (sym >= 32 && sym <= 126) {
+            /* If Shift is held and alpha, SDL sym is lowercase unless handled */
+            char c = (char)sym;
+            if ((devos_mods & DEVOS_MOD_SHIFT) && c >= 'a' && c <= 'z') {
+                c -= 32;
+            }
+            devos_core_dispatch_key((uint32_t)c, devos_mods);
+            return 0;
         }
     }
     return 1;
@@ -112,7 +162,10 @@ static void devos_system_bringup(void)
     /* 6. Network & Transparent Socket Routing bring-up */
     devos_net_init();
 
-    /* 7. Register all applications */
+    /* 7. SSH & PTY Engine bring-up */
+    ssh_port_init();
+
+    /* 8. Register all applications */
     devos_core_register_app(app_launcher_get_descriptor());
     devos_core_register_app(app_opendev_get_descriptor());
     devos_core_register_app(app_terminal_get_descriptor());

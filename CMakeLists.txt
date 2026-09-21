@@ -35,6 +35,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
         ${CMAKE_CURRENT_SOURCE_DIR}/components/microlink
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
     )
 
     # Sources
@@ -56,6 +57,7 @@ else()
         components/tab5_keyboard/tab5_keyboard.c
         components/microlink/microlink.c
         components/devos_net/devos_net.c
+        components/libssh2_port/libssh2_port.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
