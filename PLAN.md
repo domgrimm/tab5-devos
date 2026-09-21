@@ -13,24 +13,21 @@
   |   Tailscale: 100.77.11.92 (if connected) | Battery: 7.8V (3.2W, ~4.8h left) |
   |   Memory: 28.4 MB Free PSRAM             | CPU: Core 0: 4% | Core 1: 18%    |
   |                                                                             |
-  |  +-------------------+  +-------------------+  +-------------------+        |
-  |  | [1] OpenDev       |  | [2] Terminal/SSH  |  | [3] Markdown      |        |
-  |  | AI Coding Agents  |  | ANSI PTY Shell    |  | Notes & Docs      |        |
-  |  |                   |  |                   |  |                   |        |
-  |  | * Status: Idle    |  | * 1 Session (dev) |  | * todo.md         |        |
-  |  | * Model: Sonnet   |  | * Host: 100.64.1.2|  | * 14.2 KB        |        |
-  |  +-------------------+  +-------------------+  +-------------------+        |
+  |  +----------------+  +----------------+  +----------------+  +------------+ |
+  |  | [1] OpenDev    |  | [2] Terminal   |  | [3] Markdown   |  | [4] Tail...| |
+  |  | AI Coding Agent|  | ANSI PTY Shell |  | Notes & Docs   |  | Mesh Net   | |
+  |  | * Status: Idle |  | * 1 Session    |  | * todo.md      |  | * 6 Peers  | |
+  |  +----------------+  +----------------+  +----------------+  +------------+ |
   |                                                                             |
-  |  +-------------------+  +-------------------+  +-------------------+        |
-  |  | [4] Tailscale     |  | [5] Antigravity   |  | [6] Settings      |        |
-  |  | Mesh Network      |  | Native AGY Client |  | System & Config   |        |
-  |  |                   |  |                   |  |                   |        |
-  |  | * Peers: 6 Online |  | * Bridge: Online  |  | * Wi-Fi / Display |        |
-  |  | * DERP: Sydney    |  | * Subagents: 2    |  | * NVS & Storage   |        |
-  |  +-------------------+  +-------------------+  +-------------------+        |
+  |  +----------------+  +----------------+  +----------------+  +------------+ |
+  |  | [5] Antigravity|  | [6] Settings   |  | [7] Extension  |  | [8] Tools  | |
+  |  | Native AGY     |  | System Config  |  | Modular App    |  | Utilities  | |
+  |  | * Subagents: 2 |  | * Wi-Fi / Batt |  | * Ready        |  | * Active   | |
+  |  +----------------+  +----------------+  +----------------+  +------------+ |
   |                                                                             |
+  |               ◄ [Page 1 / 2]  ●  ○  [Page 2 ►]     [⇋ Arrange]             |
   +-----------------------------------------------------------------------------+
-  | [Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Alt+Tab] Switch |
+  | [Enter/Tap] Launch | [1-8] Page Key | [PgUp/PgDn] Flip | [Fn+H] Home        |
   +-----------------------------------------------------------------------------+
 ```
 
@@ -135,28 +132,29 @@ graph TD
 
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
-*   **Visual Layout (1280×720):**
+*   **Visual Layout & Scalable Grid (1280×720):**
     *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Fn + T`; the top bar carries no theme button.)
     *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
-    *   **Interactive App Grid (2×3 Cards):**
-        1.  `[1] OpenDev`: AI coding agent terminal (shows active session title and agent status; connects directly over LAN or optional mesh).
-        2.  `[2] Terminal/SSH`: Multi-session PTY terminal (shows open sessions and favorite hosts; connects directly to any LAN IP, hostname, or Tailscale peer).
-        3.  `[3] Markdown`: Notes & documentation editor (shows recently edited files).
-        4.  `[4] Tailscale`: Optional mesh network manager (shows peer count, DERP latency, ping diagnostics).
-        5.  `[5] Antigravity`: Native AGY agent client (shows bridge connection state and active subagent count; connects directly over LAN or optional mesh).
-        6.  `[6] Settings`: Wi-Fi provisioning, display brightness, battery stats, storage info.
+    *   **Modular App Registry Architecture:** Rather than a closed hardcoded set of 6 apps, `devOS` uses an extensible dynamic app registry (`components/devos_core/`). Apps define a standardized descriptor (`devos_app_descriptor_t`) with cold init, show, hide, key handler, and live tile telemetry callbacks (`get_telemetry_lines()`). New apps in `main/apps/app_*` simply self-register at boot time (`devos_core_register_app()`) without modifying the launcher or core OS logic.
+    *   **Compact Scalable App Grid (4×2 per Page with Pagination):**
+        *   Tiles are redesigned into a dense, ergonomic compact format (280px × 210px each, arranged in 4 columns × 2 rows = 8 visible tiles per page).
+        *   Each compact tile cleanly displays: App Icon / Glyphs, Title, Subtitle / Category, and 2 condensed dynamic telemetry lines (e.g. active session, peer count, branch name, or battery gauge).
+        *   **Multi-Page Carousel & Pagination Container:** Supports an arbitrary number of apps (up to 32 registered apps) across multiple pages.
+        *   **Page Indicator:** Prominent interactive pagination footer with page indicator dots (`● ○ ○`), page numbers (`Page 1 / 2`), and quick touch paging arrows (`◄ Prev` / `Next ►`).
 *   **Navigation & Ergonomics:**
-    *   **Direct Key Launch:** Pressing keys `1` through `6` on the A164 keyboard immediately launches that app.
-    *   **Arrow Key Navigation:** Highlight cards with arrow keys and press `Enter` to open.
+    *   **Direct Key Launch:** Pressing keys `1` through `8` on the physical keyboard immediately launches the corresponding tile on the active page.
+    *   **Cross-Page Arrow Navigation:** Arrow keys (`↑`, `↓`, `←`, `→`) move selection between cards with smooth focus borders; navigating past the right/left boundary automatically turns the page. Pressing `Enter` launches the selected app.
+    *   **Page Flipping Shortcuts:** Press `Page Up` / `Page Down` (or `Fn + ←` / `Fn + →`) to flip between app pages instantly.
+    *   **Touch & Gesture Controls:** Swipe left/right across the grid to flip pages with smooth carousel snapping; tap any card to open.
     *   **Global Return:** Pressing `Fn + H`, `Esc`, or tapping the top-left `[devOS]` logo from within any application returns to the Home Screen.
     *   **Multitasking:** Background tasks (SSH sessions, streaming agent tokens, Tailscale tunnels) continue running when returning to the Home Screen.
-*   **Tile & Widget Re-arrangement Mode:**
-    *   **Interactive Customization:** Users can re-order and customize the 2×3 launcher grid to place their most-used tools into preferred slots.
-    *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the header or via keyboard shortcut `Fn + E` (or pressing `E` while on the Home Screen).
-    *   **Touch / Click Reordering:** Tap any tile to select it (highlighted with an amber `#FFB300` border), then tap the destination tile to immediately swap their positions.
-    *   **Keyboard Reordering:** Pressing `1` through `6` selects a source slot; pressing a second slot key (`1`–`6`) executes the swap.
+*   **Generalized Tile & Widget Re-arrangement Mode:**
+    *   **Interactive Customization:** Users can re-order and customize the launcher grid across pages to place their most-used tools into preferred slots.
+    *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the footer or via keyboard shortcut `Fn + E` (or pressing `E` while on the Home Screen).
+    *   **Touch / Click Reordering:** Tap any tile to select it (highlighted with an amber `#FFB300` border), flip pages if desired, then tap the destination tile to immediately swap their positions.
+    *   **Keyboard Reordering:** Pressing `1` through `8` selects a source slot on the current page; pressing a second slot key (or switching pages with `PgUp`/`PgDn` and pressing a key) executes the swap.
     *   **Reset & Exit:** Press `R` or tap `[↺ Defaults]` to revert to the factory layout. Press `Esc` or tap `[✓ Done]` to finalize.
-    *   **MicroSD Layout Persistence:** Slot mappings are automatically saved as JSON in `/sdcard/.devos/launcher_layout.json` (and `./sim_sdcard/.devos/launcher_layout.json` in simulation) and loaded at boot.
+    *   **MicroSD Layout Persistence:** Dynamic slot mappings are automatically saved as JSON in `/sdcard/.devos/launcher_layout.json` (and `./sim_sdcard/.devos/launcher_layout.json` in simulation) and loaded at boot.
 
 ---
 
@@ -593,6 +591,16 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Add power management (`components/devos_power/`): INA226 battery gauge telemetry, screen dimming after 120s, sleep mode after 600s, activity wakeup on keyboard and capacitive touch/click, and live 1 Hz settings refresh.
 - [x] Implement OTA (Over-The-Air) firmware update mechanism (`components/devos_ota/`): manifest version checks, LAN staging server support, checksum validation, and dry-run simulation mode. Unit tested in `tools/ota_test.c`.
 
+### Phase 7: Modular App Framework & Scalable Paginated Home Screen
+- [ ] Refactor `devos_app_descriptor_t` in `components/devos_core/` into an extensible, dynamic app registry supporting up to 32 apps with unique string identifiers, icons, categories, and telemetry callbacks (`get_telemetry_lines()`).
+- [ ] Implement self-registration API (`devos_core_register_app()`) allowing new apps to be dropped into `main/apps/` without modifying core OS dispatching or launcher source files.
+- [ ] Redesign Home Screen (`app_launcher`) grid with compact tile dimensions (4 columns × 2 rows = 8 visible tiles per page).
+- [ ] Implement multi-page carousel / pagination container with horizontal gesture snapping, swipe animations, and page indicator dots (`● ○ ○`).
+- [ ] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Fn + ←/→`) page flipping.
+- [ ] Generalize tile arrangement mode (`Fn + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
+- [ ] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
+- [ ] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
+
 ---
 
 ## 6. Directory Structure & Repository Layout
@@ -621,7 +629,8 @@ tab5-devos/
 │   │   ├── app_editor/            # MicroSD Markdown editor & previewer
 │   │   ├── app_tailscale/         # Tailnet status & peer manager UI
 │   │   ├── app_antigravity/       # Native Antigravity GUI client (Path B)
-│   │   └── app_settings/          # Wi-Fi setup, display, power, system info
+│   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
+│   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # System constants and pin definitions
 ├── tools/
