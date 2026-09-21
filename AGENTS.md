@@ -38,6 +38,10 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
    * One JSON reader (`components/devos_json/`) serves all HTTP/WS engines (`opendev_client`, `agy_client`). Same rule: extend, don't duplicate.
    * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once.
 
+8. **Modular Self-Registering Apps:**
+   * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
+   * Adding a new application must never require modifying the Home Screen (`app_launcher.c`) or hardcoding app IDs into closed enums. Use `main/apps/app_template/` as the canonical reference.
+
 ---
 
 ## 2. Hardware Interfaces & Pinout Reference
@@ -86,7 +90,8 @@ tab5-devos/
 │   │   ├── app_editor/            # MicroSD Markdown editor & previewer
 │   │   ├── app_tailscale/         # Tailnet status & peer list
 │   │   ├── app_antigravity/       # Native Antigravity GUI client (Path B)
-│   │   └── app_settings/          # Wi-Fi setup, display, power, system telemetry
+│   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
+│   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # System-wide pin mappings, buffers, constants
 └── tools/
