@@ -134,7 +134,7 @@ static void simulate_command_response(ssh_session_t *sess, const char *cmd)
 
     if (strcmp(cmd, "whoami") == 0) {
         char who_msg[128];
-        snprintf(who_msg, sizeof(who_msg), "%s\r\n", sess->user[0] ? sess->user : "dom");
+        snprintf(who_msg, sizeof(who_msg), "%s\r\n", sess->user[0] ? sess->user : "root");
         push_to_rx(sess, who_msg, strlen(who_msg));
         send_prompt(sess);
         return;
@@ -187,7 +187,7 @@ int ssh_port_init(void)
     strncpy(s_sessions[0].alias, "workstation", sizeof(s_sessions[0].alias));
     strncpy(s_sessions[0].host, "100.77.11.92", sizeof(s_sessions[0].host));
     s_sessions[0].port = 22;
-    strncpy(s_sessions[0].user, "dom", sizeof(s_sessions[0].user));
+    strncpy(s_sessions[0].user, "root", sizeof(s_sessions[0].user));
     strncpy(s_sessions[0].command, "bash", sizeof(s_sessions[0].command));
     s_sessions[0].cols = DEVOS_TERM_COLS_COLLAPSED;
     s_sessions[0].rows = DEVOS_TERM_ROWS;
@@ -197,13 +197,13 @@ int ssh_port_init(void)
         "\033[1;36mLinux workstation 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC x86_64\033[0m\r\n"
         "Welcome to Arch Linux (Tailscale IP: \033[1;32m100.77.11.92\033[0m)!\r\n"
         "System load: 0.14, 0.22, 0.18 | Memory: 8.2 GiB / 64.0 GiB | Uptime: 14d 6h\r\n\r\n"
-        "\033[1;32mdom@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m$ git status\r\n"
+        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# git status\r\n"
         "On branch main\r\n"
         "Your branch is up to date with 'origin/main'.\r\n\r\n"
-        "\033[1;32mdom@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m$ agy --version\r\n"
+        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# agy --version\r\n"
         "\033[1;35mAntigravity CLI v2.4.0 (Autonomous Agent Engine)\033[0m\r\n"
         "Connected to agy-bridge daemon on \033[1;33m100.77.11.92:8420\033[0m [OK]\r\n\r\n"
-        "\033[1;32mdom@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m$ ";
+        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# ";
     push_to_rx(&s_sessions[0], sess1_banner, strlen(sess1_banner));
 
     /* Pre-populate Session 2: Prod Cluster (htop) */
