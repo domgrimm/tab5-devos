@@ -163,7 +163,7 @@ static void terminal_init(void)
     lv_obj_set_style_radius(btn_sess1, 4, 0);
 
     lv_obj_t *lbl_sess1 = lv_label_create(btn_sess1);
-    lv_label_set_text(lbl_sess1, "● 1: workstation (bash)");
+    lv_label_set_text(lbl_sess1, LV_SYMBOL_BULLET " 1: workstation (bash)");
     lv_obj_align(lbl_sess1, LV_ALIGN_LEFT_MID, 4, 0);
     lv_obj_set_style_text_color(lbl_sess1, p->accent_primary, 0);
     lv_obj_set_style_text_font(lbl_sess1, &lv_font_montserrat_12, 0);
@@ -177,7 +177,7 @@ static void terminal_init(void)
     lv_obj_set_style_radius(btn_sess2, 4, 0);
 
     lv_obj_t *lbl_sess2 = lv_label_create(btn_sess2);
-    lv_label_set_text(lbl_sess2, "○ 2: prod-vps (htop)");
+    lv_label_set_text(lbl_sess2, "- 2: prod-vps (htop)");
     lv_obj_align(lbl_sess2, LV_ALIGN_LEFT_MID, 4, 0);
     lv_obj_set_style_text_color(lbl_sess2, p->text_secondary, 0);
     lv_obj_set_style_text_font(lbl_sess2, &lv_font_montserrat_12, 0);
@@ -239,7 +239,7 @@ static void terminal_init(void)
     lv_obj_add_event_cb(btn_toggle, toggle_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_toggle = lv_label_create(btn_toggle);
-    lv_label_set_text(lbl_toggle, "☱ Sidebar");
+    lv_label_set_text(lbl_toggle, LV_SYMBOL_BARS " Sidebar");
     lv_obj_center(lbl_toggle);
     lv_obj_set_style_text_color(lbl_toggle, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_toggle, &lv_font_montserrat_12, 0);

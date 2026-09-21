@@ -165,7 +165,7 @@ static void refresh_card_positions(void)
             char title_buf[64];
             if (arrange_mode) {
                 if (selected_slot == slot) {
-                    snprintf(title_buf, sizeof(title_buf), "[⇄ Slot %d] %s", slot + 1, app_names[card_idx]);
+                    snprintf(title_buf, sizeof(title_buf), "[" LV_SYMBOL_SHUFFLE " Slot %d] %s", slot + 1, app_names[card_idx]);
                 } else {
                     snprintf(title_buf, sizeof(title_buf), "[Slot %d] %s", slot + 1, app_names[card_idx]);
                 }
@@ -199,23 +199,23 @@ static void refresh_card_positions(void)
         if (arrange_mode) {
             lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(lbl_arrange_btn, "✓ Done");
+            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_OK " Done");
             lv_obj_set_style_bg_color(btn_arrange_toggle, p->accent_secondary, 0);
 
             if (selected_slot >= 0) {
                 char b_buf[128];
                 int app_id = slot_to_app[selected_slot];
-                snprintf(b_buf, sizeof(b_buf), "⇋ Slot %d (%s) selected. Tap destination tile to swap!",
+                snprintf(b_buf, sizeof(b_buf), LV_SYMBOL_SHUFFLE " Slot %d (%s) selected. Tap destination tile to swap!",
                          selected_slot + 1, app_names[app_id - 1]);
                 lv_label_set_text(lbl_arrange_banner, b_buf);
             } else {
                 lv_label_set_text(lbl_arrange_banner,
-                    "⇋ ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Swap Slot | [R] Reset");
+                    LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Swap Slot | [R] Reset");
             }
         } else {
             lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(lbl_arrange_btn, "⇋ Arrange");
+            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_SHUFFLE " Arrange");
             lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
         }
     }
@@ -555,7 +555,7 @@ static void launcher_init(void)
     lv_obj_add_event_cb(btn_arrange_toggle, arrange_toggle_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_arrange_btn = lv_label_create(btn_arrange_toggle);
-    lv_label_set_text(lbl_arrange_btn, "⇋ Arrange");
+    lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_SHUFFLE " Arrange");
     lv_obj_center(lbl_arrange_btn);
     lv_obj_set_style_text_font(lbl_arrange_btn, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
@@ -572,7 +572,7 @@ static void launcher_init(void)
     lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
 
     lbl_arrange_reset = lv_label_create(btn_arrange_reset);
-    lv_label_set_text(lbl_arrange_reset, "↺ Defaults");
+    lv_label_set_text(lbl_arrange_reset, LV_SYMBOL_REFRESH " Defaults");
     lv_obj_center(lbl_arrange_reset);
     lv_obj_set_style_text_font(lbl_arrange_reset, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
@@ -591,7 +591,7 @@ static void launcher_init(void)
 
     lbl_arrange_banner = lv_label_create(banner_arrange);
     lv_label_set_text(lbl_arrange_banner,
-        "⇋ ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Keys | [R] Reset");
+        LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Keys | [R] Reset");
     lv_obj_align(lbl_arrange_banner, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);

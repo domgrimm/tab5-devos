@@ -38,7 +38,7 @@ static void editor_init(void)
     lv_obj_set_style_text_font(lbl_files, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_files, p->text_secondary, 0);
 
-    const char *files[4] = {"📄 welcome.md (Active)", "📄 todo.md", "📄 devos-spec.md", "📄 meeting-notes.md"};
+    const char *files[4] = {LV_SYMBOL_FILE " welcome.md (Active)", LV_SYMBOL_FILE " todo.md", LV_SYMBOL_FILE " devos-spec.md", LV_SYMBOL_FILE " meeting-notes.md"};
     for (int i = 0; i < 4; i++) {
         lv_obj_t *btn_f = lv_button_create(sidebar);
         lv_obj_set_size(btn_f, DEVOS_PANE_LEFT_WIDTH - 28, 34);
@@ -104,7 +104,7 @@ static void editor_init(void)
         "- [Fn + ]]: Toggle Right Inspector (Artifacts, Diffs)\n\n"
         "## Offline Storage & Synchronization\n"
         "All notes are stored directly on the MicroSD card at `/sdcard/notes/`.\n"
-        "No cloud sync required—fully offline capable.");
+        "No cloud sync required - fully offline capable.");
     lv_obj_set_style_text_color(lbl_content, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_content, &lv_font_montserrat_14, 0);
 }

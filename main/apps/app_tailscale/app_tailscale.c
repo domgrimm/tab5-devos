@@ -32,7 +32,7 @@ static void tailscale_init(void)
     lv_obj_set_style_pad_all(status_card, 12, 0);
 
     lv_obj_t *lbl_title = lv_label_create(status_card);
-    lv_label_set_text(lbl_title, "● Tailscale WireGuard Mesh: CONNECTED");
+    lv_label_set_text(lbl_title, LV_SYMBOL_BULLET " Tailscale WireGuard Mesh: CONNECTED");
     lv_obj_set_pos(lbl_title, 0, 0);
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(lbl_title, p->accent_secondary, 0);
@@ -57,10 +57,10 @@ static void tailscale_init(void)
     lv_obj_set_style_text_color(lbl_peers_h, p->accent_primary, 0);
 
     const char *peers[4] = {
-        "● workstation.tailnet  (100.64.1.2)   - Linux x86_64 - Direct (2ms)",
-        "● macbook-pro.tailnet  (100.77.11.90) - macOS Sonoma - Direct (4ms)",
-        "● home-nas.tailnet     (100.80.3.15)  - TrueNAS Core - DERP (18ms)",
-        "● prod-cluster.tailnet (100.99.20.1)  - Ubuntu 24.04 - Direct (12ms)"
+        LV_SYMBOL_BULLET " workstation.tailnet  (100.64.1.2)   - Linux x86_64 - Direct (2ms)",
+        LV_SYMBOL_BULLET " macbook-pro.tailnet  (100.77.11.90) - macOS Sonoma - Direct (4ms)",
+        LV_SYMBOL_BULLET " home-nas.tailnet     (100.80.3.15)  - TrueNAS Core - DERP (18ms)",
+        LV_SYMBOL_BULLET " prod-cluster.tailnet (100.99.20.1)  - Ubuntu 24.04 - Direct (12ms)"
     };
 
     for (int i = 0; i < 4; i++) {
