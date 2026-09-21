@@ -533,6 +533,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement NVS encrypted storage for Tailscale node credentials.
 - [x] Implement virtual socket routing layer bridging lwIP TCP connections across the WireGuard tunnel.
 - [x] Build Tailscale Status UI: connection toggle, node status, peer list, DERP ping diagnostics.
+- [x] Connect to live Tailscale network: real-time discovery of live tailnet peers, node IPs, DERP latency, and per-peer ping diagnostics.
 
 ### Phase 3: Terminal & Multi-Session SSH Client
 - [x] Integrate `libssh2` with mbedTLS hardware cryptography.
@@ -541,6 +542,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement real-time PTY window resizing (`TIOCSWINSZ` / SIGWINCH) on sidebar toggle.
 - [x] Map Tab5 physical keyboard to VT100 control sequences (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, arrow keys, Esc, Tab, `Alt + 1..9` session switch).
 - [x] Add session bookmarking and SSH key management from `/sdcard/.ssh/`.
+- [x] Live interactive SSH PTY session engine: real shell execution (`root@...`), concurrent sessions, focus trap, and seamless peer shell launching.
 
 ### Phase 4: Markdown Editor
 - [ ] Implement File Explorer UI with MicroSD directory navigation.
