@@ -37,6 +37,18 @@ static lv_obj_t *peer_tray[MICROLINK_MAX_PEERS] = {NULL};
 /* Auth Modal */
 static lv_obj_t *modal_auth = NULL;
 static lv_obj_t *ta_auth_key = NULL;
+static lv_obj_t *lbl_m_title = NULL;
+static lv_obj_t *lbl_m_desc = NULL;
+static lv_obj_t *btn_enroll = NULL;
+static lv_obj_t *lbl_enroll = NULL;
+static lv_obj_t *btn_cancel = NULL;
+static lv_obj_t *lbl_cancel = NULL;
+
+/* Peer tray buttons (per-peer, for theme updates) */
+static lv_obj_t *peer_ssh_btns[MICROLINK_MAX_PEERS] = {NULL};
+static lv_obj_t *peer_ssh_lbls[MICROLINK_MAX_PEERS] = {NULL};
+static lv_obj_t *peer_ping_btns[MICROLINK_MAX_PEERS] = {NULL};
+static lv_obj_t *peer_ping_lbls[MICROLINK_MAX_PEERS] = {NULL};
 
 static int s_selected_peer = -1;
 static bool s_filter_direct_only = false;
@@ -122,6 +134,9 @@ static void open_auth_modal_cb(lv_event_t *e)
         microlink_get_auth_key(key, sizeof(key));
         if (ta_auth_key) {
             lv_textarea_set_text(ta_auth_key, key);
+            lv_obj_add_state(ta_auth_key, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_auth_key,
+                devos_theme_get()->accent_primary, 0);
         }
         lv_obj_remove_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(modal_auth);
@@ -427,20 +442,21 @@ static void tailscale_init(void)
         lv_obj_clear_flag(peer_tray[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(peer_tray[i], LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_t *btn_ssh = lv_button_create(peer_tray[i]);
+        lv_obj_t *btn_ssh = peer_ssh_btns[i] = lv_button_create(peer_tray[i]);
         lv_obj_set_size(btn_ssh, 110, 28);
         lv_obj_set_pos(btn_ssh, 0, 2);
         lv_obj_set_style_bg_color(btn_ssh, p->accent_primary, 0);
         lv_obj_set_style_radius(btn_ssh, 4, 0);
         lv_obj_add_event_cb(btn_ssh, peer_ssh_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-        lv_obj_t *lbl_ssh = lv_label_create(btn_ssh);
+        lv_obj_t *lbl_ssh = peer_ssh_lbls[i] = lv_label_create(btn_ssh);
         lv_label_set_text(lbl_ssh, LV_SYMBOL_POWER " SSH Shell");
         lv_obj_center(lbl_ssh);
-        lv_obj_set_style_text_color(lbl_ssh, lv_color_black(), 0);
+        lv_obj_set_style_text_color(lbl_ssh,
+            devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
         lv_obj_set_style_text_font(lbl_ssh, &lv_font_montserrat_12, 0);
 
-        lv_obj_t *btn_ping = lv_button_create(peer_tray[i]);
+        lv_obj_t *btn_ping = peer_ping_btns[i] = lv_button_create(peer_tray[i]);
         lv_obj_set_size(btn_ping, 90, 28);
         lv_obj_set_pos(btn_ping, 118, 2);
         lv_obj_set_style_bg_color(btn_ping, p->surface, 0);
@@ -449,7 +465,7 @@ static void tailscale_init(void)
         lv_obj_set_style_radius(btn_ping, 4, 0);
         lv_obj_add_event_cb(btn_ping, peer_ping_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-        lv_obj_t *lbl_ping = lv_label_create(btn_ping);
+        lv_obj_t *lbl_ping = peer_ping_lbls[i] = lv_label_create(btn_ping);
         lv_label_set_text(lbl_ping, LV_SYMBOL_SHUFFLE " Ping");
         lv_obj_center(lbl_ping);
         lv_obj_set_style_text_color(lbl_ping, p->text_primary, 0);
@@ -468,13 +484,13 @@ static void tailscale_init(void)
     lv_obj_clear_flag(modal_auth, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *lbl_m_title = lv_label_create(modal_auth);
+    lbl_m_title = lv_label_create(modal_auth);
     lv_label_set_text(lbl_m_title, LV_SYMBOL_SETTINGS " Tailscale Auth Key Configuration");
     lv_obj_set_pos(lbl_m_title, 0, 0);
     lv_obj_set_style_text_font(lbl_m_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_m_title, p->accent_primary, 0);
 
-    lv_obj_t *lbl_m_desc = lv_label_create(modal_auth);
+    lbl_m_desc = lv_label_create(modal_auth);
     lv_label_set_text(lbl_m_desc, "Enter an ephemeral or pre-authenticated key (tskey-auth-...):");
     lv_obj_set_pos(lbl_m_desc, 0, 26);
     lv_obj_set_style_text_font(lbl_m_desc, &lv_font_montserrat_12, 0);
@@ -483,27 +499,30 @@ static void tailscale_init(void)
     ta_auth_key = lv_textarea_create(modal_auth);
     lv_textarea_set_placeholder_text(ta_auth_key, "tskey-auth-k1234567890abcdef...");
     lv_textarea_set_one_line(ta_auth_key, true);
-    lv_obj_set_size(ta_auth_key, 508, 38);
+    lv_obj_set_size(ta_auth_key, 508, 36);
     lv_obj_set_pos(ta_auth_key, 0, 50);
     lv_obj_set_style_bg_color(ta_auth_key, p->bg_alt, 0);
     lv_obj_set_style_border_color(ta_auth_key, p->surface_border, 0);
+    lv_obj_set_style_border_width(ta_auth_key, 1, 0);
+    lv_obj_set_style_radius(ta_auth_key, 4, 0);
+    lv_obj_set_style_pad_all(ta_auth_key, 8, 0);
     lv_obj_set_style_text_color(ta_auth_key, p->text_primary, 0);
-    lv_obj_clear_flag(ta_auth_key, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *btn_enroll = lv_button_create(modal_auth);
+    btn_enroll = lv_button_create(modal_auth);
     lv_obj_set_size(btn_enroll, 130, 34);
     lv_obj_set_pos(btn_enroll, 240, 110);
     lv_obj_set_style_bg_color(btn_enroll, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_enroll, 4, 0);
     lv_obj_add_event_cb(btn_enroll, enroll_auth_key_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *lbl_enroll = lv_label_create(btn_enroll);
+    lbl_enroll = lv_label_create(btn_enroll);
     lv_label_set_text(lbl_enroll, LV_SYMBOL_OK " Enroll Node");
     lv_obj_center(lbl_enroll);
-    lv_obj_set_style_text_color(lbl_enroll, lv_color_black(), 0);
+    lv_obj_set_style_text_color(lbl_enroll,
+        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
     lv_obj_set_style_text_font(lbl_enroll, &lv_font_montserrat_12, 0);
 
-    lv_obj_t *btn_cancel = lv_button_create(modal_auth);
+    btn_cancel = lv_button_create(modal_auth);
     lv_obj_set_size(btn_cancel, 110, 34);
     lv_obj_set_pos(btn_cancel, 380, 110);
     lv_obj_set_style_bg_color(btn_cancel, p->surface, 0);
@@ -512,7 +531,7 @@ static void tailscale_init(void)
     lv_obj_set_style_radius(btn_cancel, 4, 0);
     lv_obj_add_event_cb(btn_cancel, close_auth_modal_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *lbl_cancel = lv_label_create(btn_cancel);
+    lbl_cancel = lv_label_create(btn_cancel);
     lv_label_set_text(lbl_cancel, "Cancel");
     lv_obj_center(lbl_cancel);
     lv_obj_set_style_text_color(lbl_cancel, p->text_primary, 0);
@@ -528,6 +547,8 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
     if (!screen) return;
+    /* ponytail: black on neon cyan (dark) / white on cobalt (light) */
+    lv_color_t on_accent = devos_theme_is_dark() ? lv_color_black() : lv_color_white();
 
     lv_obj_set_style_bg_color(screen, p->bg, 0);
     lv_obj_set_style_bg_color(status_card, p->surface, 0);
@@ -535,10 +556,61 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     lv_obj_set_style_text_color(lbl_details, p->text_primary, 0);
     lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
 
+    /* Status action buttons */
+    if (btn_ping_derp) {
+        lv_obj_set_style_bg_color(btn_ping_derp, p->surface, 0);
+        lv_obj_set_style_border_color(btn_ping_derp, p->surface_border, 0);
+    }
+    if (lbl_ping_derp) lv_obj_set_style_text_color(lbl_ping_derp, p->text_primary, 0);
+    if (btn_auth_key) {
+        lv_obj_set_style_bg_color(btn_auth_key, p->surface, 0);
+        lv_obj_set_style_border_color(btn_auth_key, p->surface_border, 0);
+    }
+    if (lbl_auth_key) lv_obj_set_style_text_color(lbl_auth_key, p->text_primary, 0);
+
     lv_obj_set_style_text_color(lbl_peers_h, p->accent_primary, 0);
     lv_obj_set_style_bg_color(btn_refresh, p->surface, 0);
     lv_obj_set_style_border_color(btn_refresh, p->surface_border, 0);
     lv_obj_set_style_text_color(lbl_refresh, p->text_primary, 0);
+
+    /* Peer list container + action trays */
+    if (peer_list_scroll) lv_obj_set_style_bg_color(peer_list_scroll, p->bg, 0);
+    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
+        if (peer_tray[i]) lv_obj_set_style_bg_color(peer_tray[i], p->surface_active, 0);
+        if (peer_ssh_btns[i]) {
+            lv_obj_set_style_bg_color(peer_ssh_btns[i], p->accent_primary, 0);
+        }
+        if (peer_ssh_lbls[i]) {
+            lv_obj_set_style_text_color(peer_ssh_lbls[i], on_accent, 0);
+        }
+        if (peer_ping_btns[i]) {
+            lv_obj_set_style_bg_color(peer_ping_btns[i], p->surface, 0);
+            lv_obj_set_style_border_color(peer_ping_btns[i], p->surface_border, 0);
+        }
+        if (peer_ping_lbls[i]) {
+            lv_obj_set_style_text_color(peer_ping_lbls[i], p->text_primary, 0);
+        }
+    }
+
+    /* Auth modal */
+    if (modal_auth) {
+        lv_obj_set_style_bg_color(modal_auth, p->surface, 0);
+        lv_obj_set_style_border_color(modal_auth, p->accent_primary, 0);
+    }
+    if (lbl_m_title) lv_obj_set_style_text_color(lbl_m_title, p->accent_primary, 0);
+    if (lbl_m_desc) lv_obj_set_style_text_color(lbl_m_desc, p->text_secondary, 0);
+    if (ta_auth_key) {
+        lv_obj_set_style_bg_color(ta_auth_key, p->bg_alt, 0);
+        lv_obj_set_style_border_color(ta_auth_key, p->surface_border, 0);
+        lv_obj_set_style_text_color(ta_auth_key, p->text_primary, 0);
+    }
+    if (btn_enroll) lv_obj_set_style_bg_color(btn_enroll, p->accent_primary, 0);
+    if (lbl_enroll) lv_obj_set_style_text_color(lbl_enroll, on_accent, 0);
+    if (btn_cancel) {
+        lv_obj_set_style_bg_color(btn_cancel, p->surface, 0);
+        lv_obj_set_style_border_color(btn_cancel, p->surface_border, 0);
+    }
+    if (lbl_cancel) lv_obj_set_style_text_color(lbl_cancel, p->text_primary, 0);
 
     refresh_ui();
 }
@@ -558,13 +630,35 @@ static void tailscale_hide(void)
 
 static bool tailscale_handle_key(uint32_t key, uint8_t modifiers)
 {
-    /* If modal is open, Esc closes it */
+    /* If modal is open, capture ALL keystrokes for the auth key field
+       (same pattern as terminal Quick Connect modal) */
     if (modal_auth && !lv_obj_has_flag(modal_auth, LV_OBJ_FLAG_HIDDEN)) {
         if (key == LV_KEY_ESC) {
             lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
             return true;
         }
-        return false;
+        if (key == '\r' || key == '\n') {
+            enroll_auth_key_cb(NULL);
+            return true;
+        }
+        if (key == '\b' || key == 0x7F) {
+            if (ta_auth_key) lv_textarea_delete_char(ta_auth_key);
+            return true;
+        }
+        if (key == LV_KEY_LEFT) {
+            if (ta_auth_key) lv_textarea_cursor_left(ta_auth_key);
+            return true;
+        }
+        if (key == LV_KEY_RIGHT) {
+            if (ta_auth_key) lv_textarea_cursor_right(ta_auth_key);
+            return true;
+        }
+        if (key >= 32 && key <= 126) {
+            if (ta_auth_key) lv_textarea_add_char(ta_auth_key, (char)key);
+            return true;
+        }
+        /* Absorb all other keys so the screen behind never receives them */
+        return true;
     }
 
     if (key == 'c' || key == 'C') {
