@@ -373,21 +373,12 @@ static int http_do(const char *method, const char *path, const char *body,
                         "%s %s HTTP/1.1\r\nHost: %s:%d\r\n"
                         "Content-Type: application/json\r\n"
                         "Content-Length: %zu\r\n"
+                        "%s%s%s"
                         "Connection: close\r\n\r\n",
-                        method, path, s_cfg.host, s_cfg.port, blen);
-    if (s_cfg.token[0]) {
-        char auth[OPENDEV_TOKEN_MAX + 32];
-        snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n",
-                 s_cfg.token);
-        /* ponytail: splice auth ahead of the blank line */
-        char *blank = strstr(req, "\r\n\r\n");
-        if (blank && (size_t)(blank - req) + strlen(auth) + 4 < sizeof(req)) {
-            size_t tail = strlen(blank);
-            memmove(blank + strlen(auth), blank, tail + 1);
-            memcpy(blank, auth, strlen(auth));
-            hlen = (int)strlen(req);
-        }
-    }
+                        method, path, s_cfg.host, s_cfg.port, blen,
+                        s_cfg.token[0] ? "Authorization: Bearer " : "",
+                        s_cfg.token[0] ? s_cfg.token : "",
+                        s_cfg.token[0] ? "\r\n" : "");
     if (hlen <= 0 || (size_t)hlen >= sizeof(req)) {
         devos_net_socket_close(fd);
         return -1;
@@ -701,7 +692,14 @@ static void messages_each_cb(const char *obj, size_t len, void *ud)
         (strcmp(role, "user") == 0) ? OPENDEV_ROLE_USER : OPENDEV_ROLE_ASST;
     const char *end = obj + len;
     const char *pv = js_find_key(obj, end, "parts");
-    if (!pv || pv >= end || *pv != '[') return;
+    if (!pv || pv >= end || *pv != '[') {
+        char direct[OPENDEV_BLOCK_MAX] = "";
+        if (js_get_str(obj, len, "content", direct, sizeof(direct)) == 0 ||
+            js_get_str(obj, len, "text", direct, sizeof(direct)) == 0) {
+            push_block(s_msg_role_tmp, OPENDEV_KIND_TEXT, direct);
+        }
+        return;
+    }
     const char *stop = js_span(pv, end);
     if (!stop) return;
     js_array_each(pv, (size_t)(stop - pv), opendev_parts_cb, NULL);
@@ -738,7 +736,11 @@ static void parts_each_cb(const char *obj, size_t len, opendev_block_t *tmp)
         }
         char detail[512] = "";
         if (js_get_str(obj, len, "input", detail, sizeof(detail)) != 0) {
-            js_get_str(obj, len, "state", detail, sizeof(detail));
+            if (js_get_str(obj, len, "command", detail, sizeof(detail)) != 0 &&
+                js_get_str(obj, len, "path", detail, sizeof(detail)) != 0 &&
+                js_get_str(obj, len, "query", detail, sizeof(detail)) != 0) {
+                js_get_str(obj, len, "state", detail, sizeof(detail));
+            }
         }
         if (js_get_str(obj, len, "title", detail, sizeof(detail)) == 0) {
             /* prefer human title when present */
@@ -857,26 +859,17 @@ void opendev_client_poll(void)
             return;
         }
         /* connected: issue the SSE subscribe */
-    char req[512];
-    int hlen = snprintf(req, sizeof(req),
-                        "GET /event HTTP/1.1\r\nHost: %s:%d\r\n"
-                        "Accept: text/event-stream\r\n"
-                        "Cache-Control: no-cache\r\n"
-                        "Connection: keep-alive\r\n\r\n",
-                        s_cfg.host, s_cfg.port);
-    if (s_cfg.token[0]) {
-        char auth[OPENDEV_TOKEN_MAX + 32];
-        snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n",
-                 s_cfg.token);
-        char *blank = strstr(req, "\r\n\r\n");
-            if (blank &&
-                (size_t)(blank - req) + strlen(auth) + 4 < sizeof(req)) {
-                size_t tail = strlen(blank);
-                memmove(blank + strlen(auth), blank, tail + 1);
-                memcpy(blank, auth, strlen(auth));
-                hlen = (int)strlen(req);
-            }
-        }
+        char req[512];
+        int hlen = snprintf(req, sizeof(req),
+                            "GET /event HTTP/1.1\r\nHost: %s:%d\r\n"
+                            "Accept: text/event-stream\r\n"
+                            "Cache-Control: no-cache\r\n"
+                            "%s%s%s"
+                            "Connection: keep-alive\r\n\r\n",
+                            s_cfg.host, s_cfg.port,
+                            s_cfg.token[0] ? "Authorization: Bearer " : "",
+                            s_cfg.token[0] ? s_cfg.token : "",
+                            s_cfg.token[0] ? "\r\n" : "");
         if (hlen <= 0 ||
             send_all(s_sse_fd, req, (size_t)hlen) != 0) {
             devos_net_socket_close(s_sse_fd);
@@ -931,11 +924,11 @@ void opendev_client_poll(void)
             size_t hused = (size_t)(eoh - s_hdr_buf) + 4;
             set_status(OPENDEV_UP, "SSE live");
             opendev_client_refresh_sessions();
+            s_sse_len = 0;
+            s_sse_buf[0] = '\0';
             if (s_hdr_len > hused) {
                 sse_feed(s_hdr_buf + hused, s_hdr_len - hused);
             }
-            s_sse_len = 0;
-            s_sse_buf[0] = '\0';
         } else {
             chunk[n] = '\0';
             sse_feed(chunk, (size_t)n);
@@ -979,6 +972,32 @@ int opendev_client_set_server(const char *host, int port)
     strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
     s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
     s_cfg.port = port;
+    s_cfg.mode = OPENDEV_MODE_CODE;
+    s_cfg.token[0] = '\0';
+    config_save();
+    /* force re-link */
+    if (s_sse_fd >= 0) {
+        devos_net_socket_close(s_sse_fd);
+        s_sse_fd = -1;
+    }
+    s_retry_ticks = RETRY_TICKS;
+    bump();
+    return 0;
+}
+
+int opendev_client_set_chamber(const char *host, int port, const char *token)
+{
+    if (!host || !*host || port <= 0 || port > 65535) return -1;
+    strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
+    s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
+    s_cfg.port = port;
+    s_cfg.mode = OPENDEV_MODE_CHAMBER;
+    if (token) {
+        strncpy(s_cfg.token, token, sizeof(s_cfg.token) - 1);
+        s_cfg.token[sizeof(s_cfg.token) - 1] = '\0';
+    } else {
+        s_cfg.token[0] = '\0';
+    }
     config_save();
     /* force re-link */
     if (s_sse_fd >= 0) {
@@ -1020,27 +1039,50 @@ static void url_decode(char *s)
 int opendev_client_pair(const char *uri)
 {
     /* openchamber://connect?host=H&port=P&token=T (p= accepted for token) */
+    /* Also accepts openchamber://host:port?token=T or openchamber://host?token=T */
     if (!uri || strncmp(uri, "openchamber://", 14) != 0) return -1;
-    const char *q = strchr(uri, '?');
-    if (!q) return -1;
-    char query[256];
-    strncpy(query, q + 1, sizeof(query) - 1);
-    query[sizeof(query) - 1] = '\0';
+    const char *rest = uri + 14;
+    const char *q = strchr(rest, '?');
     char host[OPENDEV_HOST_MAX] = "";
     int port = 0;
     char token[OPENDEV_TOKEN_MAX] = "";
-    for (char *pair = strtok(query, "&"); pair; pair = strtok(NULL, "&")) {
-        char *eq = strchr(pair, '=');
-        if (!eq) continue;
-        *eq = '\0';
-        url_decode(pair);
-        url_decode(eq + 1);
-        if (strcmp(pair, "host") == 0) {
-            strncpy(host, eq + 1, sizeof(host) - 1);
-        } else if (strcmp(pair, "port") == 0) {
-            port = atoi(eq + 1);
-        } else if (strcmp(pair, "token") == 0 || strcmp(pair, "p") == 0) {
-            strncpy(token, eq + 1, sizeof(token) - 1);
+
+    /* If there is an authority before '?' (e.g. openchamber://10.0.0.1:8421?token=...) */
+    size_t auth_len = q ? (size_t)(q - rest) : strlen(rest);
+    if (auth_len > 0 && auth_len < 128) {
+        char auth[128];
+        strncpy(auth, rest, auth_len);
+        auth[auth_len] = '\0';
+        if (auth[auth_len - 1] == '/') auth[auth_len - 1] = '\0';
+        if (strcmp(auth, "connect") != 0 && auth[0] != '\0') {
+            char *colon = strchr(auth, ':');
+            if (colon) {
+                *colon = '\0';
+                strncpy(host, auth, sizeof(host) - 1);
+                port = atoi(colon + 1);
+            } else {
+                strncpy(host, auth, sizeof(host) - 1);
+            }
+        }
+    }
+
+    if (q) {
+        char query[256];
+        strncpy(query, q + 1, sizeof(query) - 1);
+        query[sizeof(query) - 1] = '\0';
+        for (char *pair = strtok(query, "&"); pair; pair = strtok(NULL, "&")) {
+            char *eq = strchr(pair, '=');
+            if (!eq) continue;
+            *eq = '\0';
+            url_decode(pair);
+            url_decode(eq + 1);
+            if (strcmp(pair, "host") == 0) {
+                strncpy(host, eq + 1, sizeof(host) - 1);
+            } else if (strcmp(pair, "port") == 0) {
+                port = atoi(eq + 1);
+            } else if (strcmp(pair, "token") == 0 || strcmp(pair, "p") == 0) {
+                strncpy(token, eq + 1, sizeof(token) - 1);
+            }
         }
     }
     if (!token[0]) return -1;

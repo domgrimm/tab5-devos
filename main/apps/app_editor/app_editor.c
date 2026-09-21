@@ -2,6 +2,7 @@
 #include "devos_config.h"
 #include "devos_theme.h"
 #include "devos_core.h"
+#include "opendev_client.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -45,6 +46,8 @@ static lv_obj_t *btn_new = NULL;
 static lv_obj_t *lbl_btn_new = NULL;
 static lv_obj_t *btn_save = NULL;
 static lv_obj_t *lbl_btn_save = NULL;
+static lv_obj_t *btn_attach = NULL;
+static lv_obj_t *lbl_btn_attach = NULL;
 static lv_obj_t *btn_mode = NULL;
 static lv_obj_t *lbl_btn_mode = NULL;
 static lv_obj_t *ta_editor = NULL;
@@ -327,13 +330,14 @@ static void apply_layout(void)
         lv_obj_set_size(main_area, main_w, DEVOS_CONTENT_HEIGHT);
         lv_obj_set_pos(main_area, main_x, 0);
     }
-    if (top_bar && btn_mode && btn_save && btn_new && btn_tree) {
+    if (top_bar && btn_mode && btn_attach && btn_save && btn_new && btn_tree) {
         lv_obj_align(btn_mode, LV_ALIGN_RIGHT_MID, -8, 0);
-        lv_obj_align_to(btn_save, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+        lv_obj_align_to(btn_attach, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+        lv_obj_align_to(btn_save, btn_attach, LV_ALIGN_OUT_LEFT_MID, -6, 0);
         lv_obj_align_to(btn_new, btn_save, LV_ALIGN_OUT_LEFT_MID, -6, 0);
         lv_obj_align_to(btn_tree, btn_new, LV_ALIGN_OUT_LEFT_MID, -6, 0);
         if (lbl_fn) {
-            int lbl_w = main_w - 330;
+            int lbl_w = main_w - 420;
             if (lbl_w < 120) lbl_w = 120;
             lv_obj_set_width(lbl_fn, lbl_w);
         }
@@ -1264,15 +1268,15 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     }
     if (lbl_fn) lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
 
-    lv_obj_t *action_btns[] = {btn_tree, btn_new, btn_save, btn_mode};
-    lv_obj_t *action_lbls[] = {lbl_btn_tree, lbl_btn_new, lbl_btn_save, lbl_btn_mode};
-    for (int i = 0; i < 4; i++) {
+    lv_obj_t *action_btns[] = {btn_tree, btn_new, btn_save, btn_attach, btn_mode};
+    lv_obj_t *action_lbls[] = {lbl_btn_tree, lbl_btn_new, lbl_btn_save, lbl_btn_attach, lbl_btn_mode};
+    for (int i = 0; i < 5; i++) {
         if (action_btns[i]) {
             lv_obj_set_style_bg_color(action_btns[i], p->surface, 0);
             lv_obj_set_style_border_color(action_btns[i], p->surface_border, 0);
         }
         if (action_lbls[i]) {
-            lv_obj_set_style_text_color(action_lbls[i], (i == 3) ? p->accent_primary : p->text_primary, 0);
+            lv_obj_set_style_text_color(action_lbls[i], (i == 4) ? p->accent_primary : p->text_primary, 0);
         }
     }
     update_tree_button();
@@ -1317,6 +1321,28 @@ static void btn_save_cb(lv_event_t *e)
     save_file();
 }
 
+static void btn_attach_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (s_active < 0 || s_active >= s_file_count || !ta_editor) {
+        flash_msg("No active note to attach");
+        return;
+    }
+    const char *text = lv_textarea_get_text(ta_editor);
+    if (!text || !*text) {
+        flash_msg("Note is empty");
+        return;
+    }
+    char msg[OPENDEV_BLOCK_MAX];
+    snprintf(msg, sizeof(msg), "[Context from %s]:\n%s", s_files[s_active], text);
+    int rc = opendev_client_send(msg);
+    if (rc == 0) {
+        flash_msg("Attached to OpenDev session!");
+    } else {
+        flash_msg("Attach failed (server offline)");
+    }
+}
+
 static void btn_mode_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -1344,13 +1370,19 @@ static void file_btn_cb(lv_event_t *e)
 
 static bool editor_handle_key(uint32_t key, uint8_t modifiers)
 {
-    /* Fullscreen editing: Fn + [ collapses the file tree */
-    if ((modifiers & DEVOS_MOD_FN) && key == '[') {
-        s_sidebar_visible = !s_sidebar_visible;
-        if (!s_sidebar_visible) s_focus_list = false;
-        apply_layout();
-        refresh_file_list();
-        return true;
+    /* Fullscreen editing: Fn + [ collapses the file tree; Fn + A attaches note to OpenDev */
+    if (modifiers & DEVOS_MOD_FN) {
+        if (key == '[') {
+            s_sidebar_visible = !s_sidebar_visible;
+            if (!s_sidebar_visible) s_focus_list = false;
+            apply_layout();
+            refresh_file_list();
+            return true;
+        }
+        if (key == 'a' || key == 'A') {
+            btn_attach_cb(NULL);
+            return true;
+        }
     }
 
     /* Tab toggles focus between file list and editor */
@@ -1597,6 +1629,20 @@ static void editor_init(void)
     lv_obj_set_style_text_font(lbl_btn_save, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_btn_save, p->text_primary, 0);
 
+    btn_attach = lv_button_create(top_bar);
+    lv_obj_set_size(btn_attach, 76, 26);
+    lv_obj_set_style_bg_color(btn_attach, p->surface, 0);
+    lv_obj_set_style_border_color(btn_attach, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_attach, 1, 0);
+    lv_obj_set_style_radius(btn_attach, 4, 0);
+    lv_obj_set_style_pad_all(btn_attach, 0, 0);
+    lv_obj_add_event_cb(btn_attach, btn_attach_cb, LV_EVENT_CLICKED, NULL);
+    lbl_btn_attach = lv_label_create(btn_attach);
+    lv_label_set_text(lbl_btn_attach, LV_SYMBOL_UPLOAD " Attach");
+    lv_obj_center(lbl_btn_attach);
+    lv_obj_set_style_text_font(lbl_btn_attach, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_btn_attach, p->text_primary, 0);
+
     btn_mode = lv_button_create(top_bar);
     lv_obj_set_size(btn_mode, 92, 26);
     lv_obj_set_style_bg_color(btn_mode, p->surface, 0);
@@ -1728,11 +1774,49 @@ const char *app_editor_get_active_text(void)
 bool app_editor_save_plan(const char *title, const char *content)
 {
     if (!title || !content) return false;
+    char clean[64];
+    size_t ci = 0;
+    for (const char *p = title; *p && ci < sizeof(clean) - 1; p++) {
+        char c = *p;
+        if (isalnum((unsigned char)c) || c == '-' || c == '_') {
+            clean[ci++] = c;
+        } else if (c == ' ' || c == ':' || c == '/') {
+            if (ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
+        }
+    }
+    clean[ci] = '\0';
+    if (ci == 0) strncpy(clean, "plan", sizeof(clean) - 1);
+
     char path[256];
-    snprintf(path, sizeof(path), "%s/plans/%s.md", TAB5_SD_MOUNT_POINT, title);
+    snprintf(path, sizeof(path), "%s/plans/%s.md", TAB5_SD_MOUNT_POINT, clean);
     FILE *f = fopen(path, "w");
     if (!f) return false;
     fputs(content, f);
+    fclose(f);
+    return true;
+}
+
+bool app_editor_save_diff(const char *title, const char *diff_content)
+{
+    if (!title || !diff_content) return false;
+    char clean[64];
+    size_t ci = 0;
+    for (const char *p = title; *p && ci < sizeof(clean) - 1; p++) {
+        char c = *p;
+        if (isalnum((unsigned char)c) || c == '-' || c == '_') {
+            clean[ci++] = c;
+        } else if (c == ' ' || c == ':' || c == '/') {
+            if (ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
+        }
+    }
+    clean[ci] = '\0';
+    if (ci == 0) strncpy(clean, "diff", sizeof(clean) - 1);
+
+    char path[256];
+    snprintf(path, sizeof(path), "%s/diffs/%s.diff", TAB5_SD_MOUNT_POINT, clean);
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    fputs(diff_content, f);
     fclose(f);
     return true;
 }

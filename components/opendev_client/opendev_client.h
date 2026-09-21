@@ -83,6 +83,7 @@ uint32_t opendev_client_generation(void);   /* bumps on any store mutation */
 void opendev_client_get_config(char *host, size_t host_len, int *port,
                                opendev_mode_t *mode, char *token, size_t token_len);
 int opendev_client_set_server(const char *host, int port);
+int opendev_client_set_chamber(const char *host, int port, const char *token);
 int opendev_client_set_mode(opendev_mode_t mode);
 /* openchamber://connect?host=H&port=P&token=T (also accepts p= as token) */
 int opendev_client_pair(const char *uri);
