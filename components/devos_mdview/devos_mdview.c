@@ -11,7 +11,7 @@
  * in components/devos_ui/lv_font_nimbus_mono_14.c to regenerate). */
 LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 
-#define MD_LINE_MAX 512
+#define MD_LINE_MAX 2048
 #define MD_TABLE_ROWS 18
 #define MD_TABLE_COLS 6
 #define MD_CELL_MAX 28
@@ -34,6 +34,30 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
  * `\|` escapes in tables.
  * -------------------------------------------------------------------------- */
 
+/* Back a byte count off a split UTF-8 character so truncation never
+ * produces tofu. Inspects backward within [0, n) without over-reading. */
+size_t devos_md_trunc_ok(const char *s, size_t n)
+{
+    if (!s || n == 0) return 0;
+    if (((unsigned char)s[n - 1] & 0x80) == 0) return n;
+
+    size_t k = n;
+    while (k > 0 && ((unsigned char)s[k - 1] & 0xC0) == 0x80) {
+        k--;
+    }
+    if (k == 0) return 0;
+
+    unsigned char lead = (unsigned char)s[k - 1];
+    size_t expected_len = 1;
+    if ((lead & 0xE0) == 0xC0) expected_len = 2;
+    else if ((lead & 0xF0) == 0xE0) expected_len = 3;
+    else if ((lead & 0xF8) == 0xF0) expected_len = 4;
+    else return k - 1;
+
+    if (k - 1 + expected_len <= n) return n;
+    return k - 1;
+}
+
 /* Emit one styled run (lv_span_set_text copies, so a shared temp is safe) */
 static void md_add_span(lv_obj_t *sg, const char *s, size_t n,
                         const lv_font_t *font, lv_color_t color,
@@ -42,6 +66,10 @@ static void md_add_span(lv_obj_t *sg, const char *s, size_t n,
     static char seg[501];
     while (n > 0) {
         size_t chunk = n > 500 ? 500 : n;
+        if (chunk == 500 && chunk < n) {
+            chunk = devos_md_trunc_ok(s, chunk);
+            if (chunk == 0) chunk = 500;
+        }
         memcpy(seg, s, chunk);
         seg[chunk] = '\0';
         lv_span_t *sp = lv_spangroup_new_span(sg);
@@ -382,7 +410,7 @@ static lv_obj_t *md_new_block(lv_obj_t *parent, int y)
 }
 
 /* Fence accumulation: one contiguous block, not striped per-line boxes */
-static char s_codebuf[3072];
+static char s_codebuf[8192];
 static size_t s_codelen = 0;
 static bool s_codedrop = false;
 
@@ -408,19 +436,6 @@ static void md_finish_block(lv_obj_t *sg, int *y, int gap)
     lv_spangroup_refr_mode(sg);
     lv_obj_update_layout(sg);
     *y += lv_obj_get_height(sg) + gap;
-}
-
-/* Back a byte count off a split UTF-8 character so truncation never
- * produces tofu (editor targets notes, not CJK tables, but no tofu). */
-size_t devos_md_trunc_ok(const char *s, size_t n)
-{
-    if (n == 0) return 0;
-    if ((s[n - 1] & 0xC0) == 0xC0) {
-        n--; /* lead byte with its tail cut off */
-    } else {
-        while (n > 0 && (s[n] & 0xC0) == 0x80) n--;
-    }
-    return n;
 }
 
 /* Split a |table| row into trimmed cells. Returns cell count. */
@@ -508,9 +523,17 @@ static size_t md_pad_string(const char *cell, int width, int align,
     return o;
 }
 
+#define MD_ADVANCE_LINE() do { \
+    if (len < full_len) { cur += len; continue; } \
+    if (!nl) goto md_done; \
+    cur = nl + 1; \
+    continue; \
+} while (0)
+
 int devos_md_render(lv_obj_t *parent, const char *text)
 {
     if (!parent) return 0;
+    lv_obj_update_layout(parent);
     const devos_palette_t *p = devos_theme_get();
 
     s_parent = parent;
@@ -530,7 +553,8 @@ int devos_md_render(lv_obj_t *parent, const char *text)
     const char *cur = text;
     for (;;) {
         const char *nl = strchr(cur, '\n');
-        size_t len = nl ? (size_t)(nl - cur) : strlen(cur);
+        size_t full_len = nl ? (size_t)(nl - cur) : strlen(cur);
+        size_t len = full_len;
         if (len > sizeof(line) - 1) len = devos_md_trunc_ok(cur, sizeof(line) - 1);
         memcpy(line, cur, len);
         line[len] = '\0';
@@ -549,9 +573,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
             }
             in_code = !in_code;
             in_ol = false;
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         if (in_code) {
@@ -565,18 +587,14 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                     s_codedrop = true;
                 }
             }
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         /* Blank */
         if (len == 0) {
             y += 10;
             in_ol = false;
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         /* HR: --- *** ___ (3+ of one marker, spaces tolerated) */
@@ -602,9 +620,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                 lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
                 y += 18;
                 in_ol = false;
-                if (!nl) break;
-                cur = nl + 1;
-                continue;
+                MD_ADVANCE_LINE();
             }
         }
 
@@ -640,9 +656,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                 md_render_inline(sg, head, hlen, f, col, LV_TEXT_DECOR_NONE, p);
                 md_finish_block(sg, &y, 8);
                 in_ol = false;
-                if (!nl) break;
-                cur = nl + 1;
-                continue;
+                MD_ADVANCE_LINE();
             }
         }
 
@@ -715,10 +729,9 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                     }
                 }
                 /* Shrink widest cols (in px, incl. cell padding) to fit.
-                 * ponytail: columns share the content width minus the card
-                 * chrome (MAIN pad 16 + MAIN border 2). */
+                 * columns share the content width minus card chrome. */
                 int max_px = (int)lv_obj_get_content_width(s_parent) - 18;
-                if (max_px < 160) max_px = 160;
+                if (max_px < 240) max_px = 500;
                 for (;;) {
                     int total = 0;
                     for (int c = 0; c < cols; c++) {
@@ -815,9 +828,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                              p->accent_secondary, LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
             in_ol = false;
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         /* Task list */
@@ -833,9 +844,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                              LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
             in_ol = false;
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         /* Unordered list (- * +) */
@@ -848,9 +857,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                              p->text_primary, LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
             in_ol = false;
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
 
         /* Ordered list (renumbered) */
@@ -870,9 +877,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                 md_render_inline(sg, body, strlen(body), &lv_font_montserrat_14,
                                  p->text_primary, LV_TEXT_DECOR_NONE, p);
                 md_finish_block(sg, &y, 6);
-                if (!nl) break;
-                cur = nl + 1;
-                continue;
+                MD_ADVANCE_LINE();
             }
             in_ol = false;
         }
@@ -884,11 +889,11 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                              p->text_primary, LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
             in_ol = false; /* a paragraph breaks list continuation */
-            if (!nl) break;
-            cur = nl + 1;
-            continue;
+            MD_ADVANCE_LINE();
         }
     }
+
+md_done:
     if (in_code) md_emit_code_block(&y, p); /* unclosed fence still renders */
 
     return y;

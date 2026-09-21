@@ -57,6 +57,7 @@ static int s_fd = -1;
 static int s_ticks = 0;
 static int s_retry = 0;
 static bool s_want = false;
+static bool s_sent_upgrade = false;
 static bool s_handshook = false;
 static char s_rx[WS_RX_MAX];
 static size_t s_rx_len = 0;
@@ -453,6 +454,7 @@ static void link_down(const char *text)
         devos_net_socket_close(s_fd);
         s_fd = -1;
     }
+    s_sent_upgrade = false;
     s_handshook = false;
     s_rx_len = 0;
     s_frag_len = 0;
@@ -526,12 +528,12 @@ static void frame_pump(void)
         uint64_t plen = h[1] & 0x7F;
         size_t hlen = 2;
         if (plen == 126) {
-            if (pos + 4 > s_rx_len) return;
+            if (pos + 4 > s_rx_len) break;
             plen = ((uint64_t)(uint8_t)s_rx[pos + 2] << 8) |
                    (uint64_t)(uint8_t)s_rx[pos + 3];
             hlen = 4;
         } else if (plen == 127) {
-            if (pos + 10 > s_rx_len) return;
+            if (pos + 10 > s_rx_len) break;
             plen = 0;
             for (int i = 0; i < 8; i++) {
                 plen = (plen << 8) | (uint64_t)(uint8_t)s_rx[pos + 2 + i];
@@ -544,11 +546,11 @@ static void frame_pump(void)
         }
         uint8_t mask[4] = {0, 0, 0, 0};
         if (masked) {
-            if (pos + hlen + 4 > s_rx_len) return;
+            if (pos + hlen + 4 > s_rx_len) break;
             memcpy(mask, s_rx + pos + hlen, 4);
             hlen += 4;
         }
-        if (pos + hlen + plen > s_rx_len) return; /* incomplete payload */
+        if (pos + hlen + plen > s_rx_len) break; /* incomplete payload */
         /* unmask in place (server frames are normally unmasked) */
         if (masked) {
             for (uint64_t i = 0; i < plen; i++) {
@@ -616,35 +618,38 @@ void agy_client_poll(void)
     }
 
     if (s_status == AGY_CONNECTING && !s_handshook) {
-        int r = devos_net_socket_connect_wait(s_fd, 0);
-        if (r > 0) {
-            if (++s_ticks > WS_TIMEOUT_TICKS) link_down("Connect timeout");
-            return;
+        if (!s_sent_upgrade) {
+            int r = devos_net_socket_connect_wait(s_fd, 0);
+            if (r > 0) {
+                if (++s_ticks > WS_TIMEOUT_TICKS) link_down("Connect timeout");
+                return;
+            }
+            if (r < 0) {
+                char t[128];
+                snprintf(t, sizeof(t), "Refused by %s:%d", s_cfg.host, s_cfg.port);
+                link_down(t);
+                return;
+            }
+            /* TCP up: send the WS upgrade */
+            uint8_t key_raw[16];
+            for (int i = 0; i < 16; i++) key_raw[i] = (uint8_t)rand();
+            char key[32];
+            b64_encode(key_raw, sizeof(key_raw), key);
+            char req[512];
+            int hlen = snprintf(req, sizeof(req),
+                                "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
+                                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                                "Sec-WebSocket-Key: %s\r\n"
+                                "Sec-WebSocket-Version: 13\r\n\r\n",
+                                s_cfg.host, s_cfg.port, key);
+            if (hlen <= 0 ||
+                devos_net_socket_send_all(s_fd, req, (size_t)hlen) != 0) {
+                link_down("Upgrade failed");
+                return;
+            }
+            s_sent_upgrade = true;
+            s_ticks = 0;
         }
-        if (r < 0) {
-            char t[128];
-            snprintf(t, sizeof(t), "Refused by %s:%d", s_cfg.host, s_cfg.port);
-            link_down(t);
-            return;
-        }
-        /* TCP up: send the WS upgrade */
-        uint8_t key_raw[16];
-        for (int i = 0; i < 16; i++) key_raw[i] = (uint8_t)rand();
-        char key[32];
-        b64_encode(key_raw, sizeof(key_raw), key);
-        char req[512];
-        int hlen = snprintf(req, sizeof(req),
-                            "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
-                            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                            "Sec-WebSocket-Key: %s\r\n"
-                            "Sec-WebSocket-Version: 13\r\n\r\n",
-                            s_cfg.host, s_cfg.port, key);
-        if (hlen <= 0 ||
-            devos_net_socket_send_all(s_fd, req, (size_t)hlen) != 0) {
-            link_down("Upgrade failed");
-            return;
-        }
-        s_ticks = 0;
         /* fall through to header accumulation */
     }
 
