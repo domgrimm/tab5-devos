@@ -50,14 +50,15 @@ fi
 if pgrep -x "devos_sim" >/dev/null; then
     echo "[SIM] Stopping previous devos_sim instance..."
     pkill -x "devos_sim" || true
-    sleep 1
+    while pgrep -x "devos_sim" >/dev/null; do sleep 0.2; done
 fi
 
-# 6. Launch devos_sim with nohup in background
+# 6. Launch devos_sim with setsid -f in background
 echo "[SIM] Launching devos_sim on DISPLAY=:99..."
-DISPLAY=:99 nohup ./build_sim/devos_sim > /tmp/devos_sim.log 2>&1 &
-SIM_PID=$!
-disown $SIM_PID
+DISPLAY=:99 setsid -f ./build_sim/devos_sim >/tmp/devos_sim.log 2>&1
+sleep 1
+SIM_PID=$(pgrep -x "devos_sim" | tail -n 1)
+
 
 echo ""
 echo "======================================================="

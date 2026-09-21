@@ -19,6 +19,13 @@ static uint32_t free_mb = 29412;
 static const char *WELCOME_MD_CONTENT =
 "# Welcome to devOS on M5Stack Tab5!\n\n"
 "devOS is a developer-focused mobile cyberdeck firmware for the M5Stack Tab5 with A164 keyboard.\n\n"
+"## Markdown Editor Shortcuts\n\n"
+"- **`Ctrl + S`**: Save active file\n"
+"- **`Ctrl + N`**: Create new note (untitled-N.md)\n"
+"- **`Ctrl + O`**: Focus file list\n"
+"- **`Ctrl + P`**: Cycle Edit / Split / Preview views\n"
+"- **`Fn + [`**: Toggle file sidebar (fullscreen editing)\n"
+"- **`Tab`**: Toggle focus between file list and editor\n\n"
 "## Global Keyboard Shortcuts\n\n"
 "- **`1` .. `6`**: Quick launch app from Home Screen\n"
 "- **`Fn + H`** or **`Esc`**: Global return to Home Screen\n"
@@ -28,10 +35,28 @@ static const char *WELCOME_MD_CONTENT =
 "- **`Fn + [`**: Toggle Left Sidebar (Sessions, Subagents, Bookmarks)\n"
 "- **`Fn + ]`**: Toggle Right Inspector (Files, Diffs, Artifacts)\n"
 "- **`Alt + Tab`**: Switch to previous application\n\n"
-"## Networking & Connections\n\n"
-"devOS connects directly over Wi-Fi and local LAN to any SSH host, OpenCode server, or AGY bridge.\n"
-"If you want mesh overlay networking, open Tailscale (Card 4) to connect; otherwise, all tools operate directly.\n\n"
-"Happy Hacking!\n";
+"## Hardware Quick Reference\n\n"
+"| Peripheral | Controller | Bus / Pins | Notes |\n"
+"| :--- | :--- | :--- | :--- |\n"
+"| SoC | ESP32-P4 | Dual RISC-V @ 400MHz | 32MB PSRAM |\n"
+"| Display | 5.0\" 1280x720 | MIPI-DSI | ST7123 |\n"
+"| Keyboard | A164 70-Key | Ext.Port1 I2C 0x6D | STM32F030 |\n"
+"| Power | NP-F550 | INA226 I2C 0x40 | Telemetry |\n\n"
+"## Firmware Sample\n\n"
+"```c\n"
+"#include \"devos_config.h\"\n\n"
+"int main(void) {\n"
+"    devos_system_bringup();\n"
+"    return 0;\n"
+"}\n"
+"```\n\n"
+"> Distraction-free mobile engineering on the edge.\n\n"
+"### Feature Milestones\n\n"
+"- [x] Dual-core FreeRTOS architecture\n"
+"- [x] 160-column interactive SSH terminal\n"
+"- [x] Full Markdown editor with Nimbus Mono 14\n"
+"- [ ] OpenCode & OpenChamber remote client\n"
+"- [ ] Native Antigravity agent integration\n";
 
 static const char *BOOKMARKS_JSON_CONTENT =
 "[\n"
@@ -111,8 +136,14 @@ bool devos_storage_bootstrap(const char *mount_point)
     snprintf(path_buf, sizeof(path_buf), "%s/.ssh/bookmarks.json", mount_point);
     write_file_if_missing(path_buf, BOOKMARKS_JSON_CONTENT);
 
+    snprintf(path_buf, sizeof(path_buf), "%s/.ssh/known_hosts", mount_point);
+    write_file_if_missing(path_buf, "");
+
     snprintf(path_buf, sizeof(path_buf), "%s/.devos/version.txt", mount_point);
     write_file_if_missing(path_buf, DEVOS_VERSION_STR "\n");
+
+    snprintf(path_buf, sizeof(path_buf), "%s/.devos/config.json", mount_point);
+    write_file_if_missing(path_buf, "{\n  \"theme\": \"dark\"\n}\n");
 
     return true;
 }
