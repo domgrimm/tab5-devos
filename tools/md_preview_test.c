@@ -21,6 +21,7 @@ typedef int lv_obj_t_hack;
 #include "app_editor.c"
 
 /* Link stubs for devOS fns referenced by non-test code in the unit */
+const lv_font_t lv_font_nimbus_mono_14;
 static devos_palette_t stub_palette;
 const devos_palette_t *devos_theme_get(void) { return &stub_palette; }
 int devos_theme_add_listener(devos_theme_change_cb_t cb, void *ud)
@@ -29,6 +30,9 @@ int devos_theme_add_listener(devos_theme_change_cb_t cb, void *ud)
 }
 devos_theme_type_t devos_theme_get_type(void) { return DEVOS_THEME_DARK; }
 bool devos_theme_is_dark(void) { return true; }
+static devos_telemetry_t stub_telemetry;
+const devos_telemetry_t *devos_telemetry_get(void) { return &stub_telemetry; }
+void devos_telemetry_update(const devos_telemetry_t *t) { (void)t; }
 
 static int failures = 0;
 #define CHECK(cond) do { \
@@ -63,6 +67,11 @@ int main(void)
     CHECK(strcmp(cells[0], "Name") == 0);
     CHECK(strcmp(cells[1], "Age") == 0);
     CHECK(strcmp(cells[2], "City") == 0);
+    char row1_empty[] = "| Name | | City |";
+    CHECK(md_split_row(row1_empty, cells) == 3);
+    CHECK(strcmp(cells[0], "Name") == 0);
+    CHECK(strcmp(cells[1], "") == 0);
+    CHECK(strcmp(cells[2], "City") == 0);
     char row2[] = "|---|---|---|";
     CHECK(md_split_row(row2, cells) == 3);
     int al = -1;
@@ -84,6 +93,9 @@ int main(void)
     const char *in2 = "[text](http://x.y \"t\") tail";
     md_strip_inline(in2, strlen(in2), out, sizeof(out));
     CHECK(strcmp(out, "text (http://x.y) tail") == 0);
+    const char *in2b = "- [ ] see [link](http://x.y) tail";
+    md_strip_inline(in2b, strlen(in2b), out, sizeof(out));
+    CHECK(strcmp(out, "- [ ] see link (http://x.y) tail") == 0);
     const char *in3 = "2*3*4 stays";
     md_strip_inline(in3, strlen(in3), out, sizeof(out));
     CHECK(strcmp(out, "2*3*4 stays") == 0);
