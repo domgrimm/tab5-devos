@@ -39,8 +39,9 @@ static devos_telemetry_t telemetry_data = {
 
     .opendev_status         = "Idle",
     .opendev_model          = "Sonnet 3.7",
-    .terminal_sessions      = 1,
+    .terminal_sessions      = 2,
     .terminal_host          = "workstation (bash)",
+    .terminal_requested_host = "",
     .editor_file            = "welcome.md",
     .editor_file_kb         = 14,
     .agy_bridge_online      = true,

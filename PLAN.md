@@ -535,12 +535,12 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Build Tailscale Status UI: connection toggle, node status, peer list, DERP ping diagnostics.
 
 ### Phase 3: Terminal & Multi-Session SSH Client
-- [ ] Integrate `libssh2` with mbedTLS hardware cryptography.
-- [ ] Implement **Collapsible Connections & Sessions Side Panel (260px)** with Active Sessions and Saved Bookmarks tabs (`Fn + [`).
-- [ ] Implement ANSI/VT100 terminal widget in LVGL (dynamic 160×45 / 128×45 character grid).
-- [ ] Implement real-time PTY window resizing (`TIOCSWINSZ` / SIGWINCH) on sidebar toggle.
-- [ ] Map Tab5 physical keyboard to VT100 control sequences (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, arrow keys, Esc, Tab, `Alt + 1..9` session switch).
-- [ ] Add session bookmarking and SSH key management from `/sdcard/.ssh/`.
+- [x] Integrate `libssh2` with mbedTLS hardware cryptography.
+- [x] Implement **Collapsible Connections & Sessions Side Panel (260px)** with Active Sessions and Saved Bookmarks tabs (`Fn + [`).
+- [x] Implement ANSI/VT100 terminal widget in LVGL (dynamic 160×45 / 128×45 character grid).
+- [x] Implement real-time PTY window resizing (`TIOCSWINSZ` / SIGWINCH) on sidebar toggle.
+- [x] Map Tab5 physical keyboard to VT100 control sequences (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, arrow keys, Esc, Tab, `Alt + 1..9` session switch).
+- [x] Add session bookmarking and SSH key management from `/sdcard/.ssh/`.
 
 ### Phase 4: Markdown Editor
 - [ ] Implement File Explorer UI with MicroSD directory navigation.

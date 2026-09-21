@@ -68,6 +68,7 @@ typedef struct {
     char     opendev_model[24];
     uint8_t  terminal_sessions;
     char     terminal_host[32];
+    char     terminal_requested_host[64];
     char     editor_file[32];
     uint32_t editor_file_kb;
     bool     agy_bridge_online;
