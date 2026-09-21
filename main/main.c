@@ -5,6 +5,8 @@
 #include "devos_storage.h"
 #include "bsp_tab5.h"
 #include "tab5_keyboard.h"
+#include "devos_net.h"
+#include "microlink.h"
 
 /* Apps */
 #include "apps/app_launcher/app_launcher.h"
@@ -69,6 +71,11 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             return 0;
         }
 
+        if (((devos_mods & (DEVOS_MOD_ALT | DEVOS_MOD_CTRL))) && sym >= SDLK_1 && sym <= SDLK_6) {
+            devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), DEVOS_MOD_FN);
+            return 0;
+        }
+
         /* Pass general keys */
         if (sym >= SDLK_1 && sym <= SDLK_6) {
             devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), devos_mods);
@@ -102,7 +109,10 @@ static void devos_system_bringup(void)
     /* 5. devOS Core engine initialization */
     devos_core_init();
 
-    /* 6. Register all applications */
+    /* 6. Network & Transparent Socket Routing bring-up */
+    devos_net_init();
+
+    /* 7. Register all applications */
     devos_core_register_app(app_launcher_get_descriptor());
     devos_core_register_app(app_opendev_get_descriptor());
     devos_core_register_app(app_terminal_get_descriptor());

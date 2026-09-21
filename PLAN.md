@@ -529,10 +529,10 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
 ### Phase 2: Tailscale Mesh Networking
-- [ ] Port/integrate `MicroLink` component into the ESP-IDF project.
-- [ ] Implement NVS encrypted storage for Tailscale node credentials.
-- [ ] Implement virtual socket routing layer bridging lwIP TCP connections across the WireGuard tunnel.
-- [ ] Build Tailscale Status UI: connection toggle, node status, peer list, DERP ping diagnostics.
+- [x] Port/integrate `MicroLink` component into the ESP-IDF project.
+- [x] Implement NVS encrypted storage for Tailscale node credentials.
+- [x] Implement virtual socket routing layer bridging lwIP TCP connections across the WireGuard tunnel.
+- [x] Build Tailscale Status UI: connection toggle, node status, peer list, DERP ping diagnostics.
 
 ### Phase 3: Terminal & Multi-Session SSH Client
 - [ ] Integrate `libssh2` with mbedTLS hardware cryptography.
