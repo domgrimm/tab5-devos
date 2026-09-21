@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "devos_mdview.c"
+#include "src/widgets/span/lv_span_private.h"
 
 /* Link stubs for devOS fns referenced by non-test code in the unit */
 const lv_font_t lv_font_nimbus_mono_14;
@@ -138,6 +139,43 @@ int main(void)
     CHECK(devos_md_trunc_ok(e4, 3) == 1);
     CHECK(devos_md_trunc_ok(e4, 2) == 1);
     CHECK(devos_md_trunc_ok(e4, 1) == 1);
+
+    /* devos_md_render block test: ensure headings, lists, fences don't duplicate */
+    lv_init();
+    lv_display_t *disp = lv_display_create(1280, 720);
+    static uint32_t buf[1280 * 20];
+    lv_display_set_buffers(disp, buf, NULL, sizeof(buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_obj_t *scr = lv_display_get_screen_active(disp);
+    lv_obj_t *parent = lv_obj_create(scr);
+
+    const char *test_doc =
+        "# Header One\r\n"
+        "\r\n"
+        "Paragraph text.\r\n"
+        "\r\n"
+        "## Header Two\r\n"
+        "- Bullet 1\r\n"
+        "- Bullet 2\r\n"
+        "1. Ordered 1\r\n"
+        "2. Ordered 2\r\n";
+
+    devos_md_render(parent, test_doc);
+    /* Blocks: H1, Para, H2, Bullet1, Bullet2, Ordered1, Ordered2 = 7 blocks */
+    uint32_t block_count = lv_obj_get_child_count(parent);
+    CHECK(block_count == 7);
+
+    for (uint32_t b = 0; b < block_count; b++) {
+        lv_obj_t *blk = lv_obj_get_child(parent, b);
+        uint32_t sc = lv_spangroup_get_span_count(blk);
+        CHECK(sc >= 1);
+        lv_span_t *sp = lv_spangroup_get_child(blk, 0);
+        /* Ensure no heading was duplicated as raw markdown starting with # */
+        if (b == 0) {
+            CHECK(strcmp(sp->txt, "Header One") == 0);
+        } else if (b == 2) {
+            CHECK(strcmp(sp->txt, "Header Two") == 0);
+        }
+    }
 
     if (failures == 0) printf("md unit tests: ALL PASS\n");
     return failures != 0;
