@@ -700,9 +700,32 @@ static bool tailscale_handle_key(uint32_t key, uint8_t modifiers)
     return false;
 }
 
+static int tailscale_telemetry_lines(char lines[3][64])
+{
+    microlink_status_t st;
+    if (microlink_get_status(&st) != 0 ||
+        st.state != MICROLINK_STATE_CONNECTED) {
+        snprintf(lines[0], sizeof(lines[0]), "* Disconnected");
+        snprintf(lines[1], sizeof(lines[1]), "* Mesh inactive");
+        snprintf(lines[2], sizeof(lines[2]), "* Direct LAN routing");
+        return 3;
+    }
+    int online = 0;
+    for (int i = 0; i < st.peer_count; i++) {
+        if (st.peers[i].is_online) online++;
+    }
+    snprintf(lines[0], sizeof(lines[0]), "* Peers: %d online", online);
+    snprintf(lines[1], sizeof(lines[1]), "* DERP: %s", st.derp_relay_name);
+    snprintf(lines[2], sizeof(lines[2]), "* IP: %s", st.assigned_ip);
+    return 3;
+}
+
 devos_app_descriptor_t *app_tailscale_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_TAILSCALE;
+    app_descriptor.uid = "tailscale";
+    app_descriptor.icon = LV_SYMBOL_LOOP;
+    app_descriptor.category = "network";
     app_descriptor.name = "Tailscale";
     app_descriptor.title = "Tailscale Mesh";
     app_descriptor.subtitle = "WireGuard Private Network";
@@ -711,6 +734,7 @@ devos_app_descriptor_t *app_tailscale_get_descriptor(void)
     app_descriptor.show = tailscale_show;
     app_descriptor.hide = tailscale_hide;
     app_descriptor.handle_key = tailscale_handle_key;
+    app_descriptor.get_telemetry_lines = tailscale_telemetry_lines;
 
     return &app_descriptor;
 }

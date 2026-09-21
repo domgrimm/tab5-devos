@@ -16,16 +16,29 @@ extern "C" {
 #define DEVOS_MOD_ALT       0x04
 #define DEVOS_MOD_FN        0x08
 
+/* Registry capacity (Phase 7: up to 32 self-registering apps) */
+#define DEVOS_MAX_APPS 32
+#define DEVOS_MAX_UID 24
+
+/* Synthetic page keys (no ASCII equivalent; see sim key watcher) */
+#define DEVOS_KEY_PGUP ((uint32_t)0x10001u)
+#define DEVOS_KEY_PGDN ((uint32_t)0x10002u)
+
 typedef struct {
-    devos_app_id_t id;
-    const char *name;
-    const char *title;
+    devos_app_id_t id;          /* small int, back-compat switch key */
+    const char *uid;            /* stable string id ("terminal") for layout */
+    const char *name;           /* short tile name */
+    const char *title;          /* tile title */
     const char *subtitle;
+    const char *icon;           /* LVGL symbol string, may be NULL */
+    const char *category;       /* may be NULL */
     lv_obj_t *screen;
     void (*init)(void);
     void (*show)(void);
     void (*hide)(void);
     bool (*handle_key)(uint32_t key, uint8_t modifiers);
+    /* Live tile lines; NULL = static subtitle fallback. Return count. */
+    int (*get_telemetry_lines)(char lines[3][64]);
 } devos_app_descriptor_t;
 
 typedef struct {
@@ -83,6 +96,11 @@ void devos_core_switch_app(devos_app_id_t app_id);
 devos_app_id_t devos_core_get_current_app(void);
 devos_app_id_t devos_core_get_previous_app(void);
 devos_app_descriptor_t *devos_core_get_app(devos_app_id_t app_id);
+/* Registry traversal (registration order) */
+int devos_core_app_count(void);
+devos_app_descriptor_t *devos_core_get_app_at(int index);
+devos_app_descriptor_t *devos_core_find_app(const char *uid);
+void devos_core_switch_app_by_uid(const char *uid);
 
 /* Telemetry API */
 const devos_telemetry_t *devos_telemetry_get(void);

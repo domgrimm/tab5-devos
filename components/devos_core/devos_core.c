@@ -4,7 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static devos_app_descriptor_t *registered_apps[DEVOS_APP_COUNT] = {NULL};
+static devos_app_descriptor_t *registered_apps[DEVOS_MAX_APPS] = {NULL};
+static int registered_count = 0;
 static devos_app_id_t current_app_id = DEVOS_APP_LAUNCHER;
 static devos_app_id_t previous_app_id = DEVOS_APP_LAUNCHER;
 
@@ -86,17 +87,73 @@ void devos_core_init(void)
 
 void devos_core_register_app(devos_app_descriptor_t *app)
 {
-    if (app && app->id < DEVOS_APP_COUNT) {
-        registered_apps[app->id] = app;
-        if (app->init) {
-            app->init();
+    if (!app || registered_count >= DEVOS_MAX_APPS) return;
+    /* ponytail: id/uid collision replaces (re-register on reboot is harmless) */
+    for (int i = 0; i < registered_count; i++) {
+        bool match = false;
+        if (app->uid && registered_apps[i]->uid && strcmp(registered_apps[i]->uid, app->uid) == 0) {
+            match = true;
+        } else if (app->id != DEVOS_APP_LAUNCHER && registered_apps[i]->id == app->id) {
+            match = true;
         }
+        if (match) {
+            registered_apps[i] = app;
+            if (app->init) app->init();
+            return;
+        }
+    }
+    /* Auto-assign non-zero ID if not assigned and not launcher */
+    if (app->id == DEVOS_APP_LAUNCHER && (!app->uid || strcmp(app->uid, "launcher") != 0)) {
+        app->id = (devos_app_id_t)(100 + registered_count);
+    }
+    registered_apps[registered_count++] = app;
+    if (app->init) {
+        app->init();
+    }
+}
+
+static devos_app_descriptor_t *find_by_id(devos_app_id_t app_id)
+{
+    for (int i = 0; i < registered_count; i++) {
+        if (registered_apps[i] && registered_apps[i]->id == app_id) {
+            return registered_apps[i];
+        }
+    }
+    return NULL;
+}
+
+int devos_core_app_count(void) { return registered_count; }
+
+devos_app_descriptor_t *devos_core_get_app_at(int index)
+{
+    if (index < 0 || index >= registered_count) return NULL;
+    return registered_apps[index];
+}
+
+devos_app_descriptor_t *devos_core_find_app(const char *uid)
+{
+    if (!uid) return NULL;
+    for (int i = 0; i < registered_count; i++) {
+        if (registered_apps[i] && registered_apps[i]->uid &&
+            strcmp(registered_apps[i]->uid, uid) == 0) {
+            return registered_apps[i];
+        }
+    }
+    return NULL;
+}
+
+void devos_core_switch_app_by_uid(const char *uid)
+{
+    devos_app_descriptor_t *app = devos_core_find_app(uid);
+    if (app) {
+        devos_core_switch_app(app->id);
     }
 }
 
 void devos_core_switch_app(devos_app_id_t app_id)
 {
-    if (app_id >= DEVOS_APP_COUNT || !registered_apps[app_id]) {
+    devos_app_descriptor_t *target = find_by_id(app_id);
+    if (!target) {
         return;
     }
 
@@ -105,25 +162,24 @@ void devos_core_switch_app(devos_app_id_t app_id)
     }
 
     /* Hide currently active app */
-    if (current_app_id < DEVOS_APP_COUNT && registered_apps[current_app_id]) {
-        if (registered_apps[current_app_id]->hide) {
-            registered_apps[current_app_id]->hide();
-        }
-        if (registered_apps[current_app_id]->screen) {
-            lv_obj_add_flag(registered_apps[current_app_id]->screen, LV_OBJ_FLAG_HIDDEN);
+    devos_app_descriptor_t *cur = find_by_id(current_app_id);
+    if (cur) {
+        if (cur->hide) cur->hide();
+        if (cur->screen) {
+            lv_obj_add_flag(cur->screen, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
-    previous_app_id = (current_app_id < DEVOS_APP_COUNT) ? current_app_id : DEVOS_APP_LAUNCHER;
+    previous_app_id = current_app_id;
     current_app_id = app_id;
 
     /* Show new app */
-    if (registered_apps[current_app_id]->screen) {
-        lv_obj_remove_flag(registered_apps[current_app_id]->screen, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(registered_apps[current_app_id]->screen);
+    if (target->screen) {
+        lv_obj_remove_flag(target->screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(target->screen);
     }
-    if (registered_apps[current_app_id]->show) {
-        registered_apps[current_app_id]->show();
+    if (target->show) {
+        target->show();
     }
 }
 
@@ -139,10 +195,7 @@ devos_app_id_t devos_core_get_previous_app(void)
 
 devos_app_descriptor_t *devos_core_get_app(devos_app_id_t app_id)
 {
-    if (app_id < DEVOS_APP_COUNT) {
-        return registered_apps[app_id];
-    }
-    return NULL;
+    return find_by_id(app_id);
 }
 
 const devos_telemetry_t *devos_telemetry_get(void)
@@ -187,9 +240,9 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 3. Global Hotkey: Switch Apps (Fn + 1 .. Fn + 6) */
+    /* 3. Global Hotkey: Switch Apps (Fn + 1 .. Fn + 8) */
     if (modifiers & DEVOS_MOD_FN) {
-        if (key >= '1' && key <= '6') {
+        if (key >= '1' && key <= '8') {
             devos_app_id_t target = (devos_app_id_t)(key - '0');
             devos_core_switch_app(target);
             return true;
@@ -203,8 +256,9 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
     }
 
     /* 5. Forward to active app handler */
-    if (registered_apps[current_app_id] && registered_apps[current_app_id]->handle_key) {
-        if (registered_apps[current_app_id]->handle_key(key, modifiers)) {
+    {
+        devos_app_descriptor_t *cur = find_by_id(current_app_id);
+        if (cur && cur->handle_key && cur->handle_key(key, modifiers)) {
             return true;
         }
     }

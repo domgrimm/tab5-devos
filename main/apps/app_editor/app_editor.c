@@ -875,9 +875,21 @@ static void editor_hide(void)
     if (s_dirty) save_file();
 }
 
+static int editor_telemetry_lines(char lines[3][64])
+{
+    const char *fn = app_editor_get_active_filename();
+    snprintf(lines[0], sizeof(lines[0]), "* %s", fn && *fn ? fn : "(no file)");
+    snprintf(lines[1], sizeof(lines[1]), "* Markdown notes");
+    snprintf(lines[2], sizeof(lines[2]), "* Split preview");
+    return 3;
+}
+
 devos_app_descriptor_t *app_editor_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_EDITOR;
+    app_descriptor.uid = "editor";
+    app_descriptor.icon = LV_SYMBOL_DIRECTORY;
+    app_descriptor.category = "notes";
     app_descriptor.name = "Editor";
     app_descriptor.title = "Markdown Editor";
     app_descriptor.subtitle = "Distraction-Free Notes & Docs";
@@ -886,6 +898,7 @@ devos_app_descriptor_t *app_editor_get_descriptor(void)
     app_descriptor.show = editor_show;
     app_descriptor.hide = editor_hide;
     app_descriptor.handle_key = editor_handle_key;
+    app_descriptor.get_telemetry_lines = editor_telemetry_lines;
 
     return &app_descriptor;
 }

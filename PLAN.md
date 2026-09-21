@@ -592,14 +592,14 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement OTA (Over-The-Air) firmware update mechanism (`components/devos_ota/`): manifest version checks, LAN staging server support, checksum validation, and dry-run simulation mode. Unit tested in `tools/ota_test.c`.
 
 ### Phase 7: Modular App Framework & Scalable Paginated Home Screen
-- [ ] Refactor `devos_app_descriptor_t` in `components/devos_core/` into an extensible, dynamic app registry supporting up to 32 apps with unique string identifiers, icons, categories, and telemetry callbacks (`get_telemetry_lines()`).
-- [ ] Implement self-registration API (`devos_core_register_app()`) allowing new apps to be dropped into `main/apps/` without modifying core OS dispatching or launcher source files.
-- [ ] Redesign Home Screen (`app_launcher`) grid with compact tile dimensions (4 columns × 2 rows = 8 visible tiles per page).
-- [ ] Implement multi-page carousel / pagination container with horizontal gesture snapping, swipe animations, and page indicator dots (`● ○ ○`).
-- [ ] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Fn + ←/→`) page flipping.
-- [ ] Generalize tile arrangement mode (`Fn + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
-- [ ] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
-- [ ] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
+- [x] Refactor `devos_app_descriptor_t` in `components/devos_core/` into an extensible, dynamic app registry supporting up to 32 apps with unique string identifiers, icons, categories, and telemetry callbacks (`get_telemetry_lines()`).
+- [x] Implement self-registration API (`devos_core_register_app()`) allowing new apps to be dropped into `main/apps/` without modifying core OS dispatching or launcher source files.
+- [x] Redesign Home Screen (`app_launcher`) grid with compact tile dimensions (4 columns × 2 rows = 8 visible tiles per page).
+- [x] Implement multi-page carousel / pagination container with horizontal gesture snapping, swipe animations, and page indicator dots (`● ○ ○`).
+- [x] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Fn + ←/→`) page flipping.
+- [x] Generalize tile arrangement mode (`Fn + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
+- [x] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
+- [x] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 
 ---
 
@@ -644,6 +644,7 @@ tab5-devos/
 │   ├── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
 │   ├── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
 │   ├── opendev_test.c             # Host-side unit test for the OpenCode engine
+│   ├── modular_launcher_test.c    # Host-side unit test for modular app registry & pagination
 │   └── camera_qr_test.c           # Host-side unit test for Tab5 camera & QR decoder
 ```
 

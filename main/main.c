@@ -19,6 +19,7 @@
 #include "apps/app_tailscale/app_tailscale.h"
 #include "apps/app_antigravity/app_antigravity.h"
 #include "apps/app_settings/app_settings.h"
+#include "apps/app_template/app_template.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -78,8 +79,8 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             return 0;
         }
 
-        /* Ctrl + 1..6 or F1..F6 simulates Fn + 1..6 (Global App Switcher) */
-        if ((devos_mods & DEVOS_MOD_CTRL) && sym >= SDLK_1 && sym <= SDLK_6) {
+        /* Ctrl + 1..8 simulates Fn + 1..8 (Global App Switcher) */
+        if ((devos_mods & DEVOS_MOD_CTRL) && sym >= SDLK_1 && sym <= SDLK_8) {
             devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), DEVOS_MOD_FN);
             return 0;
         }
@@ -103,6 +104,15 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key('\r', devos_mods);
             return 0;
         }
+        /* ponytail: PageUp/PageDown have no ASCII; distinct codes for pager */
+        if (sym == SDLK_PAGEUP) {
+            devos_core_dispatch_key(DEVOS_KEY_PGUP, DEVOS_MOD_NONE);
+            return 0;
+        }
+        if (sym == SDLK_PAGEDOWN) {
+            devos_core_dispatch_key(DEVOS_KEY_PGDN, DEVOS_MOD_NONE);
+            return 0;
+        }
         if (sym == SDLK_BACKSPACE) {
             devos_core_dispatch_key('\b', devos_mods);
             return 0;
@@ -119,12 +129,16 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key(LV_KEY_DOWN, devos_mods);
             return 0;
         }
+        /* ponytail: no Fn key on PC keyboards; Ctrl+Arrow stands in for
+         * Fn+Arrow (page flip on the launcher) in the simulator */
         if (sym == SDLK_LEFT) {
-            devos_core_dispatch_key(LV_KEY_LEFT, devos_mods);
+            devos_core_dispatch_key(LV_KEY_LEFT,
+                (devos_mods & DEVOS_MOD_CTRL) ? DEVOS_MOD_FN : devos_mods);
             return 0;
         }
         if (sym == SDLK_RIGHT) {
-            devos_core_dispatch_key(LV_KEY_RIGHT, devos_mods);
+            devos_core_dispatch_key(LV_KEY_RIGHT,
+                (devos_mods & DEVOS_MOD_CTRL) ? DEVOS_MOD_FN : devos_mods);
             return 0;
         }
 
@@ -178,13 +192,14 @@ static void devos_system_bringup(void)
     ssh_port_init();
 
     /* 8. Register all applications */
-    devos_core_register_app(app_launcher_get_descriptor());
     devos_core_register_app(app_opendev_get_descriptor());
     devos_core_register_app(app_terminal_get_descriptor());
     devos_core_register_app(app_editor_get_descriptor());
     devos_core_register_app(app_tailscale_get_descriptor());
     devos_core_register_app(app_antigravity_get_descriptor());
     devos_core_register_app(app_settings_get_descriptor());
+    app_template_register_demo_apps();
+    devos_core_register_app(app_launcher_get_descriptor());
 
     /* 7. Create persistent Top Status Bar */
     devos_top_bar_create(lv_layer_top());
