@@ -541,7 +541,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement ANSI/VT100 terminal widget in LVGL (dynamic 160×45 / 128×45 character grid).
 - [x] Implement real-time PTY window resizing (`TIOCSWINSZ` / SIGWINCH) on sidebar toggle.
 - [x] Map Tab5 physical keyboard to VT100 control sequences (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, arrow keys, Esc, Tab, `Alt + 1..9` session switch).
-- [x] Add session bookmarking and SSH key management from `/sdcard/.ssh/`.
+- [x] Add session bookmarking and SSH key management from `/sdcard/.ssh/` (complete CRUD: `[x]` delete button on cards, `[Save Bookmark]` in Quick Connect modal, and `[+ Add Bookmark]` bottom action button with dedicated modal mode).
 - [x] Live interactive SSH PTY session engine: real shell execution (`root@...`), concurrent sessions, focus trap, and seamless peer shell launching.
 
 ### Phase 4: Markdown Editor
