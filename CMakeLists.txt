@@ -36,6 +36,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/microlink
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/opendev_client
     )
 
     # Sources
@@ -59,6 +60,7 @@ else()
         components/microlink/microlink.c
         components/devos_net/devos_net.c
         components/libssh2_port/libssh2_port.c
+        components/opendev_client/opendev_client.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})

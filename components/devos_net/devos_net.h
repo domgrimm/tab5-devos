@@ -41,6 +41,11 @@ int devos_net_socket_send(int sock, const void *data, size_t len);
 int devos_net_socket_recv(int sock, void *buf, size_t max_len, int timeout_ms);
 int devos_net_socket_close(int sock);
 
+/* Non-blocking variant: start returns an in-progress fd (or -1); poll wait
+ * until it returns 0 (connected) or -1 (failed). 1 means keep polling. */
+int devos_net_socket_connect_start(const char *host, int port);
+int devos_net_socket_connect_wait(int sock, int timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif
