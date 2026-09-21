@@ -7,6 +7,11 @@
 #include <ctype.h>
 #include <dirent.h>
 
+/* Nimbus Mono 14: regular-weight mono matching Montserrat 14 body size.
+ * Generated via lv_font_conv from NimbusMonoPS-Regular.otf (see file header
+ * in components/devos_ui/lv_font_nimbus_mono_14.c to regenerate). */
+LV_FONT_DECLARE(lv_font_nimbus_mono_14);
+
 #define EDITOR_MAX_FILES 12
 #define EDITOR_NAME_MAX 64
 #define EDITOR_BUF_MAX (16 * 1024)
@@ -14,6 +19,7 @@
 #define MD_TABLE_ROWS 18
 #define MD_TABLE_COLS 6
 #define MD_CELL_MAX 28
+#define MD_CELL_PAD 6
 
 typedef enum {
     EDITOR_VIEW_EDIT = 0,   /* Full editor */
@@ -287,7 +293,8 @@ static void apply_layout(void)
  *
  * Blocks: ATX headings, fenced code, tables, hr, quotes, ul/ol/task lists,
  * paragraphs. Inline: **bold**, *italic*, ~~strike~~, `code`, links, images,
- * autolinks, backslash escapes.
+ * autolinks, backslash escapes. Code and tables use Nimbus Mono 14, a
+ * regular-weight mono sized to match Montserrat 14 body text.
  *
  * Single regular font in the build, so emphasis falls back honestly:
  *   bold   -> underline (typewriter emphasis; links use color-only, no clash)
@@ -649,7 +656,7 @@ static void md_emit_code_block(int *y, const devos_palette_t *p)
     lv_obj_set_style_bg_opa(sg, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(sg, 4, 0);
     lv_obj_set_style_pad_all(sg, 8, 0);
-    md_add_span(sg, s_codebuf, s_codelen, &lv_font_unscii_16,
+    md_add_span(sg, s_codebuf, s_codelen, &lv_font_nimbus_mono_14,
                 p->text_primary, LV_TEXT_DECOR_NONE);
     md_finish_block(sg, y, 8);
     s_codelen = 0;
@@ -735,42 +742,23 @@ static bool md_is_delim_line(const char *s)
     return true;
 }
 
-static void md_emit_padded(lv_obj_t *sg, const char *cell, int width, int align,
-                           const lv_font_t *font, lv_color_t color)
+/* Padded string for table cells (lv_table_set_cell_value copies) */
+static size_t md_pad_string(const char *cell, int width, int align,
+                            char *out, size_t cap)
 {
-    static char padded[MD_CELL_MAX + 1];
     size_t n = strlen(cell);
     if ((int)n > width) n = md_trunc_ok(cell, (size_t)width);
     int fill = width - (int)n;
     int left = align == 2 ? fill : (align == 1 ? fill / 2 : 0);
     int right = fill - left;
-    int o = 0;
-    while (left-- > 0) padded[o++] = ' ';
-    memcpy(padded + o, cell, n);
-    o += n;
-    while (right-- > 0) padded[o++] = ' ';
-    padded[o] = '\0';
-    md_add_span(sg, padded, o, font, color, LV_TEXT_DECOR_NONE);
-}
-
-/* +---+ grid border row for tables */
-static void md_grid_border(lv_obj_t *sg, const int *widths, int cols,
-                           const devos_palette_t *p, char *rowbuf, size_t cap)
-{
     size_t o = 0;
-    rowbuf[o++] = '+';
-    for (int c = 0; c < cols && o + 1 < cap; c++) {
-        for (int k = 0; k < widths[c] + 2 && o + 1 < cap; k++) {
-            rowbuf[o++] = '-';
-        }
-        rowbuf[o++] = '+';
-    }
-    if (o >= cap) o = cap - 1;
-    rowbuf[o] = '\0';
-    md_add_span(sg, rowbuf, o, &lv_font_unscii_16,
-                p->surface_border, LV_TEXT_DECOR_NONE);
-    md_add_span(sg, "\n", 1, &lv_font_unscii_16,
-                p->surface_border, LV_TEXT_DECOR_NONE);
+    while (left-- > 0 && o + 1 < cap) out[o++] = ' ';
+    if (o + n + 1 > cap) n = cap - o - 1;
+    memcpy(out + o, cell, n);
+    o += n;
+    while (right-- > 0 && o + 1 < cap) out[o++] = ' ';
+    out[o] = '\0';
+    return o;
 }
 
 static void render_preview(void)
@@ -962,6 +950,13 @@ static void render_preview(void)
                 }
             }
             if (valid) {
+                /* ponytail: LVGL 9.2 tables style every cell from ITEMS with
+                 * no per-cell override, so the accent header is its own
+                 * 1-row table stacked on the body table. Shared column
+                 * widths; alignment is space padding (mono font aligns it). */
+                int glyph_adv = lv_text_get_width("0000000000", 10,
+                                                  &lv_font_nimbus_mono_14, 0) / 10;
+                if (glyph_adv < 1) glyph_adv = 8;
                 int widths[MD_TABLE_COLS] = {0};
                 for (int r = 0; r < rows; r++) {
                     if (r == 1) continue; /* delimiter */
@@ -971,59 +966,84 @@ static void render_preview(void)
                         if (w > widths[c]) widths[c] = w;
                     }
                 }
-                /* ponytail: shrink widest cols so rows never wrap-misalign */
-                {
-                    int glyph_w = lv_font_get_glyph_width(&lv_font_unscii_16,
-                                                          '0', '0');
-                    if (glyph_w < 1) glyph_w = 8;
-                    int max_total = (int)lv_obj_get_content_width(preview_scroll);
-                    max_total = (max_total - 16) / glyph_w;
-                    if (max_total < 20) max_total = 20;
-                    for (;;) {
-                        int total = 1;
-                        for (int c = 0; c < cols; c++) total += widths[c] + 3;
-                        int widest = -1;
-                        for (int c = 0; c < cols; c++) {
-                            if (widths[c] > 4 &&
-                                (widest < 0 || widths[c] > widths[widest])) {
-                                widest = c;
-                            }
-                        }
-                        if (total <= max_total || widest < 0) break;
-                        widths[widest]--;
-                    }
-                }
-                lv_obj_t *sg = md_new_block(y);
-                lv_obj_set_style_bg_color(sg, p->surface, 0);
-                lv_obj_set_style_bg_opa(sg, LV_OPA_COVER, 0);
-                lv_obj_set_style_radius(sg, 4, 0);
-                lv_obj_set_style_pad_all(sg, 8, 0);
-                /* ASCII grid: top border, header, separator, body, bottom */
-                md_grid_border(sg, widths, cols, p, rowbuf, sizeof(rowbuf));
-                for (int r = 0; r < rows; r++) {
-                    if (r == 1) continue; /* delimiter row never renders */
-                    lv_color_t col = r == 0 ? p->accent_primary : p->text_primary;
-                    md_add_span(sg, "| ", 2, &lv_font_unscii_16, col,
-                                LV_TEXT_DECOR_NONE);
+                /* Shrink widest cols (in px, incl. cell padding) to fit.
+                 * ponytail: columns share the content width minus the card
+                 * chrome (MAIN pad 16 + MAIN border 2). */
+                int max_px = (int)lv_obj_get_content_width(preview_scroll) - 18;
+                if (max_px < 160) max_px = 160;
+                for (;;) {
+                    int total = 0;
                     for (int c = 0; c < cols; c++) {
-                        /* ponytail: cells render stripped; styles would break columns */
-                        const char *cell = c < rowcounts[r] ? cells[r][c] : "";
-                        md_strip_inline(cell, strlen(cell),
-                                        rowbuf, sizeof(rowbuf));
-                        md_emit_padded(sg, rowbuf, widths[c], aligns[c],
-                                       &lv_font_unscii_16, col);
-                        md_add_span(sg, c + 1 < cols ? " | " : " |", c + 1 < cols ? 3 : 2,
-                                    &lv_font_unscii_16, col, LV_TEXT_DECOR_NONE);
+                        total += widths[c] * glyph_adv + 2 * MD_CELL_PAD;
                     }
-                    md_add_span(sg, "\n", 1, &lv_font_unscii_16, col,
-                                LV_TEXT_DECOR_NONE);
-                    if (r == 0) {
-                        md_grid_border(sg, widths, cols, p, rowbuf,
-                                       sizeof(rowbuf));
+                    int widest = -1;
+                    for (int c = 0; c < cols; c++) {
+                        if (widths[c] > 4 &&
+                            (widest < 0 || widths[c] > widths[widest])) {
+                            widest = c;
+                        }
                     }
+                    if (total <= max_px || widest < 0) break;
+                    widths[widest]--;
                 }
-                md_grid_border(sg, widths, cols, p, rowbuf, sizeof(rowbuf));
-                md_finish_block(sg, &y, 8);
+                int body_rows = 0;
+                for (int r = 2; r < rows; r++) body_rows++;
+                for (int pass = 0; pass < 2; pass++) {
+                    bool is_head = pass == 0;
+                    int nrows = is_head ? 1 : body_rows;
+                    if (nrows == 0) continue;
+                    lv_obj_t *tbl = lv_table_create(preview_scroll);
+                    int tw = 18; /* MAIN pad 16 + MAIN border 2 */
+                    for (int c = 0; c < cols; c++) {
+                        tw += widths[c] * glyph_adv + 2 * MD_CELL_PAD;
+                    }
+                    lv_obj_set_size(tbl, tw, LV_SIZE_CONTENT);
+                    lv_obj_set_pos(tbl, 0, y);
+                    lv_obj_set_style_bg_color(tbl, p->surface, 0);
+                    lv_obj_set_style_bg_opa(tbl, LV_OPA_COVER, 0);
+                    lv_obj_set_style_border_color(tbl, p->surface_border, 0);
+                    lv_obj_set_style_border_width(tbl, 1, 0);
+                    lv_obj_set_style_radius(tbl, 4, 0);
+                    lv_obj_set_style_pad_all(tbl, 8, 0);
+                    lv_obj_set_style_text_font(tbl, &lv_font_nimbus_mono_14,
+                                               LV_PART_ITEMS);
+                    lv_obj_set_style_text_color(tbl,
+                        is_head ? p->accent_primary : p->text_primary,
+                        LV_PART_ITEMS);
+                    lv_obj_set_style_border_color(tbl, p->surface_border,
+                                                  LV_PART_ITEMS);
+                    lv_obj_set_style_border_width(tbl, 1, LV_PART_ITEMS);
+                    lv_obj_set_style_border_side(tbl, LV_BORDER_SIDE_FULL,
+                                                 LV_PART_ITEMS);
+                    lv_obj_set_style_pad_left(tbl, MD_CELL_PAD, LV_PART_ITEMS);
+                    lv_obj_set_style_pad_right(tbl, MD_CELL_PAD, LV_PART_ITEMS);
+                    lv_obj_set_style_pad_top(tbl, 4, LV_PART_ITEMS);
+                    lv_obj_set_style_pad_bottom(tbl, 4, LV_PART_ITEMS);
+                    lv_obj_clear_flag(tbl, LV_OBJ_FLAG_SCROLLABLE);
+                    lv_table_set_column_count(tbl, (uint32_t)cols);
+                    lv_table_set_row_count(tbl, (uint32_t)nrows);
+                    for (int c = 0; c < cols; c++) {
+                        lv_table_set_column_width(tbl, (uint32_t)c,
+                            (int32_t)(widths[c] * glyph_adv + 2 * MD_CELL_PAD));
+                    }
+                    for (int r = 0; r < nrows; r++) {
+                        int src = is_head ? 0 : r + 2;
+                        for (int c = 0; c < cols; c++) {
+                            /* ponytail: LVGL table cells are plain text,
+                             * so strip markers (no spans to break) */
+                            const char *cell = c < rowcounts[src] ? cells[src][c] : "";
+                            md_strip_inline(cell, strlen(cell),
+                                            rowbuf, sizeof(rowbuf));
+                            char padded[MD_CELL_MAX + 1];
+                            md_pad_string(rowbuf, widths[c], aligns[c],
+                                          padded, sizeof(padded));
+                            lv_table_set_cell_value(tbl, (uint32_t)r,
+                                                    (uint32_t)c, padded);
+                        }
+                    }
+                    lv_obj_update_layout(tbl);
+                    y += lv_obj_get_height(tbl) + (is_head ? 6 : 8);
+                }
                 in_ol = false;
                 if (!tt) break; /* group ran to end of buffer */
                 cur = tt;
