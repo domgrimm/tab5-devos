@@ -1441,9 +1441,23 @@ static void opendev_hide(void)
     if (modal_cam) lv_obj_add_flag(modal_cam, LV_OBJ_FLAG_HIDDEN);
 }
 
+static int opendev_telemetry_lines(char lines[3][64])
+{
+    snprintf(lines[0], sizeof(lines[0]), "* %s", opendev_client_status_text());
+    char host[OPENDEV_HOST_MAX];
+    int port = 0;
+    opendev_client_get_config(host, sizeof(host), &port, NULL, NULL, 0);
+    snprintf(lines[1], sizeof(lines[1]), "* %s:%d", host, port);
+    snprintf(lines[2], sizeof(lines[2]), "* REST/SSE agent");
+    return 3;
+}
+
 devos_app_descriptor_t *app_opendev_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_OPENDEV;
+    app_descriptor.uid = "opendev";
+    app_descriptor.icon = LV_SYMBOL_PLAY;
+    app_descriptor.category = "agents";
     app_descriptor.name = "OpenDev";
     app_descriptor.title = "OpenDev / OpenChamber";
     app_descriptor.subtitle = "Remote AI Coding Agent";
@@ -1452,6 +1466,7 @@ devos_app_descriptor_t *app_opendev_get_descriptor(void)
     app_descriptor.show = opendev_show;
     app_descriptor.hide = opendev_hide;
     app_descriptor.handle_key = opendev_handle_key;
+    app_descriptor.get_telemetry_lines = opendev_telemetry_lines;
 
     return &app_descriptor;
 }

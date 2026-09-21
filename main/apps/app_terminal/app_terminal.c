@@ -1474,9 +1474,22 @@ static void terminal_hide(void)
 {
 }
 
+static int terminal_telemetry_lines(char lines[3][64])
+{
+    const devos_telemetry_t *t = devos_telemetry_get();
+    snprintf(lines[0], sizeof(lines[0]), "* %d Session%s", t->terminal_sessions,
+             t->terminal_sessions == 1 ? "" : "s");
+    snprintf(lines[1], sizeof(lines[1]), "* %s", t->terminal_host);
+    snprintf(lines[2], sizeof(lines[2]), "* SSH + PTY shell");
+    return 3;
+}
+
 devos_app_descriptor_t *app_terminal_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_TERMINAL;
+    app_descriptor.uid = "terminal";
+    app_descriptor.icon = LV_SYMBOL_POWER;
+    app_descriptor.category = "systems";
     app_descriptor.name = "Terminal";
     app_descriptor.title = "Terminal / SSH";
     app_descriptor.subtitle = "Multi-Session ANSI PTY Shell";
@@ -1485,6 +1498,7 @@ devos_app_descriptor_t *app_terminal_get_descriptor(void)
     app_descriptor.show = terminal_show;
     app_descriptor.hide = terminal_hide;
     app_descriptor.handle_key = terminal_handle_key;
+    app_descriptor.get_telemetry_lines = terminal_telemetry_lines;
 
     return &app_descriptor;
 }

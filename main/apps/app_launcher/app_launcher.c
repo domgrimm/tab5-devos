@@ -7,267 +7,335 @@
 
 #define LAYOUT_CONFIG_FILE TAB5_SD_MOUNT_POINT "/.devos/launcher_layout.json"
 
+#define TILES_PER_PAGE  8
+#define GRID_COLS       4
+#define GRID_ROWS       2
+#define TILE_WIDTH      280
+#define TILE_HEIGHT     210
+#define COL_GAP         30
+#define ROW_GAP         14
+#define MARGIN_X        35
+#define ROW_Y0          6
+#define ROW_Y1          (ROW_Y0 + TILE_HEIGHT + ROW_GAP) /* 230 */
+#define CAROUSEL_HEIGHT 444
+
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 
-/* Telemetry labels */
+/* Telemetry header strip */
 static lv_obj_t *telemetry_box = NULL;
 static lv_obj_t *lbl_clock_date = NULL;
 static lv_obj_t *lbl_net_power = NULL;
 static lv_obj_t *lbl_mem_cpu = NULL;
 
-/* Arrange Mode Controls */
+/* Arrange Banner */
+static lv_obj_t *banner_arrange = NULL;
+static lv_obj_t *lbl_arrange_banner = NULL;
+
+/* Multi-Page Carousel & Container */
+static lv_obj_t *carousel = NULL;
+static lv_obj_t *page_objs[4] = {NULL};
+
+/* Compact Card Widgets */
+typedef struct {
+    lv_obj_t *card_btn;
+    lv_obj_t *lbl_icon;
+    lv_obj_t *lbl_title;
+    lv_obj_t *lbl_subtitle;
+    lv_obj_t *divider;
+    lv_obj_t *lbl_line1;
+    lv_obj_t *lbl_line2;
+    lv_obj_t *lbl_line3;
+    int slot_idx;
+} card_widget_t;
+
+static card_widget_t cards[DEVOS_MAX_APPS];
+
+/* Pagination Footer Bar */
+static lv_obj_t *footer_bar = NULL;
+static lv_obj_t *lbl_apps_count = NULL;
+static lv_obj_t *btn_prev = NULL;
+static lv_obj_t *lbl_prev = NULL;
+static lv_obj_t *dots_cont = NULL;
+static lv_obj_t *dot_btns[4] = {NULL};
+static lv_obj_t *lbl_page_text = NULL;
+static lv_obj_t *btn_next = NULL;
+static lv_obj_t *lbl_next = NULL;
 static lv_obj_t *btn_arrange_toggle = NULL;
 static lv_obj_t *lbl_arrange_btn = NULL;
 static lv_obj_t *btn_arrange_reset = NULL;
 static lv_obj_t *lbl_arrange_reset = NULL;
-static lv_obj_t *banner_arrange = NULL;
-static lv_obj_t *lbl_arrange_banner = NULL;
+static int last_registered_count = -1;
 
-/* 6 App Cards */
-static lv_obj_t *cards[6] = {NULL};
-static lv_obj_t *card_titles[6] = {NULL};
-static lv_obj_t *card_subtitles[6] = {NULL};
-static lv_obj_t *card_line1[6] = {NULL};
-static lv_obj_t *card_line2[6] = {NULL};
-static lv_obj_t *card_line3[6] = {NULL};
-
-/* Bottom hint bar */
+/* Bottom Navigation Hint Bar */
 static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
 
-/* Slot Mapping State (slot 0..5 -> app_id 1..6) */
-static int slot_to_app[6] = {1, 2, 3, 4, 5, 6};
+/* Slot Mapping & Carousel State */
+static char slot_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
+static int active_app_count = 0;
+static int current_page = 0;
+static int total_pages = 1;
 static bool arrange_mode = false;
 static int selected_slot = -1;
+static int focused_slot = 0;
 
-typedef struct {
-    int x;
-    int y;
-} slot_coord_t;
-
-static const slot_coord_t slot_coords[6] = {
-    {18, 146},                             /* Slot 0: Top-Left */
-    {18 + 1 * (398 + 22), 146},            /* Slot 1: Top-Center */
-    {18 + 2 * (398 + 22), 146},            /* Slot 2: Top-Right */
-    {18, 146 + 245 + 16},                  /* Slot 3: Bottom-Left */
-    {18 + 1 * (398 + 22), 146 + 245 + 16}, /* Slot 4: Bottom-Center */
-    {18 + 2 * (398 + 22), 146 + 245 + 16}, /* Slot 5: Bottom-Right */
-};
-
-static const char *app_names[6] = {
-    "OpenDev",
-    "Terminal/SSH",
-    "Markdown",
-    "Tailscale",
-    "Antigravity",
-    "Settings"
-};
-
-static const char *subtitles[6] = {
-    "AI Coding Agents",
-    "ANSI PTY Shell",
-    "Notes & Docs",
-    "Mesh Network",
-    "Native AGY Client",
-    "System & Config"
-};
-
-static const char *default_line1[6] = {
-    "* Status: Idle",
-    "* 1 Session (bash)",
-    "* welcome.md",
-    "* Peers: 6 Online",
-    "* Bridge: Online (:8420)",
-    "* Wi-Fi & Display"
-};
-
-static const char *default_line2[6] = {
-    "* Model: Sonnet 3.7",
-    "* Host: workstation",
-    "* 14.2 KB",
-    "* DERP: Sydney (18ms)",
-    "* Subagents: 2 Active",
-    "* Battery & INA226"
-};
-
-static const char *default_line3[6] = {
-    "* REST/SSE :4096",
-    "* 160x45 Cols (SIGWINCH)",
-    "* Split Markdown View",
-    "* Optional Mesh Overlay",
-    "* /goal /plan /boost",
-    "* NVS & Storage"
-};
+/* Forward Declarations */
+static void refresh_cards(void);
+static void update_pagination_ui(void);
+static void rebuild_card_widgets(void);
 
 /* --------------------------------------------------------------------------
- * Persistence: Load and Save Layout
+ * Persistence: Load and Save Layout (String UIDs with legacy int fallback)
  * -------------------------------------------------------------------------- */
 static void save_layout(void)
 {
     FILE *f = fopen(LAYOUT_CONFIG_FILE, "w");
-    if (f) {
-        fprintf(f, "[\n  %d, %d, %d,\n  %d, %d, %d\n]\n",
-                slot_to_app[0], slot_to_app[1], slot_to_app[2],
-                slot_to_app[3], slot_to_app[4], slot_to_app[5]);
-        fclose(f);
+    if (!f) return;
+
+    fprintf(f, "[\n");
+    for (int i = 0; i < active_app_count; i++) {
+        fprintf(f, "  \"%s\"%s\n", slot_uids[i], (i == active_app_count - 1) ? "" : ",");
+    }
+    fprintf(f, "]\n");
+    fclose(f);
+}
+
+static const char *legacy_id_to_uid(int id)
+{
+    switch (id) {
+        case 1: return "opendev";
+        case 2: return "terminal";
+        case 3: return "editor";
+        case 4: return "tailscale";
+        case 5: return "antigravity";
+        case 6: return "settings";
+        default: return NULL;
     }
 }
 
 static void load_layout(void)
 {
-    FILE *f = fopen(LAYOUT_CONFIG_FILE, "r");
-    if (!f) return;
+    /* 1. Gather all registered valid apps from devos_core (excluding launcher) */
+    char registered_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
+    int reg_count = 0;
+    int core_count = devos_core_app_count();
 
-    int a[6];
-    int count = 0;
-    int c;
-    while ((c = fgetc(f)) != EOF && count < 6) {
-        if (c >= '1' && c <= '6') {
-            a[count++] = c - '0';
+    for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
+        devos_app_descriptor_t *app = devos_core_get_app_at(i);
+        if (!app) continue;
+        if (app->id == DEVOS_APP_LAUNCHER) continue;
+        if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
+
+        if (app->uid && *app->uid) {
+            snprintf(registered_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
         }
     }
-    fclose(f);
 
-    if (count == 6) {
-        /* Validate permutation of 1..6 */
-        bool seen[7] = {false};
-        bool valid = true;
-        for (int i = 0; i < 6; i++) {
-            if (a[i] < 1 || a[i] > 6 || seen[a[i]]) {
-                valid = false;
+    /* 2. Try loading saved order from JSON */
+    active_app_count = 0;
+    FILE *f = fopen(LAYOUT_CONFIG_FILE, "r");
+    if (f) {
+        char file_buf[2048] = {0};
+        size_t n = fread(file_buf, 1, sizeof(file_buf) - 1, f);
+        fclose(f);
+        file_buf[n] = '\0';
+
+        const char *p = file_buf;
+        while (*p && active_app_count < DEVOS_MAX_APPS) {
+            /* Check for string token: "uid" */
+            if (*p == '"') {
+                p++;
+                char token[DEVOS_MAX_UID] = {0};
+                int tlen = 0;
+                while (*p && *p != '"' && tlen < (int)sizeof(token) - 1) {
+                    token[tlen++] = *p++;
+                }
+                token[tlen] = '\0';
+                if (*p == '"') p++;
+
+                /* Validate token exists in registered apps and not already in slot_uids */
+                bool is_valid = false;
+                for (int i = 0; i < reg_count; i++) {
+                    if (strcmp(registered_uids[i], token) == 0) {
+                        is_valid = true;
+                        break;
+                    }
+                }
+                if (is_valid) {
+                    bool already_present = false;
+                    for (int i = 0; i < active_app_count; i++) {
+                        if (strcmp(slot_uids[i], token) == 0) {
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if (!already_present) {
+                        snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", token);
+                    }
+                }
+            } else if (*p >= '1' && *p <= '6') {
+                /* Legacy integer ID fallback */
+                const char *luid = legacy_id_to_uid(*p - '0');
+                if (luid) {
+                    bool already_present = false;
+                    for (int i = 0; i < active_app_count; i++) {
+                        if (strcmp(slot_uids[i], luid) == 0) {
+                            already_present = true;
+                            break;
+                        }
+                    }
+                    if (!already_present) {
+                        snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", luid);
+                    }
+                }
+                p++;
+            } else {
+                p++;
+            }
+        }
+    }
+
+    /* 3. Append any registered apps that were not in the layout file */
+    for (int i = 0; i < reg_count && active_app_count < DEVOS_MAX_APPS; i++) {
+        bool found = false;
+        for (int j = 0; j < active_app_count; j++) {
+            if (strcmp(slot_uids[j], registered_uids[i]) == 0) {
+                found = true;
                 break;
             }
-            seen[a[i]] = true;
         }
-        if (valid) {
-            for (int i = 0; i < 6; i++) {
-                slot_to_app[i] = a[i];
-            }
+        if (!found) {
+            snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", registered_uids[i]);
         }
     }
+
+    /* Compute total pages (minimum 1) */
+    total_pages = (active_app_count + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
+    if (total_pages < 1) total_pages = 1;
+    if (current_page >= total_pages) current_page = total_pages - 1;
 }
 
 /* --------------------------------------------------------------------------
- * Card Positioning & Visual Refresh
+ * Carousel Page Navigation
  * -------------------------------------------------------------------------- */
-static void refresh_card_positions(void)
+int app_launcher_get_current_page(void) { return current_page; }
+int app_launcher_get_total_pages(void) { return total_pages; }
+int app_launcher_get_active_app_count(void) { return active_app_count; }
+
+void app_launcher_set_page(int page, bool animate)
 {
-    const devos_palette_t *p = devos_theme_get();
+    if (page < 0) page = 0;
+    if (page >= total_pages) page = total_pages - 1;
 
-    for (int slot = 0; slot < 6; slot++) {
-        int app_id = slot_to_app[slot];
-        int card_idx = app_id - 1;
-        if (card_idx >= 0 && card_idx < 6 && cards[card_idx]) {
-            lv_obj_remove_state(cards[card_idx], LV_STATE_FOCUSED | LV_STATE_PRESSED);
-            lv_obj_set_pos(cards[card_idx], slot_coords[slot].x, slot_coords[slot].y);
-
-            char title_buf[64];
-            if (arrange_mode) {
-                if (selected_slot == slot) {
-                    snprintf(title_buf, sizeof(title_buf), "[" LV_SYMBOL_SHUFFLE " Slot %d] %s", slot + 1, app_names[card_idx]);
-                } else {
-                    snprintf(title_buf, sizeof(title_buf), "[Slot %d] %s", slot + 1, app_names[card_idx]);
-                }
-            } else {
-                snprintf(title_buf, sizeof(title_buf), "[%d] %s", slot + 1, app_names[card_idx]);
-            }
-            lv_label_set_text(card_titles[card_idx], title_buf);
-
-            /* Border styling: apply to both state 0 and LV_STATE_FOCUSED */
-            if (arrange_mode && selected_slot == slot) {
-                lv_obj_set_style_border_color(cards[card_idx], p->accent_warning, 0);
-                lv_obj_set_style_border_color(cards[card_idx], p->accent_warning, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_width(cards[card_idx], 3, 0);
-                lv_obj_set_style_border_width(cards[card_idx], 3, LV_STATE_FOCUSED);
-            } else if (arrange_mode) {
-                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, 0);
-                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_width(cards[card_idx], 1, 0);
-                lv_obj_set_style_border_width(cards[card_idx], 1, LV_STATE_FOCUSED);
-            } else {
-                lv_obj_set_style_border_color(cards[card_idx], p->surface_border, 0);
-                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_width(cards[card_idx], 1, 0);
-                lv_obj_set_style_border_width(cards[card_idx], 2, LV_STATE_FOCUSED);
-            }
-        }
+    current_page = page;
+    if (carousel) {
+        lv_obj_scroll_to_x(carousel, current_page * DEVOS_SCREEN_WIDTH,
+                           animate ? LV_ANIM_ON : LV_ANIM_OFF);
     }
+    update_pagination_ui();
+    refresh_cards();
+}
 
-    /* Update Arrange Banner and Buttons */
-    if (banner_arrange) {
-        if (arrange_mode) {
-            lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(banner_arrange);
-            lv_obj_remove_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_OK " Done");
-            lv_obj_set_style_bg_color(btn_arrange_toggle, p->accent_secondary, 0);
+static void carousel_scroll_end_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+    if (!obj) return;
 
-            if (selected_slot >= 0) {
-                char b_buf[128];
-                int app_id = slot_to_app[selected_slot];
-                snprintf(b_buf, sizeof(b_buf), LV_SYMBOL_SHUFFLE " Slot %d (%s) selected. Tap destination tile to swap!",
-                         selected_slot + 1, app_names[app_id - 1]);
-                lv_label_set_text(lbl_arrange_banner, b_buf);
-            } else {
-                lv_label_set_text(lbl_arrange_banner,
-                    LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Swap Slot | [R] Reset");
-            }
-        } else {
-            lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_SHUFFLE " Arrange");
-            lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
-        }
-    }
+    int32_t scroll_x = lv_obj_get_scroll_x(obj);
+    int new_page = (scroll_x + (DEVOS_SCREEN_WIDTH / 2)) / DEVOS_SCREEN_WIDTH;
+    if (new_page < 0) new_page = 0;
+    if (new_page >= total_pages) new_page = total_pages - 1;
 
-    /* Update Bottom Hint Bar */
-    if (lbl_bottom_hint) {
-        if (arrange_mode) {
-            lv_label_set_text(lbl_bottom_hint,
-                "[Tap/Click] Select & Swap  |  [1-6] Swap Keys  |  [R] Reset Default  |  [Esc/Done] Exit Arrange Mode");
-        } else {
-            lv_label_set_text(lbl_bottom_hint,
-                "[Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Fn+E/E] Arrange Tiles  |  [Fn+T] Theme");
-        }
+    if (new_page != current_page) {
+        current_page = new_page;
+        update_pagination_ui();
+        refresh_cards();
     }
 }
 
+static void prev_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (current_page > 0) {
+        app_launcher_set_page(current_page - 1, true);
+    }
+}
+
+static void next_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (current_page < total_pages - 1) {
+        app_launcher_set_page(current_page + 1, true);
+    }
+}
+
+static void dot_click_cb(lv_event_t *e)
+{
+    int page = (int)(intptr_t)lv_event_get_user_data(e);
+    app_launcher_set_page(page, true);
+}
+
+/* --------------------------------------------------------------------------
+ * Arrange Mode Operations
+ * -------------------------------------------------------------------------- */
 void app_launcher_swap_slots(int slot_a, int slot_b)
 {
-    if (slot_a < 0 || slot_a >= 6 || slot_b < 0 || slot_b >= 6 || slot_a == slot_b) {
+    if (slot_a < 0 || slot_a >= active_app_count ||
+        slot_b < 0 || slot_b >= active_app_count ||
+        slot_a == slot_b) {
         selected_slot = -1;
-        refresh_card_positions();
+        refresh_cards();
         return;
     }
 
-    int temp = slot_to_app[slot_a];
-    slot_to_app[slot_a] = slot_to_app[slot_b];
-    slot_to_app[slot_b] = temp;
+    char tmp[DEVOS_MAX_UID];
+    snprintf(tmp, sizeof(tmp), "%s", slot_uids[slot_a]);
+    snprintf(slot_uids[slot_a], sizeof(slot_uids[slot_a]), "%s", slot_uids[slot_b]);
+    snprintf(slot_uids[slot_b], sizeof(slot_uids[slot_b]), "%s", tmp);
 
-    /* Always clear active selection before refreshing card positions */
     selected_slot = -1;
-
     save_layout();
-    refresh_card_positions();
+    refresh_cards();
 }
 
 void app_launcher_reset_layout(void)
 {
-    for (int i = 0; i < 6; i++) {
-        slot_to_app[i] = i + 1;
+    /* Reset to core registration order */
+    int reg_count = 0;
+    int core_count = devos_core_app_count();
+    for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
+        devos_app_descriptor_t *app = devos_core_get_app_at(i);
+        if (!app || app->id == DEVOS_APP_LAUNCHER) continue;
+        if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
+        snprintf(slot_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
     }
+    active_app_count = reg_count;
+    total_pages = (active_app_count + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
+    if (total_pages < 1) total_pages = 1;
+
     selected_slot = -1;
+    current_page = 0;
     save_layout();
-    refresh_card_positions();
+    app_launcher_set_page(0, false);
+    refresh_cards();
 }
 
 int app_launcher_get_app_in_slot(int slot)
 {
-    if (slot >= 0 && slot < 6) {
-        return slot_to_app[slot];
+    if (slot >= 0 && slot < active_app_count) {
+        devos_app_descriptor_t *app = devos_core_find_app(slot_uids[slot]);
+        if (app) return app->id;
     }
     return -1;
+}
+
+const char *app_launcher_get_app_uid_in_slot(int slot)
+{
+    if (slot >= 0 && slot < active_app_count) {
+        return slot_uids[slot];
+    }
+    return NULL;
 }
 
 void app_launcher_set_arrange_mode(bool active)
@@ -275,7 +343,7 @@ void app_launcher_set_arrange_mode(bool active)
     if (arrange_mode != active) {
         arrange_mode = active;
         selected_slot = -1;
-        refresh_card_positions();
+        refresh_cards();
     }
 }
 
@@ -289,46 +357,36 @@ bool app_launcher_is_arrange_mode(void)
     return arrange_mode;
 }
 
-/* --------------------------------------------------------------------------
- * Card and Button Event Handlers
- * -------------------------------------------------------------------------- */
 static void card_click_cb(lv_event_t *e)
 {
-    int app_id = (int)(intptr_t)lv_event_get_user_data(e);
+    int slot = (int)(intptr_t)lv_event_get_user_data(e);
 
     if (!arrange_mode) {
-        /* Normal Mode: Launch the application */
-        devos_core_switch_app((devos_app_id_t)app_id);
+        /* Normal Mode: Launch the selected app */
+        devos_app_descriptor_t *app = devos_core_find_app(slot_uids[slot]);
+        if (app) {
+            devos_core_switch_app(app->id);
+        }
     } else {
-        /* Arrange Mode: Select or Swap */
+        /* Arrange Mode: Select or Swap across pages */
         lv_obj_t *target_obj = (lv_obj_t *)lv_event_get_target(e);
         if (target_obj) {
             lv_obj_remove_state(target_obj, LV_STATE_FOCUSED | LV_STATE_PRESSED);
         }
 
-        int clicked_slot = -1;
-        for (int i = 0; i < 6; i++) {
-            if (slot_to_app[i] == app_id) {
-                clicked_slot = i;
-                break;
-            }
-        }
-
-        if (clicked_slot >= 0) {
-            if (selected_slot == -1) {
-                /* First tile clicked: Pick up for swap */
-                selected_slot = clicked_slot;
-                refresh_card_positions();
-            } else if (selected_slot == clicked_slot) {
-                /* Same tile clicked: Deselect */
-                selected_slot = -1;
-                refresh_card_positions();
-            } else {
-                /* Second tile clicked: Swap! */
-                int source = selected_slot;
-                selected_slot = -1;
-                app_launcher_swap_slots(source, clicked_slot);
-            }
+        if (selected_slot == -1) {
+            /* First tile picked up */
+            selected_slot = slot;
+            refresh_cards();
+        } else if (selected_slot == slot) {
+            /* Deselect */
+            selected_slot = -1;
+            refresh_cards();
+        } else {
+            /* Second tile clicked -> Swap! */
+            int src = selected_slot;
+            selected_slot = -1;
+            app_launcher_swap_slots(src, slot);
         }
     }
 }
@@ -345,67 +403,237 @@ static void arrange_reset_cb(lv_event_t *e)
     app_launcher_reset_layout();
 }
 
-static void apply_theme(const devos_palette_t *p, void *user_data)
+/* --------------------------------------------------------------------------
+ * Visual Card & Pagination Refresh
+ * -------------------------------------------------------------------------- */
+static void update_pagination_ui(void)
 {
-    LV_UNUSED(user_data);
-    if (!screen) return;
+    const devos_palette_t *p = devos_theme_get();
 
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-
-    /* Telemetry strip */
-    lv_obj_set_style_bg_color(telemetry_box, p->telemetry_bg, 0);
-    lv_obj_set_style_border_color(telemetry_box, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_clock_date, p->accent_primary, 0);
-    lv_obj_set_style_text_color(lbl_net_power, p->text_primary, 0);
-    lv_obj_set_style_text_color(lbl_mem_cpu, p->text_secondary, 0);
-
-    /* Arrange buttons */
-    if (btn_arrange_toggle) {
-        lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
-        lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
-    }
-    if (btn_arrange_reset) {
-        lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
-        lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
-        lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
-    }
-    if (banner_arrange) {
-        lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
-        lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
-        lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
+    /* 1. Apps Count badge */
+    if (lbl_apps_count) {
+        char ac_buf[32];
+        snprintf(ac_buf, sizeof(ac_buf), "%d Apps Installed", active_app_count);
+        lv_label_set_text(lbl_apps_count, ac_buf);
+        lv_obj_set_style_text_color(lbl_apps_count, p->text_secondary, 0);
     }
 
-    /* Cards */
-    for (int i = 0; i < 6; i++) {
-        if (cards[i]) {
-            lv_obj_set_style_bg_color(cards[i], p->surface, 0);
-            lv_obj_set_style_text_color(card_titles[i], p->accent_primary, 0);
-            lv_obj_set_style_text_color(card_subtitles[i], p->text_secondary, 0);
-            lv_obj_set_style_text_color(card_line1[i], p->text_primary, 0);
-            lv_obj_set_style_text_color(card_line2[i], p->text_primary, 0);
-            lv_obj_set_style_text_color(card_line3[i], p->text_secondary, 0);
+    /* 2. Graphical interactive dot indicators */
+    for (int i = 0; i < 4; i++) {
+        if (i < total_pages) {
+            if (!dot_btns[i] && dots_cont) {
+                dot_btns[i] = lv_button_create(dots_cont);
+                lv_obj_add_event_cb(dot_btns[i], dot_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            }
+            if (dot_btns[i]) {
+                lv_obj_remove_flag(dot_btns[i], LV_OBJ_FLAG_HIDDEN);
+                if (i == current_page) {
+                    lv_obj_set_size(dot_btns[i], 18, 8);
+                    lv_obj_set_style_bg_color(dot_btns[i], p->accent_primary, 0);
+                } else {
+                    lv_obj_set_size(dot_btns[i], 8, 8);
+                    lv_obj_set_style_bg_color(dot_btns[i], p->surface_border, 0);
+                }
+                lv_obj_set_style_radius(dot_btns[i], LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_border_width(dot_btns[i], 0, 0);
+                lv_obj_set_style_pad_all(dot_btns[i], 0, 0);
+            }
+        } else if (dot_btns[i]) {
+            lv_obj_add_flag(dot_btns[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
 
-    /* Bottom Bar */
-    if (bottom_bar) {
-        lv_obj_set_style_bg_color(bottom_bar, p->bottom_bar_bg, 0);
-        lv_obj_set_style_border_color(bottom_bar, p->surface_border, 0);
-        lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);
+    /* 3. Page text (Page 1 / 2) */
+    if (lbl_page_text) {
+        char pbuf[32];
+        snprintf(pbuf, sizeof(pbuf), "Page %d / %d", current_page + 1, total_pages);
+        lv_label_set_text(lbl_page_text, pbuf);
     }
 
-    refresh_card_positions();
+    /* 3. Prev / Next Button styling & opacity */
+    if (btn_prev) {
+        if (current_page > 0) {
+            lv_obj_set_style_opa(btn_prev, LV_OPA_COVER, 0);
+            lv_obj_add_flag(btn_prev, LV_OBJ_FLAG_CLICKABLE);
+        } else {
+            lv_obj_set_style_opa(btn_prev, LV_OPA_40, 0);
+            lv_obj_clear_flag(btn_prev, LV_OBJ_FLAG_CLICKABLE);
+        }
+    }
+    if (btn_next) {
+        if (current_page < total_pages - 1) {
+            lv_obj_set_style_opa(btn_next, LV_OPA_COVER, 0);
+            lv_obj_add_flag(btn_next, LV_OBJ_FLAG_CLICKABLE);
+        } else {
+            lv_obj_set_style_opa(btn_next, LV_OPA_40, 0);
+            lv_obj_clear_flag(btn_next, LV_OBJ_FLAG_CLICKABLE);
+        }
+    }
+
+    /* 4. Arrange & Reset buttons */
+    if (lbl_arrange_btn && btn_arrange_toggle) {
+        if (arrange_mode) {
+            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_OK " Done");
+            lv_obj_set_style_bg_color(btn_arrange_toggle, p->accent_secondary, 0);
+        } else {
+            lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_SHUFFLE " Arrange");
+            lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
+        }
+    }
+    if (btn_arrange_reset) {
+        if (arrange_mode) {
+            lv_obj_remove_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* 5. Arrange Banner */
+    if (banner_arrange) {
+        if (arrange_mode) {
+            lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+            if (selected_slot >= 0 && selected_slot < active_app_count) {
+                char b_buf[128];
+                devos_app_descriptor_t *sel_app = devos_core_find_app(slot_uids[selected_slot]);
+                snprintf(b_buf, sizeof(b_buf),
+                         LV_SYMBOL_SHUFFLE " Slot %d (%s) selected. Tap destination tile on any page to swap!",
+                         selected_slot + 1, sel_app ? sel_app->name : "App");
+                lv_label_set_text(lbl_arrange_banner, b_buf);
+            } else {
+                lv_label_set_text(lbl_arrange_banner,
+                    LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination | [1-8] Keys | [R] Reset | [Done]");
+            }
+        } else {
+            lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* 6. Bottom Hint Bar */
+    if (lbl_bottom_hint) {
+        if (arrange_mode) {
+            lv_label_set_text(lbl_bottom_hint,
+                "[Tap/Click] Select & Swap Across Pages  |  [1-8] Swap Slot  |  [R] Reset Defaults  |  [Esc/Done] Exit");
+        } else {
+            lv_label_set_text(lbl_bottom_hint,
+                "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [PgUp/PgDn] Page Flip  |  [Fn+E] Arrange  |  [Fn+T] Theme");
+        }
+    }
+}
+
+static void refresh_cards(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+
+    for (int i = 0; i < active_app_count; i++) {
+        card_widget_t *c = &cards[i];
+        if (!c->card_btn) continue;
+
+        devos_app_descriptor_t *app = devos_core_find_app(slot_uids[i]);
+        if (!app) continue;
+
+        /* Icon */
+        if (c->lbl_icon) {
+            lv_label_set_text(c->lbl_icon, app->icon ? app->icon : LV_SYMBOL_FILE);
+            lv_obj_set_style_text_color(c->lbl_icon, p->accent_primary, 0);
+        }
+
+        /* Title with active-page slot index (1..8) or global slot in arrange mode */
+        if (c->lbl_title) {
+            char tbuf[64];
+            int page_slot = (i % TILES_PER_PAGE) + 1;
+            if (arrange_mode) {
+                if (selected_slot == i) {
+                    snprintf(tbuf, sizeof(tbuf), "[⇋ %d] %s", i + 1, app->name ? app->name : app->uid);
+                } else {
+                    snprintf(tbuf, sizeof(tbuf), "[%d] %s", i + 1, app->name ? app->name : app->uid);
+                }
+            } else {
+                snprintf(tbuf, sizeof(tbuf), "[%d] %s", page_slot, app->name ? app->name : app->uid);
+            }
+            lv_label_set_text(c->lbl_title, tbuf);
+            lv_obj_set_style_text_color(c->lbl_title, p->accent_primary, 0);
+        }
+
+        /* Subtitle / Category */
+        if (c->lbl_subtitle) {
+            const char *sub = (app->subtitle && *app->subtitle) ? app->subtitle :
+                              (app->category ? app->category : "App");
+            lv_label_set_text(c->lbl_subtitle, sub);
+            lv_obj_set_style_text_color(c->lbl_subtitle, p->text_secondary, 0);
+        }
+
+        /* Dynamic Telemetry Lines */
+        char lines[3][64] = {{0}};
+        int line_count = 0;
+        if (app->get_telemetry_lines) {
+            line_count = app->get_telemetry_lines(lines);
+        }
+
+        if (c->lbl_line1) {
+            if (line_count > 0 && lines[0][0]) {
+                lv_label_set_text(c->lbl_line1, lines[0]);
+            } else {
+                lv_label_set_text(c->lbl_line1, "* Status: Active");
+            }
+            lv_obj_set_style_text_color(c->lbl_line1, p->text_primary, 0);
+        }
+        if (c->lbl_line2) {
+            if (line_count > 1 && lines[1][0]) {
+                lv_label_set_text(c->lbl_line2, lines[1]);
+            } else {
+                lv_label_set_text(c->lbl_line2, app->category ? app->category : "");
+            }
+            lv_obj_set_style_text_color(c->lbl_line2, p->text_primary, 0);
+        }
+        if (c->lbl_line3) {
+            if (line_count > 2 && lines[2][0]) {
+                lv_label_set_text(c->lbl_line3, lines[2]);
+            } else {
+                lv_label_set_text(c->lbl_line3, "");
+            }
+            lv_obj_set_style_text_color(c->lbl_line3, p->text_secondary, 0);
+        }
+
+        /* Border & Card styling */
+        lv_obj_set_style_bg_color(c->card_btn, p->surface, 0);
+        if (c->divider) lv_obj_set_style_bg_color(c->divider, p->surface_border, 0);
+
+        if (arrange_mode && selected_slot == i) {
+            lv_obj_set_style_border_color(c->card_btn, p->accent_warning, 0);
+            lv_obj_set_style_border_color(c->card_btn, p->accent_warning, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_width(c->card_btn, 3, 0);
+            lv_obj_set_style_border_width(c->card_btn, 3, LV_STATE_FOCUSED);
+        } else if (arrange_mode) {
+            lv_obj_set_style_border_color(c->card_btn, p->border_highlight, 0);
+            lv_obj_set_style_border_color(c->card_btn, p->border_highlight, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_width(c->card_btn, 1, 0);
+            lv_obj_set_style_border_width(c->card_btn, 1, LV_STATE_FOCUSED);
+        } else if (focused_slot == i) {
+            lv_obj_set_style_border_color(c->card_btn, p->border_highlight, 0);
+            lv_obj_set_style_border_color(c->card_btn, p->border_highlight, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_width(c->card_btn, 2, 0);
+            lv_obj_set_style_border_width(c->card_btn, 2, LV_STATE_FOCUSED);
+        } else {
+            lv_obj_set_style_border_color(c->card_btn, p->surface_border, 0);
+            lv_obj_set_style_border_color(c->card_btn, p->border_highlight, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_width(c->card_btn, 1, 0);
+            lv_obj_set_style_border_width(c->card_btn, 2, LV_STATE_FOCUSED);
+        }
+    }
+
+    update_pagination_ui();
 }
 
 void app_launcher_update_telemetry(void)
 {
-    if (!screen) return;
+    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
 
     const devos_telemetry_t *t = devos_telemetry_get();
 
+    /* System Telemetry in Top Strip */
     char buf[128];
     snprintf(buf, sizeof(buf), "%02d:%02d   %s", t->rtc_hour, t->rtc_min, t->rtc_date_str);
-    lv_label_set_text(lbl_clock_date, buf);
+    if (lbl_clock_date) lv_label_set_text(lbl_clock_date, buf);
 
     if (t->tailscale_online) {
         snprintf(buf, sizeof(buf), "Tailscale: %s  |  Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
@@ -421,50 +649,33 @@ void app_launcher_update_telemetry(void)
                  t->runtime_minutes_left / 60.0f,
                  t->sd_free_mb / 1024.0f);
     }
-    lv_label_set_text(lbl_net_power, buf);
+    if (lbl_net_power) lv_label_set_text(lbl_net_power, buf);
 
     snprintf(buf, sizeof(buf), "Memory: %.1f MB Free PSRAM, %d KB SRAM  |  CPU: Core 0: %d%% | Core 1: %d%%",
              t->free_psram_kb / 1024.0f,
              t->free_sram_kb,
              t->cpu_load_core0,
              t->cpu_load_core1);
-    lv_label_set_text(lbl_mem_cpu, buf);
+    if (lbl_mem_cpu) lv_label_set_text(lbl_mem_cpu, buf);
 
-    /* Update dynamic card lines */
-    snprintf(buf, sizeof(buf), "* Status: %s", t->opendev_status);
-    lv_label_set_text(card_line1[0], buf);
-    snprintf(buf, sizeof(buf), "* Model: %s", t->opendev_model);
-    lv_label_set_text(card_line2[0], buf);
+    /* Update dynamic app card telemetry lines */
+    for (int i = 0; i < active_app_count; i++) {
+        card_widget_t *c = &cards[i];
+        if (!c->card_btn) continue;
+        devos_app_descriptor_t *app = devos_core_find_app(slot_uids[i]);
+        if (!app || !app->get_telemetry_lines) continue;
 
-    snprintf(buf, sizeof(buf), "* %d Session (active)", t->terminal_sessions);
-    lv_label_set_text(card_line1[1], buf);
-    snprintf(buf, sizeof(buf), "* Host: %s", t->terminal_host);
-    lv_label_set_text(card_line2[1], buf);
-
-    snprintf(buf, sizeof(buf), "* %s", t->editor_file);
-    lv_label_set_text(card_line1[2], buf);
-    snprintf(buf, sizeof(buf), "* %d KB", t->editor_file_kb);
-    lv_label_set_text(card_line2[2], buf);
-
-    if (t->tailscale_online) {
-        snprintf(buf, sizeof(buf), "* Peers: %d Online", t->tailscale_peers_online);
-        lv_label_set_text(card_line1[3], buf);
-        snprintf(buf, sizeof(buf), "* DERP: %s", t->tailscale_derp);
-        lv_label_set_text(card_line2[3], buf);
-        snprintf(buf, sizeof(buf), "* IP: %s", t->tailscale_ip);
-        lv_label_set_text(card_line3[3], buf);
-    } else {
-        lv_label_set_text(card_line1[3], "* Status: Disconnected");
-        lv_label_set_text(card_line2[3], "* Mesh: Inactive (Optional)");
-        lv_label_set_text(card_line3[3], "* Direct LAN routing active");
+        char lines[3][64] = {{0}};
+        int count = app->get_telemetry_lines(lines);
+        if (count > 0 && c->lbl_line1 && lines[0][0]) lv_label_set_text(c->lbl_line1, lines[0]);
+        if (count > 1 && c->lbl_line2 && lines[1][0]) lv_label_set_text(c->lbl_line2, lines[1]);
+        if (count > 2 && c->lbl_line3 && lines[2][0]) lv_label_set_text(c->lbl_line3, lines[2]);
     }
-
-    snprintf(buf, sizeof(buf), "* Bridge: %s", t->agy_bridge_online ? "Online (:8420)" : "Offline");
-    lv_label_set_text(card_line1[4], buf);
-    snprintf(buf, sizeof(buf), "* Subagents: %d Active", t->agy_subagents_count);
-    lv_label_set_text(card_line2[4], buf);
 }
 
+/* --------------------------------------------------------------------------
+ * Physical Keyboard Navigation & Shortcuts
+ * -------------------------------------------------------------------------- */
 static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
 {
     /* 1. Toggle Arrange Mode: 'e' / 'E' or Fn + E */
@@ -473,51 +684,323 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 2. In Arrange Mode */
+    /* 2. Page Navigation: PageUp / PageDown, Fn + Left / Right */
+    if (key == DEVOS_KEY_PGUP || ((modifiers & DEVOS_MOD_FN) && key == LV_KEY_LEFT)) {
+        if (current_page > 0) {
+            app_launcher_set_page(current_page - 1, true);
+            focused_slot = current_page * TILES_PER_PAGE;
+            refresh_cards();
+        }
+        return true;
+    }
+    if (key == DEVOS_KEY_PGDN || ((modifiers & DEVOS_MOD_FN) && key == LV_KEY_RIGHT)) {
+        if (current_page < total_pages - 1) {
+            app_launcher_set_page(current_page + 1, true);
+            focused_slot = current_page * TILES_PER_PAGE;
+            if (focused_slot >= active_app_count) focused_slot = active_app_count - 1;
+            refresh_cards();
+        }
+        return true;
+    }
+
+    /* 3. Arrange Mode Key Controls */
     if (arrange_mode) {
         if (key == LV_KEY_ESC) {
             app_launcher_set_arrange_mode(false);
             return true;
         }
-
         if (key == 'r' || key == 'R') {
             app_launcher_reset_layout();
             return true;
         }
-
-        if (key >= '1' && key <= '6') {
-            int slot = key - '1';
-            if (selected_slot == -1) {
-                selected_slot = slot;
-                refresh_card_positions();
-            } else if (selected_slot == slot) {
-                selected_slot = -1;
-                refresh_card_positions();
-            } else {
-                int source = selected_slot;
-                selected_slot = -1;
-                app_launcher_swap_slots(source, slot);
+        /* 1..8 on active page: select or swap slot */
+        if (key >= '1' && key <= '8') {
+            int slot = current_page * TILES_PER_PAGE + (key - '1');
+            if (slot < active_app_count) {
+                if (selected_slot == -1) {
+                    selected_slot = slot;
+                    refresh_cards();
+                } else if (selected_slot == slot) {
+                    selected_slot = -1;
+                    refresh_cards();
+                } else {
+                    int src = selected_slot;
+                    selected_slot = -1;
+                    app_launcher_swap_slots(src, slot);
+                }
             }
             return true;
         }
     } else {
-        /* 3. Normal Mode: Quick launch by current slot index */
-        if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '6') {
-            int slot = key - '1';
-            devos_app_id_t target = (devos_app_id_t)slot_to_app[slot];
-            devos_core_switch_app(target);
+        /* 4. Normal Mode: Direct Launch (1..8 on active page) */
+        if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '8') {
+            int slot = current_page * TILES_PER_PAGE + (key - '1');
+            if (slot < active_app_count) {
+                devos_app_descriptor_t *app = devos_core_find_app(slot_uids[slot]);
+                if (app) {
+                    devos_core_switch_app(app->id);
+                }
+            }
             return true;
         }
+    }
+
+    /* 5. Continuous Arrow Key Navigation across page boundaries */
+    int cur_col = (focused_slot % TILES_PER_PAGE) % GRID_COLS;
+    int cur_row = (focused_slot % TILES_PER_PAGE) / GRID_COLS;
+
+    if (key == LV_KEY_RIGHT) {
+        if (cur_col < GRID_COLS - 1) {
+            if (focused_slot + 1 < active_app_count) {
+                focused_slot++;
+            }
+        } else {
+            /* Cross right boundary to next page! */
+            if (current_page < total_pages - 1) {
+                app_launcher_set_page(current_page + 1, true);
+                int next_slot = (current_page) * TILES_PER_PAGE + (cur_row * GRID_COLS);
+                if (next_slot < active_app_count) focused_slot = next_slot;
+                else focused_slot = active_app_count - 1;
+            }
+        }
+        refresh_cards();
+        return true;
+    }
+    if (key == LV_KEY_LEFT) {
+        if (cur_col > 0) {
+            focused_slot--;
+        } else {
+            /* Cross left boundary to previous page! */
+            if (current_page > 0) {
+                app_launcher_set_page(current_page - 1, true);
+                int prev_slot = (current_page) * TILES_PER_PAGE + (cur_row * GRID_COLS) + (GRID_COLS - 1);
+                if (prev_slot < active_app_count) focused_slot = prev_slot;
+                else focused_slot = active_app_count - 1;
+            }
+        }
+        refresh_cards();
+        return true;
+    }
+    if (key == LV_KEY_DOWN) {
+        if (cur_row == 0 && focused_slot + GRID_COLS < active_app_count) {
+            focused_slot += GRID_COLS;
+            refresh_cards();
+        }
+        return true;
+    }
+    if (key == LV_KEY_UP) {
+        if (cur_row == 1) {
+            focused_slot -= GRID_COLS;
+            refresh_cards();
+        }
+        return true;
+    }
+
+    /* 6. Enter to Launch or Swap */
+    if (key == LV_KEY_ENTER || key == '\r') {
+        if (arrange_mode) {
+            if (selected_slot == -1) {
+                selected_slot = focused_slot;
+                refresh_cards();
+            } else if (selected_slot == focused_slot) {
+                selected_slot = -1;
+                refresh_cards();
+            } else {
+                int src = selected_slot;
+                selected_slot = -1;
+                app_launcher_swap_slots(src, focused_slot);
+            }
+        } else {
+            if (focused_slot < active_app_count) {
+                devos_app_descriptor_t *app = devos_core_find_app(slot_uids[focused_slot]);
+                if (app) {
+                    devos_core_switch_app(app->id);
+                }
+            }
+        }
+        return true;
     }
 
     return false;
 }
 
+/* --------------------------------------------------------------------------
+ * Card & Carousel Construction
+ * -------------------------------------------------------------------------- */
+static void rebuild_card_widgets(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+
+    /* Delete old pages if any */
+    for (int i = 0; i < 4; i++) {
+        if (page_objs[i]) {
+            lv_obj_delete(page_objs[i]);
+            page_objs[i] = NULL;
+        }
+    }
+    memset(cards, 0, sizeof(cards));
+
+    /* Build pages inside carousel */
+    for (int page = 0; page < total_pages; page++) {
+        lv_obj_t *pg = lv_obj_create(carousel);
+        page_objs[page] = pg;
+        lv_obj_set_size(pg, DEVOS_SCREEN_WIDTH, CAROUSEL_HEIGHT);
+        lv_obj_set_pos(pg, page * DEVOS_SCREEN_WIDTH, 0);
+        lv_obj_set_style_bg_opa(pg, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pg, 0, 0);
+        lv_obj_set_style_pad_all(pg, 0, 0);
+        lv_obj_clear_flag(pg, LV_OBJ_FLAG_SCROLLABLE);
+
+        for (int k = 0; k < TILES_PER_PAGE; k++) {
+            int slot = page * TILES_PER_PAGE + k;
+            if (slot >= active_app_count) break;
+
+            int col = k % GRID_COLS;
+            int row = k / GRID_COLS;
+            int x = MARGIN_X + col * (TILE_WIDTH + COL_GAP);
+            int y = (row == 0) ? ROW_Y0 : ROW_Y1;
+
+            card_widget_t *c = &cards[slot];
+            c->slot_idx = slot;
+
+            /* Card container button */
+            c->card_btn = lv_button_create(pg);
+            lv_obj_set_size(c->card_btn, TILE_WIDTH, TILE_HEIGHT);
+            lv_obj_set_pos(c->card_btn, x, y);
+            lv_obj_set_style_bg_color(c->card_btn, p->surface, 0);
+            lv_obj_set_style_border_color(c->card_btn, p->surface_border, 0);
+            lv_obj_set_style_border_width(c->card_btn, 1, 0);
+            lv_obj_set_style_radius(c->card_btn, 8, 0);
+            lv_obj_set_style_pad_all(c->card_btn, 12, 0);
+            lv_obj_clear_flag(c->card_btn, LV_OBJ_FLAG_SCROLLABLE);
+
+            /* Connect click handler */
+            lv_obj_add_event_cb(c->card_btn, card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
+
+            /* Icon */
+            c->lbl_icon = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_icon, 0, 0);
+            lv_obj_set_style_text_font(c->lbl_icon, &lv_font_montserrat_18, 0);
+            lv_obj_set_style_text_color(c->lbl_icon, p->accent_primary, 0);
+
+            /* Title */
+            c->lbl_title = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_title, 26, 0);
+            lv_obj_set_width(c->lbl_title, 220);
+            lv_label_set_long_mode(c->lbl_title, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(c->lbl_title, &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_color(c->lbl_title, p->accent_primary, 0);
+
+            /* Subtitle / Category */
+            c->lbl_subtitle = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_subtitle, 0, 26);
+            lv_obj_set_width(c->lbl_subtitle, 250);
+            lv_label_set_long_mode(c->lbl_subtitle, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(c->lbl_subtitle, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(c->lbl_subtitle, p->text_secondary, 0);
+
+            /* Divider */
+            c->divider = lv_obj_create(c->card_btn);
+            lv_obj_set_size(c->divider, TILE_WIDTH - 24, 1);
+            lv_obj_set_pos(c->divider, 0, 50);
+            lv_obj_set_style_bg_color(c->divider, p->surface_border, 0);
+            lv_obj_set_style_border_width(c->divider, 0, 0);
+
+            /* Telemetry Lines */
+            c->lbl_line1 = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_line1, 2, 60);
+            lv_obj_set_width(c->lbl_line1, 250);
+            lv_label_set_long_mode(c->lbl_line1, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(c->lbl_line1, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(c->lbl_line1, p->text_primary, 0);
+
+            c->lbl_line2 = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_line2, 2, 84);
+            lv_obj_set_width(c->lbl_line2, 250);
+            lv_label_set_long_mode(c->lbl_line2, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(c->lbl_line2, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(c->lbl_line2, p->text_primary, 0);
+
+            c->lbl_line3 = lv_label_create(c->card_btn);
+            lv_obj_set_pos(c->lbl_line3, 2, 108);
+            lv_obj_set_width(c->lbl_line3, 250);
+            lv_label_set_long_mode(c->lbl_line3, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(c->lbl_line3, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(c->lbl_line3, p->text_secondary, 0);
+        }
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Theme Propagation
+ * -------------------------------------------------------------------------- */
+static void apply_theme(const devos_palette_t *p, void *user_data)
+{
+    LV_UNUSED(user_data);
+    if (!screen) return;
+
+    lv_obj_set_style_bg_color(screen, p->bg, 0);
+
+    /* Telemetry strip */
+    if (telemetry_box) {
+        lv_obj_set_style_bg_color(telemetry_box, p->telemetry_bg, 0);
+        lv_obj_set_style_border_color(telemetry_box, p->surface_border, 0);
+        lv_obj_set_style_text_color(lbl_clock_date, p->accent_primary, 0);
+        lv_obj_set_style_text_color(lbl_net_power, p->text_primary, 0);
+        lv_obj_set_style_text_color(lbl_mem_cpu, p->text_secondary, 0);
+    }
+
+    /* Arrange Banner */
+    if (banner_arrange) {
+        lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
+        lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
+        lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
+    }
+
+    /* Pagination Footer Bar */
+    if (footer_bar) {
+        lv_obj_set_style_bg_color(footer_bar, p->telemetry_bg, 0);
+        if (lbl_apps_count) lv_obj_set_style_text_color(lbl_apps_count, p->text_secondary, 0);
+        if (lbl_page_text) lv_obj_set_style_text_color(lbl_page_text, p->text_primary, 0);
+        if (btn_prev) {
+            lv_obj_set_style_bg_color(btn_prev, p->surface, 0);
+            lv_obj_set_style_border_color(btn_prev, p->surface_border, 0);
+            lv_obj_set_style_text_color(lbl_prev, p->text_primary, 0);
+        }
+        if (btn_next) {
+            lv_obj_set_style_bg_color(btn_next, p->surface, 0);
+            lv_obj_set_style_border_color(btn_next, p->surface_border, 0);
+            lv_obj_set_style_text_color(lbl_next, p->text_primary, 0);
+        }
+        if (btn_arrange_toggle) {
+            lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
+            lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
+        }
+        if (btn_arrange_reset) {
+            lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
+            lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
+            lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
+        }
+    }
+
+    /* Bottom Hint Bar */
+    if (bottom_bar) {
+        lv_obj_set_style_bg_color(bottom_bar, p->bottom_bar_bg, 0);
+        lv_obj_set_style_border_color(bottom_bar, p->surface_border, 0);
+        lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);
+    }
+
+    refresh_cards();
+}
+
+/* --------------------------------------------------------------------------
+ * App Lifecycle (init, show, hide)
+ * -------------------------------------------------------------------------- */
 static void launcher_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
 
-    /* Load saved layout order if available */
+    /* Discover apps and load layout */
     load_layout();
 
     /* Screen root container */
@@ -531,10 +1014,10 @@ static void launcher_init(void)
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 1. Telemetry Strip (y: 42, height: 76) */
+    /* 1. Telemetry Strip (y: 42, height: 66) */
     telemetry_box = lv_obj_create(screen);
-    lv_obj_set_size(telemetry_box, DEVOS_SCREEN_WIDTH - 32, 74);
-    lv_obj_set_pos(telemetry_box, 16, DEVOS_TOP_BAR_HEIGHT + 6);
+    lv_obj_set_size(telemetry_box, DEVOS_SCREEN_WIDTH - 32, 66);
+    lv_obj_set_pos(telemetry_box, 16, DEVOS_TOP_BAR_HEIGHT + 4);
     lv_obj_set_style_bg_color(telemetry_box, p->telemetry_bg, 0);
     lv_obj_set_style_border_color(telemetry_box, p->surface_border, 0);
     lv_obj_set_style_border_width(telemetry_box, 1, 0);
@@ -551,19 +1034,118 @@ static void launcher_init(void)
     lv_obj_set_style_text_color(lbl_clock_date, p->accent_primary, 0);
 
     lbl_net_power = lv_label_create(telemetry_box);
-    lv_obj_set_pos(lbl_net_power, 0, 24);
+    lv_obj_set_pos(lbl_net_power, 0, 22);
     lv_obj_set_style_text_font(lbl_net_power, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_net_power, p->text_primary, 0);
 
     lbl_mem_cpu = lv_label_create(telemetry_box);
-    lv_obj_set_pos(lbl_mem_cpu, 0, 44);
+    lv_obj_set_pos(lbl_mem_cpu, 0, 40);
     lv_obj_set_style_text_font(lbl_mem_cpu, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_mem_cpu, p->text_secondary, 0);
 
+    /* 2. Arrange Banner (y: 112, height: 26) */
+    banner_arrange = lv_obj_create(screen);
+    lv_obj_set_size(banner_arrange, DEVOS_SCREEN_WIDTH - 32, 26);
+    lv_obj_set_pos(banner_arrange, 16, 112);
+    lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
+    lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
+    lv_obj_set_style_border_width(banner_arrange, 1, 0);
+    lv_obj_set_style_radius(banner_arrange, 4, 0);
+    lv_obj_set_style_pad_all(banner_arrange, 0, 0);
+    lv_obj_clear_flag(banner_arrange, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+
+    lbl_arrange_banner = lv_label_create(banner_arrange);
+    lv_obj_center(lbl_arrange_banner);
+    lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
+
+    /* 3. Multi-Page Carousel (y: 140, height: 444) */
+    carousel = lv_obj_create(screen);
+    lv_obj_set_size(carousel, DEVOS_SCREEN_WIDTH, CAROUSEL_HEIGHT);
+    lv_obj_set_pos(carousel, 0, 140);
+    lv_obj_set_style_bg_opa(carousel, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(carousel, 0, 0);
+    lv_obj_set_style_pad_all(carousel, 0, 0);
+    lv_obj_set_scroll_dir(carousel, LV_DIR_HOR);
+    lv_obj_set_scroll_snap_x(carousel, LV_SCROLL_SNAP_CENTER);
+    lv_obj_add_flag(carousel, LV_OBJ_FLAG_SCROLL_ONE);
+    lv_obj_set_scrollbar_mode(carousel, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_event_cb(carousel, carousel_scroll_end_cb, LV_EVENT_SCROLL_END, NULL);
+
+    /* Build card widgets */
+    rebuild_card_widgets();
+
+    /* 4. Pagination Footer Bar (y: 588, height: 46) */
+    footer_bar = lv_obj_create(screen);
+    lv_obj_set_size(footer_bar, DEVOS_SCREEN_WIDTH - 32, 44);
+    lv_obj_set_pos(footer_bar, 16, 588);
+    lv_obj_set_style_bg_color(footer_bar, p->telemetry_bg, 0);
+    lv_obj_set_style_border_color(footer_bar, p->surface_border, 0);
+    lv_obj_set_style_border_width(footer_bar, 1, 0);
+    lv_obj_set_style_radius(footer_bar, 6, 0);
+    lv_obj_set_style_pad_all(footer_bar, 4, 0);
+    lv_obj_clear_flag(footer_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Left: Apps Installed count */
+    lbl_apps_count = lv_label_create(footer_bar);
+    lv_obj_set_pos(lbl_apps_count, 14, 12);
+    lv_obj_set_style_text_font(lbl_apps_count, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_apps_count, p->text_secondary, 0);
+
+    /* Center Pagination Controls */
+    btn_prev = lv_button_create(footer_bar);
+    lv_obj_set_size(btn_prev, 85, 34);
+    lv_obj_set_pos(btn_prev, 460, 1);
+    lv_obj_set_style_bg_color(btn_prev, p->surface, 0);
+    lv_obj_set_style_border_color(btn_prev, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_prev, 1, 0);
+    lv_obj_set_style_radius(btn_prev, 4, 0);
+    lv_obj_add_event_cb(btn_prev, prev_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_prev = lv_label_create(btn_prev);
+    lv_label_set_text(lbl_prev, LV_SYMBOL_LEFT " Prev");
+    lv_obj_center(lbl_prev);
+    lv_obj_set_style_text_font(lbl_prev, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_prev, p->text_primary, 0);
+
+    /* Interactive graphical dots container */
+    dots_cont = lv_obj_create(footer_bar);
+    lv_obj_set_size(dots_cont, 95, 34);
+    lv_obj_set_pos(dots_cont, 555, 1);
+    lv_obj_set_style_bg_opa(dots_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(dots_cont, 0, 0);
+    lv_obj_set_style_pad_all(dots_cont, 0, 0);
+    lv_obj_clear_flag(dots_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(dots_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dots_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    /* Page text info */
+    lbl_page_text = lv_label_create(footer_bar);
+    lv_obj_set_pos(lbl_page_text, 660, 10);
+    lv_obj_set_style_text_font(lbl_page_text, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_page_text, p->text_primary, 0);
+
+    /* Next Button */
+    btn_next = lv_button_create(footer_bar);
+    lv_obj_set_size(btn_next, 85, 34);
+    lv_obj_set_pos(btn_next, 755, 1);
+    lv_obj_set_style_bg_color(btn_next, p->surface, 0);
+    lv_obj_set_style_border_color(btn_next, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_next, 1, 0);
+    lv_obj_set_style_radius(btn_next, 4, 0);
+    lv_obj_add_event_cb(btn_next, next_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_next = lv_label_create(btn_next);
+    lv_label_set_text(lbl_next, "Next " LV_SYMBOL_RIGHT);
+    lv_obj_center(lbl_next);
+    lv_obj_set_style_text_font(lbl_next, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_next, p->text_primary, 0);
+
     /* Arrange Mode Toggle Button */
-    btn_arrange_toggle = lv_button_create(telemetry_box);
-    lv_obj_set_size(btn_arrange_toggle, 110, 30);
-    lv_obj_align(btn_arrange_toggle, LV_ALIGN_RIGHT_MID, 0, -12);
+    btn_arrange_toggle = lv_button_create(footer_bar);
+    lv_obj_set_size(btn_arrange_toggle, 110, 34);
+    lv_obj_set_pos(btn_arrange_toggle, 990, 1);
     lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_arrange_toggle, 1, 0);
@@ -576,10 +1158,10 @@ static void launcher_init(void)
     lv_obj_set_style_text_font(lbl_arrange_btn, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
 
-    /* Arrange Reset Button (Hidden unless arrange mode active) */
-    btn_arrange_reset = lv_button_create(telemetry_box);
-    lv_obj_set_size(btn_arrange_reset, 110, 24);
-    lv_obj_align(btn_arrange_reset, LV_ALIGN_RIGHT_MID, 0, 18);
+    /* Arrange Reset Button (Defaults) */
+    btn_arrange_reset = lv_button_create(footer_bar);
+    lv_obj_set_size(btn_arrange_reset, 105, 34);
+    lv_obj_set_pos(btn_arrange_reset, 1110, 1);
     lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
     lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_arrange_reset, 1, 0);
@@ -593,89 +1175,7 @@ static void launcher_init(void)
     lv_obj_set_style_text_font(lbl_arrange_reset, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
 
-    /* Arrange Active Banner */
-    banner_arrange = lv_obj_create(screen);
-    lv_obj_set_size(banner_arrange, 1238, 24);
-    lv_obj_set_pos(banner_arrange, 18, 116);
-    lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
-    lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
-    lv_obj_set_style_border_width(banner_arrange, 1, 0);
-    lv_obj_set_style_radius(banner_arrange, 4, 0);
-    lv_obj_set_style_pad_all(banner_arrange, 0, 0);
-    lv_obj_clear_flag(banner_arrange, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
-
-    lbl_arrange_banner = lv_label_create(banner_arrange);
-    lv_label_set_text(lbl_arrange_banner,
-        LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Keys | [R] Reset");
-    lv_obj_center(lbl_arrange_banner);
-    lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
-
-    /* 2. 2x3 App Cards */
-    const int card_w = 398;
-    const int card_h = 245;
-
-    for (int i = 0; i < 6; i++) {
-        cards[i] = lv_button_create(screen);
-        lv_obj_set_size(cards[i], card_w, card_h);
-        lv_obj_set_style_bg_color(cards[i], p->surface, 0);
-        lv_obj_set_style_border_color(cards[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(cards[i], 1, 0);
-        lv_obj_set_style_radius(cards[i], 8, 0);
-        lv_obj_set_style_pad_all(cards[i], 16, 0);
-        lv_obj_clear_flag(cards[i], LV_OBJ_FLAG_SCROLLABLE);
-
-        /* Hover / Focused style */
-        lv_obj_set_style_border_color(cards[i], p->border_highlight, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_width(cards[i], 2, LV_STATE_FOCUSED);
-
-        /* Connect click handler */
-        int app_id = i + 1; /* 1..6 */
-        lv_obj_add_event_cb(cards[i], card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)app_id);
-
-        /* Card Header Title */
-        card_titles[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_titles[i], app_names[i]);
-        lv_obj_set_pos(card_titles[i], 0, 0);
-        lv_obj_set_style_text_font(card_titles[i], &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(card_titles[i], p->accent_primary, 0);
-
-        /* Subtitle */
-        card_subtitles[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_subtitles[i], subtitles[i]);
-        lv_obj_set_pos(card_subtitles[i], 0, 26);
-        lv_obj_set_style_text_font(card_subtitles[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(card_subtitles[i], p->text_secondary, 0);
-
-        /* Divider line */
-        lv_obj_t *divider = lv_obj_create(cards[i]);
-        lv_obj_set_size(divider, card_w - 32, 1);
-        lv_obj_set_pos(divider, 0, 52);
-        lv_obj_set_style_bg_color(divider, p->surface_border, 0);
-        lv_obj_set_style_border_width(divider, 0, 0);
-
-        /* Bullets */
-        card_line1[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_line1[i], default_line1[i]);
-        lv_obj_set_pos(card_line1[i], 4, 62);
-        lv_obj_set_style_text_font(card_line1[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(card_line1[i], p->text_primary, 0);
-
-        card_line2[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_line2[i], default_line2[i]);
-        lv_obj_set_pos(card_line2[i], 4, 88);
-        lv_obj_set_style_text_font(card_line2[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(card_line2[i], p->text_primary, 0);
-
-        card_line3[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_line3[i], default_line3[i]);
-        lv_obj_set_pos(card_line3[i], 4, 114);
-        lv_obj_set_style_text_font(card_line3[i], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(card_line3[i], p->text_secondary, 0);
-    }
-
-    /* 3. Bottom Navigation Hint Bar */
+    /* 5. Bottom Navigation Hint Bar (y: 688, height: 32) */
     bottom_bar = lv_obj_create(screen);
     lv_obj_set_size(bottom_bar, DEVOS_SCREEN_WIDTH, DEVOS_BOTTOM_BAR_HEIGHT);
     lv_obj_set_pos(bottom_bar, 0, DEVOS_SCREEN_HEIGHT - DEVOS_BOTTOM_BAR_HEIGHT);
@@ -689,7 +1189,7 @@ static void launcher_init(void)
 
     lbl_bottom_hint = lv_label_create(bottom_bar);
     lv_label_set_text(lbl_bottom_hint,
-        "[Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Fn+E/E] Arrange Tiles  |  [Fn+T] Theme");
+        "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [PgUp/PgDn] Page Flip  |  [Fn+E] Arrange  |  [Fn+T] Theme");
     lv_obj_center(lbl_bottom_hint);
     lv_obj_set_style_text_font(lbl_bottom_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);
@@ -697,16 +1197,22 @@ static void launcher_init(void)
     /* Hook theme updates */
     devos_theme_add_listener(apply_theme, NULL);
 
-    /* Set up initial positions and telemetry */
-    load_layout();
-    refresh_card_positions();
+    /* Initial visual setup */
+    refresh_cards();
     app_launcher_update_telemetry();
 }
 
 static void launcher_show(void)
 {
     selected_slot = -1;
-    refresh_card_positions();
+    int current_reg = devos_core_app_count();
+    if (current_reg != last_registered_count) {
+        last_registered_count = current_reg;
+        load_layout();
+        rebuild_card_widgets();
+    }
+    app_launcher_set_page(current_page, false);
+    refresh_cards();
     app_launcher_update_telemetry();
 }
 
@@ -719,6 +1225,9 @@ static void launcher_hide(void)
 devos_app_descriptor_t *app_launcher_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_LAUNCHER;
+    app_descriptor.uid = "launcher";
+    app_descriptor.icon = LV_SYMBOL_HOME;
+    app_descriptor.category = "system";
     app_descriptor.name = "Launcher";
     app_descriptor.title = "Home Screen";
     app_descriptor.subtitle = "devOS Dashboard";
@@ -727,6 +1236,7 @@ devos_app_descriptor_t *app_launcher_get_descriptor(void)
     app_descriptor.show = launcher_show;
     app_descriptor.hide = launcher_hide;
     app_descriptor.handle_key = launcher_handle_key;
+    app_descriptor.get_telemetry_lines = NULL;
 
     return &app_descriptor;
 }

@@ -1413,9 +1413,23 @@ static void antigravity_hide(void)
     }
 }
 
+static int antigravity_telemetry_lines(char lines[3][64])
+{
+    snprintf(lines[0], sizeof(lines[0]), "* Bridge: %s",
+             agy_client_status() == AGY_UP ? "online" : "offline");
+    snprintf(lines[1], sizeof(lines[1]), "* Subagents: %d",
+             agy_client_agent_count());
+    snprintf(lines[2], sizeof(lines[2]), "* %s",
+             agy_client_model()[0] ? agy_client_model() : "native client");
+    return 3;
+}
+
 devos_app_descriptor_t *app_antigravity_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_ANTIGRAVITY;
+    app_descriptor.uid = "antigravity";
+    app_descriptor.icon = LV_SYMBOL_SHUFFLE;
+    app_descriptor.category = "agents";
     app_descriptor.name = "Antigravity";
     app_descriptor.title = "Google Antigravity";
     app_descriptor.subtitle = "Native AGY Client (Path B)";
@@ -1424,6 +1438,7 @@ devos_app_descriptor_t *app_antigravity_get_descriptor(void)
     app_descriptor.show = antigravity_show;
     app_descriptor.hide = antigravity_hide;
     app_descriptor.handle_key = antigravity_handle_key;
+    app_descriptor.get_telemetry_lines = antigravity_telemetry_lines;
 
     return &app_descriptor;
 }

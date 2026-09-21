@@ -35,6 +35,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_tailscale
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_antigravity
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
@@ -62,6 +63,7 @@ else()
         main/apps/app_tailscale/app_tailscale.c
         main/apps/app_antigravity/app_antigravity.c
         main/apps/app_settings/app_settings.c
+        main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
         components/devos_ui/devos_theme.c
         components/devos_ui/devos_top_bar.c

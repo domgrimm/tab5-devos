@@ -397,9 +397,20 @@ static void settings_show(void)
 }
 static void settings_hide(void) {}
 
+static int settings_telemetry_lines(char lines[3][64])
+{
+    snprintf(lines[0], sizeof(lines[0]), "* Wi-Fi & display");
+    snprintf(lines[1], sizeof(lines[1]), "* Power & INA226");
+    snprintf(lines[2], sizeof(lines[2]), "* NVS & storage");
+    return 3;
+}
+
 devos_app_descriptor_t *app_settings_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_SETTINGS;
+    app_descriptor.uid = "settings";
+    app_descriptor.icon = LV_SYMBOL_SETTINGS;
+    app_descriptor.category = "system";
     app_descriptor.name = "Settings";
     app_descriptor.title = "Settings";
     app_descriptor.subtitle = "System & Hardware Configuration";
@@ -408,6 +419,7 @@ devos_app_descriptor_t *app_settings_get_descriptor(void)
     app_descriptor.show = settings_show;
     app_descriptor.hide = settings_hide;
     app_descriptor.handle_key = NULL;
+    app_descriptor.get_telemetry_lines = settings_telemetry_lines;
 
     return &app_descriptor;
 }
