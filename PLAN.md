@@ -119,9 +119,9 @@ graph TD
 | **GUI Framework** | LVGL v9.2+ | MIT | - | Rich widget set, PPA 2D hardware blitting, monospace terminal & markdown rendering support |
 | **Tailscale / VPN** | MicroLink v2 | MIT | `trombik/esp_wireguard` | Full `ts2021` Tailscale protocol stack (DERP relays, STUN, DISCO, MagicDNS, WireGuard ChaCha20-Poly1305) |
 | **SSH Client** | `libssh2` (`skuodi/libssh2_esp`) | BSD-3-Clause | `david-cermak/libssh` or `wolfSSH` | Permissive BSD license, supports interactive PTY, password & Ed25519/RSA key auth, proven on ESP32 |
-| **HTTP / SSE Client** | `esp_http_client` + `esp-tls` | Apache-2.0 | Custom lwIP socket client | Native IDF support with chunked transfer and SSE streaming for AI agent tokens |
+| **HTTP / SSE Client** | Raw BSD-socket HTTP/1.1 + SSE in `opendev_client` over `devos_net` | Apache-2.0 | `esp_http_client` + `esp-tls` | One portable code path for simulator and ESP-IDF/lwIP; non-blocking link, no TLS needed on LAN |
 | **WebSocket Client** | `esp_websocket_client` | Apache-2.0 | Custom lwIP WS client | Native IDF support for low-latency bidirectional bridge communication |
-| **JSON Parser** | `cJSON` | MIT | `yyjson` | Built-in ESP-IDF component, fast, minimal footprint |
+| **JSON Parser** | Minimal built-in reader in `opendev_client` (strings, arrays, key lookup) | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
 | **Markdown Parser** | Inline CommonMark-subset renderer in `app_editor` (LVGL spangroup-based) | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |
 
@@ -181,15 +181,20 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
 
 `app_opendev` acts as a handheld AI-assisted coding terminal, connecting to self-hosted instances of **OpenCode** and/or **OpenChamber**.
 
-*   **Dual Protocol Support:**
-    1.  **Direct OpenCode Server Mode (`opencode serve`):**
-        *   Connects via HTTP REST + Server-Sent Events (SSE) to port `4096`.
-        *   Endpoints: `GET /session` (list), `POST /session` (create), `POST /session/:id/prompt_async` (send prompt), `GET /event` (realtime SSE stream), `POST /session/:id/abort`.
-        *   Parses agent events: token streams, reasoning/thinking traces, file diff chunks, bash command executions.
+*   **Dual Protocol Support (as built in `components/opendev_client/`):**
+    1.  **Direct OpenCode Server Mode (`opencode serve --port 4096`):**
+        *   Raw BSD-socket HTTP/1.1 + SSE over the `devos_net` virtual transport (same code on simulator and ESP-IDF/lwIP; non-blocking SSE link with backoff, short-timeout REST from UI actions).
+        *   Endpoints: `GET /session` (list), `POST /session` (create), `GET /session/:id/message?limit=50` (history rebuild), `POST /session/:id/prompt_async` (send), `GET /event` (SSE), `POST /session/:id/abort`, `POST /session/:id/permissions/:pid` (`{response: once|always|reject}`), `GET /session/:id/diff` (rendered raw).
+        *   SSE events consumed: `server.connected`, `session.created/status/idle`, `message.updated`, `message.part.updated` (debounced history refetch), `permission.asked`. Minimal built-in JSON reader (no cJSON dependency); unknown events/fields ignored.
+        *   Unit test in `tools/opendev_test.c` (isolated CWD required — pairing tests persist sim config).
     2.  **OpenChamber Server Mode:**
-        *   Supports the OpenChamber device pairing protocol (`openchamber://connect?v=2&p=...`).
-        *   Stores encrypted device access token in NVS.
-        *   Surfaces OpenChamber concepts: Projects, Session Goals, Multi-run parallel models, Fusion, and Scheduled Tasks.
+        *   Pairing via `openchamber://connect?host=H&port=P&token=T` (`p=` accepted; also the `?v=2&p=` shape), pasteable directly into the in-app Server modal.
+        *   Bearer token persisted (encrypted NVS on target, JSON file in sim).
+*   **UI (as built in `app_opendev` on the shared viewport):**
+    *   Left: server status card (tap = Server modal for host/port/pairing), Link/refresh, + New session, live session list with busy badges.
+    *   Center: chat stream (user bubbles, single collapsible thinking card, tool cards, auto-scroll), prompt bar (`Enter` sends, `Ctrl+C` aborts).
+    *   Right: session inspector (ID/model/state) + raw unified-diff viewer (no red/green coloring yet).
+    *   Permission modal `[Y] Once / [N] Deny / [A] Always` via touch or keys (Deny-on-Esc; answers never trap the UI on transport failure).
 *   **Tri-Pane Flexible Layout & Focus Mode (1280×720):**
     *   **Left Panel (Collapsible, 260px):**
         *   Project selector and active session list with live status badges.
@@ -551,11 +556,11 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement split-view and fullscreen editing modes (`Ctrl+P` cycle; 400 ms debounce re-render). Adversarial review fixes merged (pipe-less tables, balanced-paren URLs, UTF-8-safe truncation, save-failure feedback); unit test in `tools/md_preview_test.c`.
 
 ### Phase 5: Remote OpenCode & OpenChamber Client
-- [ ] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
-- [ ] Implement OpenChamber pairing handshake and token authentication.
-- [ ] Design dual-pane UI: sessions sidebar and scrollable chat stream.
-- [ ] Implement rich message cards: reasoning/thought accordions, tool logs, diff visualizer.
-- [ ] Build interactive Permission Request popup system.
+- [x] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
+- [x] Implement OpenChamber pairing handshake and token authentication.
+- [x] Design dual-pane UI: sessions sidebar and scrollable chat stream.
+- [x] Implement rich message cards: reasoning/thought accordions, tool logs, diff visualizer.
+- [x] Build interactive Permission Request popup system.
 
 ### Phase 6: Antigravity Native Client (Path B)
 - [ ] Design and implement the host-side `agy-bridge` Python daemon in `tools/agy_bridge/`.
@@ -584,7 +589,8 @@ tab5-devos/
 │   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
 │   ├── microlink/                 # Tailscale / WireGuard client
-│   └── libssh2_port/              # libssh2 SSH client component
+│   ├── libssh2_port/              # libssh2 SSH client component
+│   └── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
 │                                 # (no markdown_parser component — renderer lives in app_editor)
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
@@ -608,6 +614,7 @@ tab5-devos/
 │   │   └── requirements.txt       # Python dependencies
 │   └── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
 │   └── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
+│   └── opendev_test.c             # Host-side unit test for the OpenCode engine (run in isolated CWD)
 ```
 
 ---

@@ -22,6 +22,7 @@ static const char *TAG = "devos_net";
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <sys/select.h>
 #define TAG "devos_net"
 #endif
 
@@ -237,4 +238,90 @@ int devos_net_socket_close(int sock)
         return close(sock);
     }
     return -1;
+}
+
+/* Non-blocking connect split across poll ticks so the UI task never stalls
+ * on SYN timeouts. Portable across BSD sockets and lwIP. */
+int devos_net_socket_connect_start(const char *host, int port)
+{
+    if (!host || port <= 0 || port > 65535) return -1;
+
+    char resolved_ip[MICROLINK_MAX_IP_LEN];
+    if (devos_net_resolve(host, resolved_ip, sizeof(resolved_ip)) != 0) {
+        return -1;
+    }
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    struct sockaddr_in dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons((uint16_t)port);
+    inet_pton(AF_INET, resolved_ip, &dest.sin_addr);
+
+    int rc = connect(sock, (struct sockaddr *)&dest, sizeof(dest));
+    if (rc == 0) {
+        /* Instant (loopback): restore blocking immediately */
+        if (flags >= 0) {
+            fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
+        }
+        return sock;
+    }
+    if (errno == EINPROGRESS
+#ifdef EWOULDBLOCK
+        || errno == EWOULDBLOCK
+#endif
+#ifdef EAGAIN
+        || errno == EAGAIN
+#endif
+    ) {
+        return sock;
+    }
+    close(sock);
+    return -1;
+}
+
+/* Returns 0 connected, 1 still in progress (call again), -1 failed.
+ * On success the socket is back to blocking with the given timeouts. */
+int devos_net_socket_connect_wait(int sock, int timeout_ms)
+{
+    if (sock < 0) return -1;
+
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(sock, &wfds);
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    int rc = select(sock + 1, NULL, &wfds, NULL, &tv);
+    if (rc == 0) return 1; /* timeout: still in progress */
+    if (rc < 0) {
+        if (errno == EINTR) return 1;
+        return -1;
+    }
+
+    int err = 0;
+    socklen_t errlen = sizeof(err);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &errlen) != 0 || err != 0) {
+        return -1;
+    }
+
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
+    }
+    struct timeval tio;
+    tio.tv_sec = timeout_ms / 1000;
+    tio.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tio, sizeof(tio));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tio, sizeof(tio));
+    return 0;
 }
