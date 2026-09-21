@@ -38,7 +38,7 @@ static const char *BOOKMARKS_JSON_CONTENT =
 "    \"alias\": \"Workstation\",\n"
 "    \"host\": \"100.77.11.92\",\n"
 "    \"port\": 22,\n"
-"    \"user\": \"dom\",\n"
+"    \"user\": \"root\",\n"
 "    \"auth\": \"key\",\n"
 "    \"key_path\": \"/sdcard/.ssh/id_ed25519\"\n"
 "  },\n"
