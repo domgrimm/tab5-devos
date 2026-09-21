@@ -28,6 +28,13 @@ else()
     include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/main/include
         ${CMAKE_CURRENT_SOURCE_DIR}/main
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_launcher
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_opendev
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_terminal
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_editor
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_tailscale
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_antigravity
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
@@ -37,6 +44,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
         ${CMAKE_CURRENT_SOURCE_DIR}/components/opendev_client
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/quirc
     )
 
     # Sources
@@ -56,6 +64,11 @@ else()
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/bsp_tab5/bsp_tab5.c
+        components/bsp_tab5/bsp_tab5_camera.c
+        components/quirc/quirc.c
+        components/quirc/decode.c
+        components/quirc/identify.c
+        components/quirc/version_db.c
         components/tab5_keyboard/tab5_keyboard.c
         components/microlink/microlink.c
         components/devos_net/devos_net.c

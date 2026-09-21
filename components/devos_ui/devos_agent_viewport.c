@@ -36,7 +36,7 @@ devos_agent_viewport_t *devos_agent_viewport_create(lv_obj_t *parent)
     /* Root Viewport Container */
     vp->root = lv_obj_create(parent);
     lv_obj_set_size(vp->root, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(vp->root, 0, DEVOS_TOP_BAR_HEIGHT);
+    lv_obj_set_pos(vp->root, 0, (parent == lv_screen_active()) ? DEVOS_TOP_BAR_HEIGHT : 0);
     lv_obj_set_style_bg_color(vp->root, p->bg, 0);
     lv_obj_set_style_radius(vp->root, 0, 0);
     lv_obj_set_style_border_width(vp->root, 0, 0);
@@ -60,8 +60,8 @@ devos_agent_viewport_t *devos_agent_viewport_create(lv_obj_t *parent)
     lv_obj_set_pos(vp->center_panel, DEVOS_PANE_LEFT_WIDTH, 0);
     lv_obj_set_style_bg_color(vp->center_panel, p->bg, 0);
     lv_obj_set_style_border_width(vp->center_panel, 0, 0);
-    lv_obj_set_style_radius(vp->center_panel, 0, 0);
-    lv_obj_set_style_pad_all(vp->center_panel, 8, 0);
+    lv_obj_set_style_pad_all(vp->center_panel, 0, 0);
+    lv_obj_clear_flag(vp->center_panel, LV_OBJ_FLAG_SCROLLABLE);
 
     /* 3. Right Inspector (Collapsible 300px) */
     vp->right_panel = lv_obj_create(vp->root);

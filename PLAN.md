@@ -48,6 +48,7 @@
 | **Touchscreen** | Goodix GT911 | 5-point capacitive multi-touch via dedicated I2C bus |
 | **Physical Keyboard** | M5Stack Tab5 Keyboard (A164) | 70-key 14×5 matrix, STM32F030C8T6 coprocessor, I2C address `0x6D` on `Ext.Port1` (SDA: GPIO 0, SCL: GPIO 1, INT: GPIO 50), dual WS2812 status RGBs |
 | **Secondary Input** | USB-A 2.0 Host | Supports standard external USB HID keyboards and mice |
+| **Camera** | SC2356 (2 Megapixel) | MIPI-CSI 2-lane receiver with hardware ISP, SCCB I2C control, MCLK on GPIO 36 |
 | **Local Storage** | MicroSD Slot | 4-bit SDMMC / SPI mode, supporting FAT32 / exFAT cards up to 2TB |
 | **Power System** | NP-F550 Mount + INA226 | Removable standard NP-F550 Li-ion battery pack, INA226 I2C power/current monitor, USB-C PD charging |
 | **Real-Time Clock** | Epson RX8130CE | I2C RTC with coin-cell battery backup for accurate offline timestamps |
@@ -124,6 +125,7 @@ graph TD
 | **JSON Parser** | Minimal built-in reader in `opendev_client` (strings, arrays, key lookup) | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
 | **Markdown Parser** | Inline CommonMark-subset renderer in `app_editor` (LVGL spangroup-based) | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |
+| **QR Code Scanner** | `quirc` (Pure C99) | BSD-3-Clause | `zxing-cpp` / `esp-zbar` | Ultra-lightweight (15-25ms decode on 400 MHz Core 0), minimal RAM (~76KB QVGA buffer), zero dynamic dependencies |
 
 ---
 
@@ -192,8 +194,8 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   Bearer token persisted (encrypted NVS on target, JSON file in sim).
 *   **UI (as built in `app_opendev` on the shared viewport):**
     *   Left: server status card (tap = Server modal for host/port/pairing), Link/refresh, + New session, live session list with busy badges.
-    *   Center: chat stream (user bubbles, single collapsible thinking card, tool cards, auto-scroll), prompt bar (`Enter` sends, `Ctrl+C` aborts).
-    *   Right: session inspector (ID/model/state) + raw unified-diff viewer (no red/green coloring yet).
+    *   Center: chat stream (user bubbles, in-place chronological thinking accordions, tool cards, auto-scroll), prompt bar with responsive flex expansion, active note injection button (`[Note]` / `Fn+N`), and `[Send]` button (`Enter` sends, `Ctrl+C` aborts).
+    *   Right: session inspector (ID/model/state), action row (`[Diff]`, `[Save Diff]`, `[Save Plan]`), color-coded unified diff viewer (green `+`, red `-`, cyan `@@`, muted headers), and automated MicroSD exports to `/sdcard/plans/` and `/sdcard/diffs/`.
     *   Permission modal `[Y] Once / [N] Deny / [A] Always` via touch or keys (Deny-on-Esc; answers never trap the UI on transport failure).
 *   **Tri-Pane Flexible Layout & Focus Mode (1280×720):**
     *   **Left Panel (Collapsible, 260px):**
@@ -202,21 +204,30 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   *Shortcut:* `Fn + [` (or `Ctrl + B`) to toggle.
     *   **Center Main Canvas (Dynamic Responsive Width: 720px / 980px / 1280px):**
         *   User prompt bubble (styled container with syntax formatting).
-        *   Thinking/Reasoning block (collapsible accordion with elapsed time counter).
+        *   Thinking/Reasoning block (collapsible accordion with elapsed time counter, rendered chronologically within turn).
         *   Tool execution cards (showing command run, exit code, file path).
         *   Streaming response text with smooth auto-scroll.
-        *   Bottom prompt input bar with physical keyboard input support.
+        *   Bottom prompt input bar with physical keyboard input support, active note attachment (`Fn + N`), and responsive flex growth.
     *   **Right Panel (Collapsible, 300px):**
         *   **Files Modified List:** Summary of touched files in the active session.
-        *   **Interactive Diff Viewer:** Color-coded unified diffs (green additions, red deletions) with line numbering and syntax highlighting.
-        *   **Session Plan / Task Checklist:** Live checklist of agent sub-tasks and milestones.
-        *   *Shortcut:* `Fn + ]` (or `Ctrl + Shift + B`) to toggle.
+        *   **Interactive Diff Viewer:** Color-coded unified diffs (green additions, red deletions, cyan hunks) with monospace font styling.
+        *   **Session Plan / Task Checklist:** Live checklist of agent sub-tasks, with one-tap export to `/sdcard/plans/<session>.md` and `/sdcard/diffs/<session>.diff`.
+        *   *Shortcut:* `Fn + ]` to toggle.
     *   **"Focus Mode" (`Fn + F`):**
         *   Instantly collapses both left and right panels with a single keystroke (or tapping the top `[Focus]` button).
         *   Center chat canvas expands to the **full 1280px display width** for distraction-free reading, long reasoning inspection, and typing.
         *   Pressing `Fn + F` again immediately restores previous sidebar states.
     *   **Interactive Permission Prompts:**
         *   Modal dialog interrupts when an agent asks to execute a command or modify sensitive files: `[Approve (Y)]`, `[Deny (N)]`, `[Always Allow in Session (A)]`. Can be answered with physical keyboard shortcuts.
+*   **3.2.1 Camera-Based Zero-Touch Pairing (OpenChamber QR Scanner):**
+    *   **Camera Pipeline:** Uses Tab5's onboard **SC2356 2MP camera** via the ESP32-P4 hardware **MIPI-CSI 2-lane receiver** and ISP downscaled to **QVGA (320×240) grayscale**.
+    *   **Core Pinning & Performance:** Camera frame acquisition and QR decoding are pinned to **Core 0** using `quirc`, running at 15–25ms per frame (~25 FPS) without dropping frames on Core 1's 60 FPS LVGL presentation loop.
+    *   **Power Gating:** The SC2356 camera and MIPI-CSI clock (MCLK GPIO 36) are powered down by default. They are energized exclusively when the scanner modal is invoked and shut off immediately upon barcode capture or cancellation.
+    *   **Interactive Viewfinder:**
+        *   In OpenDev's Server modal, tapping `[📷 Scan QR]` displays a live camera viewfinder overlay with targeting crosshairs.
+        *   Instantly detects `openchamber://connect?host=...&port=...&token=...` QR codes from the OpenChamber web dashboard.
+        *   Decoded URI triggers `opendev_client_pair()` automatically, dismisses the viewfinder, and starts SSE streaming with zero manual typing on the physical keyboard.
+    *   **Host Simulator Mode:** Provides a clean simulated capture fallback (mock QR injection / image file feed) so desktop and web simulation workflows remain fully testable without physical camera hardware.
 
 ---
 
@@ -291,8 +302,8 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     *   **Inline:** `**bold**` (underline — only a regular font exists), `*italic*` (secondary color), `~~strike~~` (decor), `` `code` ``, `[t](u)` (URL kept visible; balanced parens, `<dest>`, titles), `![a](s)`, `<autolink>`, backslash escapes, `*`/`_` flanking rules.
     *   **Limits (documented in code):** 16 KB/file, setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths, no `Ctrl+F` find.
 *   **Agent Synergy:**
-    *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context.
-    *   **"Export Agent Plan"**: Save an agent's plan or code explanation directly to `/sdcard/plans/` as a markdown file.
+    *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context (via action bar `[Attach]` button, `Fn + A`, `Ctrl + U`, or `[Note]` pull button in OpenDev).
+    *   **"Export Agent Plan & Diffs"**: Save an agent's plan or code explanation directly to `/sdcard/plans/<session>.md` and unified diffs to `/sdcard/diffs/<session>.diff` via right-panel action buttons. Export helpers include filename sanitization (`app_editor_save_plan`, `app_editor_save_diff`).
 
 ---
 
@@ -554,6 +565,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`, plus `Ctrl+N`, `Tab`, `Fn + [`).
 - [x] Integrate lightweight Markdown renderer (headings, bold/italic/strike/code, links, tables, code blocks, lists, quotes, rules, checklists; see §3.4 for exact coverage).
 - [x] Implement split-view and fullscreen editing modes (`Ctrl+P` cycle; 400 ms debounce re-render). Adversarial review fixes merged (pipe-less tables, balanced-paren URLs, UTF-8-safe truncation, save-failure feedback); unit test in `tools/md_preview_test.c`.
+- [x] Agent Synergy & Export API: added top-bar `[Attach]` button and hotkeys (`Fn + A`, `Ctrl + U`) to inject active notes directly into AI agent prompt contexts, plus sanitized file exporters to `/sdcard/plans/` and `/sdcard/diffs/`.
 
 ### Phase 5: Remote OpenCode & OpenChamber Client
 - [x] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
@@ -561,6 +573,10 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Design dual-pane UI: sessions sidebar and scrollable chat stream.
 - [x] Implement rich message cards: reasoning/thought accordions, tool logs, diff visualizer.
 - [x] Build interactive Permission Request popup system.
+- [x] Interactive Diff & Session Export: color-coded unified diff viewer in right inspector, `[Diff]`, `[Save Diff]`, and `[Save Plan]` export triggers.
+- [x] Dual-Way Synergy & Input Bar: integrated `[Note]` button in OpenDev input bar (`Fn + N`) to pull active notes; fixed viewport positioning and padding for full visibility across all 4 responsive viewport modes (Tri-Pane, Left-Only, Right-Only, Focus Mode).
+- [x] Hardened REST & SSE Engine: fixed HTTP Authorization header concatenation, resolved premature SSE buffer clearing, and implemented fallback parsing for message parts and tool inputs.
+- [x] Camera-Based OpenChamber QR Pairing: onboard SC2356 MIPI-CSI camera capture + `quirc` QR decoder on Core 0 with live viewfinder modal in `app_opendev`, pairing token extraction, and simulator mock support.
 
 ### Phase 6: Antigravity Native Client (Path B)
 - [ ] Design and implement the host-side `agy-bridge` Python daemon in `tools/agy_bridge/`.
@@ -586,12 +602,12 @@ tab5-devos/
 │   ├── devos_core/                # App manager, window switcher, event bus
 │   ├── devos_ui/                  # LVGL v9 themes, widgets, top bar, home dashboard
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP routing, virtual transport
-│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
+│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC, SC2356 camera)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
 │   ├── microlink/                 # Tailscale / WireGuard client
 │   ├── libssh2_port/              # libssh2 SSH client component
-│   └── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
-│                                 # (no markdown_parser component — renderer lives in app_editor)
+│   ├── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
+│   └── quirc/                     # Pure-C QR code recognition library
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
 │   ├── apps/
@@ -612,9 +628,10 @@ tab5-devos/
 │   │   ├── bridge_server.py       # FastAPI / WebSocket server (port 8420)
 │   │   ├── transcript_watcher.py  # Realtime parser for transcript.jsonl
 │   │   └── requirements.txt       # Python dependencies
-│   └── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
-│   └── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
-│   └── opendev_test.c             # Host-side unit test for the OpenCode engine (run in isolated CWD)
+│   ├── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
+│   ├── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
+│   ├── opendev_test.c             # Host-side unit test for the OpenCode engine
+│   └── camera_qr_test.c           # Host-side unit test for Tab5 camera & QR decoder
 ```
 
 ---

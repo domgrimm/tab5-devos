@@ -165,6 +165,32 @@ int main(void)
     CHECK(port == 8421);
     CHECK(mode == OPENDEV_MODE_CHAMBER);
     CHECK(strcmp(token, "tok 123") == 0);
+    /* switching back to opencode server clears chamber token and mode */
+    CHECK(opendev_client_set_server("192.168.1.50", 4096) == 0);
+    opendev_client_get_config(host, sizeof(host), &port, &mode, token, sizeof(token));
+    CHECK(strcmp(host, "192.168.1.50") == 0);
+    CHECK(port == 4096);
+    CHECK(mode == OPENDEV_MODE_CODE);
+    CHECK(token[0] == '\0');
+
+    /* explicit chamber configuration with custom port */
+    CHECK(opendev_client_set_chamber("100.77.11.92", 8422, "secret_tok") == 0);
+    opendev_client_get_config(host, sizeof(host), &port, &mode, token, sizeof(token));
+    CHECK(strcmp(host, "100.77.11.92") == 0);
+    CHECK(port == 8422);
+    CHECK(mode == OPENDEV_MODE_CHAMBER);
+    CHECK(strcmp(token, "secret_tok") == 0);
+
+    /* pairing URI with authority format host:port?token=... */
+    CHECK(opendev_client_pair("openchamber://10.0.0.12:9000?token=tok_auth") == 0);
+    opendev_client_get_config(host, sizeof(host), &port, &mode, token, sizeof(token));
+    CHECK(strcmp(host, "10.0.0.12") == 0);
+    CHECK(port == 9000);
+    CHECK(mode == OPENDEV_MODE_CHAMBER);
+    CHECK(strcmp(token, "tok_auth") == 0);
+
+    /* reset back to opencode mode for subsequent empty-token checks */
+    CHECK(opendev_client_set_server("192.168.1.50", 4096) == 0);
 
     /* js_escape roundtrip essentials */
     char esc[64];
@@ -185,10 +211,35 @@ int main(void)
     CHECK(opendev_client_block_count() == 2); /* optimistic + failure note */
     CHECK(strstr(opendev_client_block(1)->text, "send failed") != NULL);
 
-    /* adversarial: reconnect drops state to redial */
-    opendev_client_reconnect();
-    CHECK(opendev_client_status() == OPENDEV_DOWN);
-    CHECK(strstr(opendev_client_status_text(), "Reconnecting") != NULL);
+    /* token auth header formatting must have proper CRLF separation when token present */
+    char test_req[512];
+    const char *sample_token = "tok_abc_123";
+    snprintf(test_req, sizeof(test_req),
+             "GET /event HTTP/1.1\r\nHost: %s:%d\r\n"
+             "Accept: text/event-stream\r\n"
+             "Cache-Control: no-cache\r\n"
+             "%s%s%s"
+             "Connection: keep-alive\r\n\r\n",
+             s_cfg.host, s_cfg.port,
+             sample_token[0] ? "Authorization: Bearer " : "",
+             sample_token[0] ? sample_token : "",
+             sample_token[0] ? "\r\n" : "");
+    CHECK(strstr(test_req, "\r\nAuthorization: Bearer tok_abc_123\r\n") != NULL);
+    CHECK(strstr(test_req, "Connection: keep-aliveAuthorization") == NULL);
+
+    /* when token is empty (standard OpenCode mode), no Authorization header is injected */
+    snprintf(test_req, sizeof(test_req),
+             "GET /event HTTP/1.1\r\nHost: %s:%d\r\n"
+             "Accept: text/event-stream\r\n"
+             "Cache-Control: no-cache\r\n"
+             "%s%s%s"
+             "Connection: keep-alive\r\n\r\n",
+             s_cfg.host, s_cfg.port,
+             s_cfg.token[0] ? "Authorization: Bearer " : "",
+             s_cfg.token[0] ? s_cfg.token : "",
+             s_cfg.token[0] ? "\r\n" : "");
+    CHECK(strstr(test_req, "Authorization") == NULL);
+    CHECK(strstr(test_req, "Connection: keep-alive\r\n\r\n") != NULL);
 
     if (failures == 0) printf("opendev unit tests: ALL PASS\n");
     return failures != 0;

@@ -4,8 +4,9 @@
  * and emphasis flanking rules. Run after touching the editor renderer:
  *
  *   gcc -o /tmp/md_preview_test tools/md_preview_test.c -I. -Imain/include \
- *     -Imain/apps/app_editor -Icomponents/lvgl -Icomponents/devos_core \
- *     -Icomponents/devos_ui build_sim/lib/liblvgl.a -lm && /tmp/md_preview_test
+ *     -Imain/apps/app_editor -Icomponents/opendev_client -Icomponents/lvgl \
+ *     -Icomponents/devos_core -Icomponents/devos_ui build_sim/lib/liblvgl.a -lm \
+ *     && /tmp/md_preview_test
  *
  * (Requires a completed `ninja -C build_sim` for liblvgl.a.)
  */
@@ -33,6 +34,7 @@ bool devos_theme_is_dark(void) { return true; }
 static devos_telemetry_t stub_telemetry;
 const devos_telemetry_t *devos_telemetry_get(void) { return &stub_telemetry; }
 void devos_telemetry_update(const devos_telemetry_t *t) { (void)t; }
+int opendev_client_send(const char *t) { (void)t; return 0; }
 
 static int failures = 0;
 #define CHECK(cond) do { \
