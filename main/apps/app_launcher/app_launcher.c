@@ -159,6 +159,7 @@ static void refresh_card_positions(void)
         int app_id = slot_to_app[slot];
         int card_idx = app_id - 1;
         if (card_idx >= 0 && card_idx < 6 && cards[card_idx]) {
+            lv_obj_remove_state(cards[card_idx], LV_STATE_FOCUSED | LV_STATE_PRESSED);
             lv_obj_set_pos(cards[card_idx], slot_coords[slot].x, slot_coords[slot].y);
 
             char title_buf[64];
@@ -173,16 +174,22 @@ static void refresh_card_positions(void)
             }
             lv_label_set_text(card_titles[card_idx], title_buf);
 
-            /* Border styling */
+            /* Border styling: apply to both state 0 and LV_STATE_FOCUSED */
             if (arrange_mode && selected_slot == slot) {
                 lv_obj_set_style_border_color(cards[card_idx], p->accent_warning, 0);
+                lv_obj_set_style_border_color(cards[card_idx], p->accent_warning, LV_STATE_FOCUSED);
                 lv_obj_set_style_border_width(cards[card_idx], 3, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 3, LV_STATE_FOCUSED);
             } else if (arrange_mode) {
                 lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, 0);
+                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, LV_STATE_FOCUSED);
                 lv_obj_set_style_border_width(cards[card_idx], 1, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 1, LV_STATE_FOCUSED);
             } else {
                 lv_obj_set_style_border_color(cards[card_idx], p->surface_border, 0);
+                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, LV_STATE_FOCUSED);
                 lv_obj_set_style_border_width(cards[card_idx], 1, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 2, LV_STATE_FOCUSED);
             }
         }
     }
@@ -228,12 +235,17 @@ static void refresh_card_positions(void)
 void app_launcher_swap_slots(int slot_a, int slot_b)
 {
     if (slot_a < 0 || slot_a >= 6 || slot_b < 0 || slot_b >= 6 || slot_a == slot_b) {
+        selected_slot = -1;
+        refresh_card_positions();
         return;
     }
 
     int temp = slot_to_app[slot_a];
     slot_to_app[slot_a] = slot_to_app[slot_b];
     slot_to_app[slot_b] = temp;
+
+    /* Always clear active selection before refreshing card positions */
+    selected_slot = -1;
 
     save_layout();
     refresh_card_positions();
@@ -288,6 +300,11 @@ static void card_click_cb(lv_event_t *e)
         devos_core_switch_app((devos_app_id_t)app_id);
     } else {
         /* Arrange Mode: Select or Swap */
+        lv_obj_t *target_obj = (lv_obj_t *)lv_event_get_target(e);
+        if (target_obj) {
+            lv_obj_remove_state(target_obj, LV_STATE_FOCUSED | LV_STATE_PRESSED);
+        }
+
         int clicked_slot = -1;
         for (int i = 0; i < 6; i++) {
             if (slot_to_app[i] == app_id) {
@@ -307,8 +324,9 @@ static void card_click_cb(lv_event_t *e)
                 refresh_card_positions();
             } else {
                 /* Second tile clicked: Swap! */
-                app_launcher_swap_slots(selected_slot, clicked_slot);
+                int source = selected_slot;
                 selected_slot = -1;
+                app_launcher_swap_slots(source, clicked_slot);
             }
         }
     }
@@ -460,8 +478,9 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
                 selected_slot = -1;
                 refresh_card_positions();
             } else {
-                app_launcher_swap_slots(selected_slot, slot);
+                int source = selected_slot;
                 selected_slot = -1;
+                app_launcher_swap_slots(source, slot);
             }
             return true;
         }
