@@ -87,36 +87,69 @@ static void append_to_screen_buffer(int sess_idx, const char *raw_data, size_t l
     for (size_t i = 0; i < len; i++) {
         char ch = raw_data[i];
 
-        /* ANSI Escape Sequence Handling */
-        if (ch == '\033' && i + 1 < len && raw_data[i + 1] == '[') {
-            i += 2;
-            /* Parse until terminating letter */
-            while (i < len && !(raw_data[i] >= 'A' && raw_data[i] <= 'Z') &&
-                   !(raw_data[i] >= 'a' && raw_data[i] <= 'z') && raw_data[i] != '~') {
-                i++;
-            }
-            if (i < len) {
-                char term_cmd = raw_data[i];
-                if (term_cmd == 'J' || term_cmd == 'H') {
-                    /* Clear screen or Home */
-                    *dlen = 0;
-                    dest[0] = '\0';
+        /* ANSI / Terminal Escape Sequences */
+        if (ch == '\033') {
+            /* OSC sequence: \033] ... \007 or \033\ */
+            if (i + 1 < len && raw_data[i + 1] == ']') {
+                i += 2;
+                while (i < len && raw_data[i] != '\007') {
+                    if (raw_data[i] == '\033' && i + 1 < len && raw_data[i + 1] == '\\') {
+                        i++;
+                        break;
+                    }
+                    i++;
                 }
+                continue;
             }
+            /* CSI sequence: \033[ ... [A-Za-z~] */
+            if (i + 1 < len && raw_data[i + 1] == '[') {
+                i += 2;
+                while (i < len && !(raw_data[i] >= 'A' && raw_data[i] <= 'Z') &&
+                       !(raw_data[i] >= 'a' && raw_data[i] <= 'z') && raw_data[i] != '~') {
+                    i++;
+                }
+                if (i < len) {
+                    char term_cmd = raw_data[i];
+                    if (term_cmd == 'J') {
+                        /* Clear screen */
+                        *dlen = 0;
+                        dest[0] = '\0';
+                    }
+                }
+                continue;
+            }
+            /* Charset selection: \033( or \033) */
+            if (i + 1 < len && (raw_data[i + 1] == '(' || raw_data[i + 1] == ')')) {
+                i += 2;
+                continue;
+            }
+            /* Skip any other raw escape char */
             continue;
         }
 
+        /* Carriage return: if followed by \n, skip; if standalone, rewind line */
         if (ch == '\r') {
-            /* Carriage return */
+            if (i + 1 < len && raw_data[i + 1] == '\n') {
+                continue;
+            }
+            while (*dlen > 0 && dest[*dlen - 1] != '\n') {
+                (*dlen)--;
+            }
+            dest[*dlen] = '\0';
             continue;
         }
 
-        if (ch == '\b') {
-            /* Backspace: remove last character if not at start of line */
+        /* Backspace / DEL */
+        if (ch == '\b' || (unsigned char)ch == 0x7F) {
             if (*dlen > 0 && dest[*dlen - 1] != '\n') {
                 (*dlen)--;
                 dest[*dlen] = '\0';
             }
+            continue;
+        }
+
+        /* Filter out unprintable control characters below ASCII 32 (except newline & tab) */
+        if ((unsigned char)ch < 32 && ch != '\n' && ch != '\t') {
             continue;
         }
 
@@ -1069,7 +1102,7 @@ static void terminal_show(void)
             app_terminal_switch_session(found_sess);
         } else {
             /* Create new session */
-            int new_id = ssh_port_create_session(target_host, target_host, 22, "dom",
+            int new_id = ssh_port_create_session(target_host, target_host, 22, "root",
                                                  SSH_AUTH_KEY, NULL, current_cols, current_rows);
             if (new_id > 0) {
                 s_sidebar_tab = 0;

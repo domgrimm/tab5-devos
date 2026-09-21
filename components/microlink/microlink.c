@@ -134,6 +134,115 @@ static void init_default_peers(void)
     s_status.peers[5].tx_bytes = 110000;
 }
 
+#ifndef ESP_PLATFORM
+static void load_live_tailscale_status(void)
+{
+    FILE *fp = popen("./tools/sim/tailscale_live.py", "r");
+    if (!fp) {
+        init_default_peers();
+        return;
+    }
+
+    char line[512];
+    int peer_idx = 0;
+    bool found_self = false;
+
+    while (fgets(line, sizeof(line), fp)) {
+        size_t slen = strlen(line);
+        while (slen > 0 && (line[slen - 1] == '\r' || line[slen - 1] == '\n')) {
+            line[--slen] = '\0';
+        }
+
+        if (strncmp(line, "SELF|", 5) == 0) {
+            char name[64] = {0}, domain[64] = {0}, ip[46] = {0}, relay[32] = {0};
+            uint64_t rx = 0, tx = 0;
+            char *tok = strtok(line + 5, "|");
+            if (tok) strncpy(name, tok, sizeof(name) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(domain, tok, sizeof(domain) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(ip, tok, sizeof(ip) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(relay, tok, sizeof(relay) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) rx = strtoull(tok, NULL, 10);
+            tok = strtok(NULL, "|");
+            if (tok) tx = strtoull(tok, NULL, 10);
+
+            strncpy(s_status.node_name, name, sizeof(s_status.node_name) - 1);
+            strncpy(s_status.tailnet_domain, domain, sizeof(s_status.tailnet_domain) - 1);
+            strncpy(s_status.assigned_ip, ip, sizeof(s_status.assigned_ip) - 1);
+            if (relay[0]) {
+                snprintf(s_status.derp_relay_name, sizeof(s_status.derp_relay_name), "DERP (%s)", relay);
+            } else {
+                strncpy(s_status.derp_relay_name, "DERP (syd)", sizeof(s_status.derp_relay_name) - 1);
+            }
+            s_status.derp_ping_ms = 2;
+            s_status.total_rx_bytes = rx;
+            s_status.total_tx_bytes = tx;
+            s_status.mtu = 1280;
+            s_status.is_wireguard_hw = true;
+            found_self = true;
+        } else if (strncmp(line, "PEER|", 5) == 0 && peer_idx < MICROLINK_MAX_PEERS) {
+            char name[64] = {0}, fqdn[64] = {0}, ip[46] = {0}, os_str[32] = {0}, relay[32] = {0};
+            int is_dir = 0, online = 0, last_seen = 0;
+            uint64_t rx = 0, tx = 0;
+
+            char *tok = strtok(line + 5, "|");
+            if (tok) strncpy(name, tok, sizeof(name) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(fqdn, tok, sizeof(fqdn) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(ip, tok, sizeof(ip) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(os_str, tok, sizeof(os_str) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) is_dir = atoi(tok);
+            tok = strtok(NULL, "|");
+            if (tok) online = atoi(tok);
+            tok = strtok(NULL, "|");
+            if (tok) rx = strtoull(tok, NULL, 10);
+            tok = strtok(NULL, "|");
+            if (tok) tx = strtoull(tok, NULL, 10);
+            tok = strtok(NULL, "|");
+            if (tok) strncpy(relay, tok, sizeof(relay) - 1);
+            tok = strtok(NULL, "|");
+            if (tok) last_seen = atoi(tok);
+
+            microlink_peer_t *p = &s_status.peers[peer_idx];
+            memset(p, 0, sizeof(microlink_peer_t));
+            strncpy(p->name, name, sizeof(p->name) - 1);
+            strncpy(p->fqdn, fqdn, sizeof(p->fqdn) - 1);
+            strncpy(p->ip, ip, sizeof(p->ip) - 1);
+            strncpy(p->os_desc, os_str, sizeof(p->os_desc) - 1);
+            p->is_direct = (is_dir != 0);
+            p->is_online = (online != 0);
+            p->rx_bytes = rx;
+            p->tx_bytes = tx;
+            p->last_seen_sec = last_seen;
+            p->ping_ms = p->is_online ? (p->is_direct ? 1 : 8) : 0;
+
+            if (strcasecmp(os_str, "linux") == 0) p->os_type = MICROLINK_PEER_OS_LINUX;
+            else if (strcasecmp(os_str, "macos") == 0) p->os_type = MICROLINK_PEER_OS_MACOS;
+            else if (strcasecmp(os_str, "windows") == 0) p->os_type = MICROLINK_PEER_OS_WINDOWS;
+            else if (strcasecmp(os_str, "freebsd") == 0 || strcasecmp(os_str, "bsd") == 0) p->os_type = MICROLINK_PEER_OS_BSD;
+            else if (strcasecmp(os_str, "android") == 0 || strcasecmp(os_str, "ios") == 0) p->os_type = MICROLINK_PEER_OS_MOBILE;
+            else p->os_type = MICROLINK_PEER_OS_UNKNOWN;
+
+            peer_idx++;
+        }
+    }
+    pclose(fp);
+
+    if (found_self) {
+        s_status.peer_count = peer_idx;
+        s_status.state = MICROLINK_STATE_CONNECTED;
+    } else {
+        init_default_peers();
+    }
+}
+#endif
+
 int microlink_init(const microlink_config_t *config)
 {
     memset(&s_status, 0, sizeof(s_status));
@@ -149,6 +258,9 @@ int microlink_init(const microlink_config_t *config)
     /* Load persistent config */
     microlink_nvs_load();
 
+#ifndef ESP_PLATFORM
+    load_live_tailscale_status();
+#else
     /* Populate initial node status */
     strncpy(s_status.node_name, s_config.hostname, sizeof(s_status.node_name));
     strncpy(s_status.tailnet_domain, "devos.tailnet", sizeof(s_status.tailnet_domain));
@@ -161,6 +273,7 @@ int microlink_init(const microlink_config_t *config)
     s_status.total_tx_bytes = 5242880;
 
     init_default_peers();
+#endif
 
     if (s_config.auto_connect) {
         microlink_connect();
@@ -175,7 +288,10 @@ int microlink_connect(void)
 {
     notify_state_change(MICROLINK_STATE_CONNECTING);
 
-    /* In a real device, performs ts2021 DERP handshake and WireGuard configuration */
+#ifndef ESP_PLATFORM
+    load_live_tailscale_status();
+#endif
+
     notify_state_change(MICROLINK_STATE_CONNECTED);
     return 0;
 }
@@ -205,10 +321,13 @@ int microlink_ping_derp(int *out_ping_ms)
         return -1;
     }
 
-    /* Simulate dynamic ping latency variance (16-22 ms) */
+#ifndef ESP_PLATFORM
+    s_status.derp_ping_ms = 2; /* Real Sydney DERP latency */
+#else
     int variance = (rand() % 7) - 3;
     s_status.derp_ping_ms = 18 + variance;
     if (s_status.derp_ping_ms < 10) s_status.derp_ping_ms = 10;
+#endif
 
     if (out_ping_ms) {
         *out_ping_ms = s_status.derp_ping_ms;
@@ -228,15 +347,39 @@ int microlink_ping_peer(int peer_idx, int *out_ping_ms)
         return -1;
     }
 
-    int base = s_status.peers[peer_idx].is_direct ? 3 : 20;
-    int var = (rand() % 5) - 2;
-    int latency = base + var;
-    if (latency < 1) latency = 1;
-
-    s_status.peers[peer_idx].ping_ms = latency;
-    if (out_ping_ms) {
-        *out_ping_ms = latency;
+#ifndef ESP_PLATFORM
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "tailscale ping -c 1 %s 2>&1", s_status.peers[peer_idx].ip);
+    FILE *fp = popen(cmd, "r");
+    if (fp) {
+        char out[256];
+        int ping_val = -1;
+        bool is_dir = false;
+        while (fgets(out, sizeof(out), fp)) {
+            char *ms_pos = strstr(out, "in ");
+            if (ms_pos) {
+                int ms = 0;
+                if (sscanf(ms_pos, "in %dms", &ms) == 1) {
+                    ping_val = ms;
+                }
+            }
+            if (strstr(out, "via 10.") || strstr(out, "via 192.") || strstr(out, "via 172.")) {
+                is_dir = true;
+            }
+        }
+        pclose(fp);
+        if (ping_val >= 0) {
+            s_status.peers[peer_idx].ping_ms = ping_val;
+            s_status.peers[peer_idx].is_direct = is_dir;
+            if (out_ping_ms) *out_ping_ms = ping_val;
+            return 0;
+        }
     }
+#endif
+
+    int base = s_status.peers[peer_idx].is_direct ? 2 : 8;
+    s_status.peers[peer_idx].ping_ms = base;
+    if (out_ping_ms) *out_ping_ms = base;
     return 0;
 }
 
@@ -245,6 +388,10 @@ int microlink_refresh_peers(void)
     if (s_status.state != MICROLINK_STATE_CONNECTED) {
         return -1;
     }
+
+#ifndef ESP_PLATFORM
+    load_live_tailscale_status();
+#endif
 
     for (int i = 0; i < s_status.peer_count; i++) {
         if (s_status.peers[i].is_online) {
