@@ -16,6 +16,155 @@ static lv_obj_t *lbl_thinking_arrow = NULL;
 /* Interactive Permission Modal */
 static lv_obj_t *modal_permission = NULL;
 
+/* Theme-tracked widgets */
+static lv_obj_t *lbl_agy_title = NULL;
+static lv_obj_t *sess_box = NULL;
+static lv_obj_t *lbl_conv = NULL;
+static lv_obj_t *lbl_mod = NULL;
+static lv_obj_t *lbl_sub = NULL;
+static lv_obj_t *sub_btns[2] = {NULL};
+static lv_obj_t *sub_lbls[2] = {NULL};
+static lv_obj_t *lbl_slash = NULL;
+static lv_obj_t *cmd_lbls[4] = {NULL};
+static lv_obj_t *action_strip = NULL;
+static lv_obj_t *lbl_strip = NULL;
+static lv_obj_t *chat_scroll = NULL;
+static lv_obj_t *user_bubble = NULL;
+static lv_obj_t *lbl_user = NULL;
+static lv_obj_t *thinking_box = NULL;
+static lv_obj_t *tool_card = NULL;
+static lv_obj_t *lbl_tool_title = NULL;
+static lv_obj_t *lbl_tool_status = NULL;
+static lv_obj_t *resp_card = NULL;
+static lv_obj_t *lbl_resp = NULL;
+static lv_obj_t *input_bar = NULL;
+static lv_obj_t *ta = NULL;
+static lv_obj_t *btn_send = NULL;
+static lv_obj_t *lbl_send = NULL;
+static lv_obj_t *lbl_insp_title = NULL;
+static lv_obj_t *tab_artifacts = NULL;
+static lv_obj_t *lbl_tab_art = NULL;
+static lv_obj_t *art_btns[3] = {NULL};
+static lv_obj_t *art_lbls[3] = {NULL};
+static lv_obj_t *lbl_m_title = NULL;
+static lv_obj_t *lbl_m_desc = NULL;
+static lv_obj_t *btn_y = NULL;
+static lv_obj_t *btn_n = NULL;
+static lv_obj_t *btn_a = NULL;
+static lv_obj_t *lbl_ba = NULL;
+
+static void apply_theme(const devos_palette_t *p, void *user_data)
+{
+    LV_UNUSED(user_data);
+    if (!screen) return;
+
+    lv_obj_set_style_bg_color(screen, p->bg, 0);
+
+    /* Left sidebar */
+    if (lbl_agy_title) lv_obj_set_style_text_color(lbl_agy_title, p->text_secondary, 0);
+    if (sess_box) {
+        lv_obj_set_style_bg_color(sess_box, p->surface_active, 0);
+        lv_obj_set_style_border_color(sess_box, p->accent_primary, 0);
+    }
+    if (lbl_conv) lv_obj_set_style_text_color(lbl_conv, p->accent_primary, 0);
+    if (lbl_mod) lv_obj_set_style_text_color(lbl_mod, p->text_primary, 0);
+    if (lbl_sub) lv_obj_set_style_text_color(lbl_sub, p->accent_secondary, 0);
+    for (int i = 0; i < 2; i++) {
+        if (sub_btns[i]) {
+            lv_obj_set_style_bg_color(sub_btns[i], p->surface, 0);
+            lv_obj_set_style_border_color(sub_btns[i], p->surface_border, 0);
+        }
+        if (sub_lbls[i]) {
+            lv_obj_set_style_text_color(sub_lbls[i],
+                (i == 1) ? p->accent_secondary : p->text_secondary, 0);
+        }
+    }
+    if (lbl_slash) lv_obj_set_style_text_color(lbl_slash, p->text_secondary, 0);
+    for (int i = 0; i < 4; i++) {
+        if (cmd_lbls[i]) lv_obj_set_style_text_color(cmd_lbls[i], p->accent_primary, 0);
+    }
+
+    /* Center */
+    if (action_strip) {
+        lv_obj_set_style_bg_color(action_strip, p->bg_alt, 0);
+        lv_obj_set_style_border_color(action_strip, p->surface_border, 0);
+    }
+    if (lbl_strip) lv_obj_set_style_text_color(lbl_strip, p->text_secondary, 0);
+    if (chat_scroll) lv_obj_set_style_bg_color(chat_scroll, p->bg, 0);
+    if (user_bubble) {
+        lv_obj_set_style_bg_color(user_bubble, p->surface_active, 0);
+        lv_obj_set_style_border_color(user_bubble, p->surface_border, 0);
+    }
+    if (lbl_user) lv_obj_set_style_text_color(lbl_user, p->text_primary, 0);
+    if (thinking_box) {
+        lv_obj_set_style_bg_color(thinking_box, p->thinking_bg, 0);
+        lv_obj_set_style_border_color(thinking_box, p->thinking_border, 0);
+    }
+    if (lbl_thinking_arrow) {
+        lv_obj_set_style_text_color(lbl_thinking_arrow, p->accent_primary, 0);
+    }
+    if (thinking_body) lv_obj_set_style_text_color(thinking_body, p->text_secondary, 0);
+    if (tool_card) {
+        lv_obj_set_style_bg_color(tool_card, p->tool_card_bg, 0);
+        lv_obj_set_style_border_color(tool_card, p->tool_card_border, 0);
+    }
+    if (lbl_tool_title) {
+        lv_obj_set_style_text_color(lbl_tool_title, p->accent_secondary, 0);
+    }
+    if (lbl_tool_status) {
+        lv_obj_set_style_text_color(lbl_tool_status, p->text_muted, 0);
+    }
+    if (resp_card) {
+        lv_obj_set_style_bg_color(resp_card, p->surface, 0);
+        lv_obj_set_style_border_color(resp_card, p->surface_border, 0);
+    }
+    if (lbl_resp) lv_obj_set_style_text_color(lbl_resp, p->text_primary, 0);
+    if (input_bar) {
+        lv_obj_set_style_bg_color(input_bar, p->surface, 0);
+        lv_obj_set_style_border_color(input_bar, p->surface_border, 0);
+    }
+    if (ta) {
+        lv_obj_set_style_bg_color(ta, p->bg_alt, 0);
+        lv_obj_set_style_border_color(ta, p->surface_border, 0);
+        lv_obj_set_style_text_color(ta, p->text_primary, 0);
+    }
+    if (btn_send) lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
+    if (lbl_send) {
+        /* ponytail: black on neon cyan (dark) / white on cobalt (light) */
+        lv_obj_set_style_text_color(lbl_send,
+            devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
+    }
+
+    /* Right inspector */
+    if (lbl_insp_title) {
+        lv_obj_set_style_text_color(lbl_insp_title, p->text_secondary, 0);
+    }
+    if (tab_artifacts) {
+        lv_obj_set_style_bg_color(tab_artifacts, p->surface_active, 0);
+        lv_obj_set_style_border_color(tab_artifacts, p->accent_primary, 0);
+    }
+    if (lbl_tab_art) lv_obj_set_style_text_color(lbl_tab_art, p->accent_primary, 0);
+    for (int i = 0; i < 3; i++) {
+        if (art_btns[i]) {
+            lv_obj_set_style_bg_color(art_btns[i], p->surface, 0);
+            lv_obj_set_style_border_color(art_btns[i], p->surface_border, 0);
+        }
+        if (art_lbls[i]) lv_obj_set_style_text_color(art_lbls[i], p->text_primary, 0);
+    }
+
+    /* Permission modal */
+    if (modal_permission) {
+        lv_obj_set_style_bg_color(modal_permission, p->surface, 0);
+        lv_obj_set_style_border_color(modal_permission, p->accent_warning, 0);
+    }
+    if (lbl_m_title) lv_obj_set_style_text_color(lbl_m_title, p->accent_warning, 0);
+    if (lbl_m_desc) lv_obj_set_style_text_color(lbl_m_desc, p->text_primary, 0);
+    if (btn_y) lv_obj_set_style_bg_color(btn_y, p->accent_secondary, 0);
+    if (btn_n) lv_obj_set_style_bg_color(btn_n, p->accent_danger, 0);
+    if (btn_a) lv_obj_set_style_bg_color(btn_a, p->surface_active, 0);
+    if (lbl_ba) lv_obj_set_style_text_color(lbl_ba, p->text_primary, 0);
+}
+
 static void toggle_thinking_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -110,14 +259,14 @@ static void antigravity_init(void)
     /* ----------------------------------------------------------------------
      * 1. Left Sidebar: Sessions, Subagents & Models (260px)
      * ---------------------------------------------------------------------- */
-    lv_obj_t *lbl_agy_title = lv_label_create(left_panel);
+    lbl_agy_title = lv_label_create(left_panel);
     lv_label_set_text(lbl_agy_title, "ANTIGRAVITY (AGY)");
     lv_obj_set_pos(lbl_agy_title, 4, 4);
     lv_obj_set_style_text_font(lbl_agy_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_agy_title, p->text_secondary, 0);
 
     /* Session card */
-    lv_obj_t *sess_box = lv_obj_create(left_panel);
+    sess_box = lv_obj_create(left_panel);
     lv_obj_set_size(sess_box, DEVOS_PANE_LEFT_WIDTH - 28, 64);
     lv_obj_set_pos(sess_box, 4, 26);
     lv_obj_set_style_bg_color(sess_box, p->surface_active, 0);
@@ -126,20 +275,20 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(sess_box, 6, 0);
     lv_obj_set_style_pad_all(sess_box, 6, 0);
 
-    lv_obj_t *lbl_conv = lv_label_create(sess_box);
+    lbl_conv = lv_label_create(sess_box);
     lv_label_set_text(lbl_conv, "#41b1d485 (devOS)");
     lv_obj_set_pos(lbl_conv, 4, 2);
     lv_obj_set_style_text_font(lbl_conv, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_conv, p->accent_primary, 0);
 
-    lv_obj_t *lbl_mod = lv_label_create(sess_box);
+    lbl_mod = lv_label_create(sess_box);
     lv_label_set_text(lbl_mod, "Gemini 3.8 Flash (High)");
     lv_obj_set_pos(lbl_mod, 4, 26);
     lv_obj_set_style_text_font(lbl_mod, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_mod, p->text_primary, 0);
 
     /* Subagent Hierarchy */
-    lv_obj_t *lbl_sub = lv_label_create(left_panel);
+    lbl_sub = lv_label_create(left_panel);
     lv_label_set_text(lbl_sub, "SUBAGENTS TREE");
     lv_obj_set_pos(lbl_sub, 4, 102);
     lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_12, 0);
@@ -147,7 +296,7 @@ static void antigravity_init(void)
 
     const char *subagents[2] = {LV_SYMBOL_BULLET " research (idle)", LV_SYMBOL_BULLET " self (running)"};
     for (int i = 0; i < 2; i++) {
-        lv_obj_t *btn_sa = lv_button_create(left_panel);
+        lv_obj_t *btn_sa = sub_btns[i] = lv_button_create(left_panel);
         lv_obj_set_size(btn_sa, DEVOS_PANE_LEFT_WIDTH - 28, 34);
         lv_obj_set_pos(btn_sa, 4, 124 + i * 40);
         lv_obj_set_style_bg_color(btn_sa, p->surface, 0);
@@ -155,7 +304,7 @@ static void antigravity_init(void)
         lv_obj_set_style_border_width(btn_sa, 1, 0);
         lv_obj_set_style_radius(btn_sa, 4, 0);
 
-        lv_obj_t *lsa = lv_label_create(btn_sa);
+        lv_obj_t *lsa = sub_lbls[i] = lv_label_create(btn_sa);
         lv_label_set_text(lsa, subagents[i]);
         lv_obj_align(lsa, LV_ALIGN_LEFT_MID, 4, 0);
         lv_obj_set_style_text_font(lsa, &lv_font_montserrat_12, 0);
@@ -163,7 +312,7 @@ static void antigravity_init(void)
     }
 
     /* Slash commands list */
-    lv_obj_t *lbl_slash = lv_label_create(left_panel);
+    lbl_slash = lv_label_create(left_panel);
     lv_label_set_text(lbl_slash, "SLASH COMMANDS");
     lv_obj_set_pos(lbl_slash, 4, 220);
     lv_obj_set_style_text_font(lbl_slash, &lv_font_montserrat_12, 0);
@@ -171,7 +320,7 @@ static void antigravity_init(void)
 
     const char *cmds[4] = {"/goal (autonomous)", "/plan (architecture)", "/boost (deep think)", "/learn (save skill)"};
     for (int i = 0; i < 4; i++) {
-        lv_obj_t *lbl_cmd = lv_label_create(left_panel);
+        lv_obj_t *lbl_cmd = cmd_lbls[i] = lv_label_create(left_panel);
         lv_label_set_text(lbl_cmd, cmds[i]);
         lv_obj_set_pos(lbl_cmd, 8, 244 + i * 26);
         lv_obj_set_style_text_font(lbl_cmd, &lv_font_montserrat_12, 0);
@@ -182,7 +331,7 @@ static void antigravity_init(void)
      * 2. Center Panel: Chat Stream & Thought Accordion
      * ---------------------------------------------------------------------- */
     /* Viewport layout action strip */
-    lv_obj_t *action_strip = lv_obj_create(center_panel);
+    action_strip = lv_obj_create(center_panel);
     lv_obj_set_size(action_strip, lv_pct(100), 28);
     lv_obj_set_pos(action_strip, 0, 0);
     lv_obj_set_style_bg_color(action_strip, p->bg_alt, 0);
@@ -193,14 +342,14 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_all(action_strip, 2, 0);
     lv_obj_clear_flag(action_strip, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *lbl_strip = lv_label_create(action_strip);
+    lbl_strip = lv_label_create(action_strip);
     lv_label_set_text(lbl_strip, "Hotkeys: [Fn+F] Focus Mode  |  [Fn+[] Toggle Left  |  [Fn+]] Toggle Right");
     lv_obj_align(lbl_strip, LV_ALIGN_LEFT_MID, 6, 0);
     lv_obj_set_style_text_font(lbl_strip, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_strip, p->text_secondary, 0);
 
     /* Chat Scroll Area */
-    lv_obj_t *chat_scroll = lv_obj_create(center_panel);
+    chat_scroll = lv_obj_create(center_panel);
     lv_obj_set_size(chat_scroll, lv_pct(100), DEVOS_CONTENT_HEIGHT - 28 - 56);
     lv_obj_set_pos(chat_scroll, 0, 28);
     lv_obj_set_style_bg_color(chat_scroll, p->bg, 0);
@@ -208,7 +357,7 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_all(chat_scroll, 8, 0);
 
     /* User Bubble */
-    lv_obj_t *user_bubble = lv_obj_create(chat_scroll);
+    user_bubble = lv_obj_create(chat_scroll);
     lv_obj_set_size(user_bubble, lv_pct(100), 44);
     lv_obj_set_style_bg_color(user_bubble, p->surface_active, 0);
     lv_obj_set_style_border_color(user_bubble, p->surface_border, 0);
@@ -216,13 +365,13 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(user_bubble, 6, 0);
     lv_obj_set_style_pad_all(user_bubble, 8, 0);
 
-    lv_obj_t *lbl_user = lv_label_create(user_bubble);
+    lbl_user = lv_label_create(user_bubble);
     lv_label_set_text(lbl_user, "> User: Review PLAN.md and AGENTS.md and begin building devOS.");
     lv_obj_set_style_text_color(lbl_user, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_user, &lv_font_montserrat_14, 0);
 
     /* Collapsible Thinking Accordion */
-    lv_obj_t *thinking_box = lv_obj_create(chat_scroll);
+    thinking_box = lv_obj_create(chat_scroll);
     lv_obj_set_size(thinking_box, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(thinking_box, p->thinking_bg, 0);
     lv_obj_set_style_border_color(thinking_box, p->thinking_border, 0);
@@ -247,7 +396,7 @@ static void antigravity_init(void)
     lv_obj_set_style_text_font(thinking_body, &lv_font_montserrat_12, 0);
 
     /* Tool Execution Card */
-    lv_obj_t *tool_card = lv_obj_create(chat_scroll);
+    tool_card = lv_obj_create(chat_scroll);
     lv_obj_set_size(tool_card, lv_pct(100), 52);
     lv_obj_set_style_bg_color(tool_card, p->tool_card_bg, 0);
     lv_obj_set_style_border_color(tool_card, p->tool_card_border, 0);
@@ -255,19 +404,19 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(tool_card, 6, 0);
     lv_obj_set_style_pad_all(tool_card, 8, 0);
 
-    lv_obj_t *lbl_tool_title = lv_label_create(tool_card);
+    lbl_tool_title = lv_label_create(tool_card);
     lv_label_set_text(lbl_tool_title, LV_SYMBOL_SETTINGS " Tool: run_command - cmake -B build_sim -S . -DDEVOS_SIMULATOR=ON");
     lv_obj_set_style_text_color(lbl_tool_title, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_tool_title, &lv_font_montserrat_12, 0);
 
-    lv_obj_t *lbl_tool_status = lv_label_create(tool_card);
+    lbl_tool_status = lv_label_create(tool_card);
     lv_label_set_text(lbl_tool_status, "Status: SUCCESS (exit code 0)");
     lv_obj_align(lbl_tool_status, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_text_color(lbl_tool_status, p->text_muted, 0);
     lv_obj_set_style_text_font(lbl_tool_status, &lv_font_montserrat_12, 0);
 
     /* Assistant Markdown Response */
-    lv_obj_t *resp_card = lv_obj_create(chat_scroll);
+    resp_card = lv_obj_create(chat_scroll);
     lv_obj_set_size(resp_card, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(resp_card, p->surface, 0);
     lv_obj_set_style_border_color(resp_card, p->surface_border, 0);
@@ -275,7 +424,7 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(resp_card, 6, 0);
     lv_obj_set_style_pad_all(resp_card, 10, 0);
 
-    lv_obj_t *lbl_resp = lv_label_create(resp_card);
+    lbl_resp = lv_label_create(resp_card);
     lv_label_set_text(lbl_resp,
         "I have initialized the devOS core architecture and components for the M5Stack Tab5!\n\n"
         "Key Systems Implemented:\n"
@@ -288,7 +437,7 @@ static void antigravity_init(void)
     lv_obj_set_style_text_font(lbl_resp, &lv_font_montserrat_14, 0);
 
     /* Bottom Prompt Input Bar */
-    lv_obj_t *input_bar = lv_obj_create(center_panel);
+    input_bar = lv_obj_create(center_panel);
     lv_obj_set_size(input_bar, lv_pct(100), 50);
     lv_obj_set_pos(input_bar, 0, DEVOS_CONTENT_HEIGHT - 50);
     lv_obj_set_style_bg_color(input_bar, p->surface, 0);
@@ -299,7 +448,7 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_all(input_bar, 6, 0);
     lv_obj_clear_flag(input_bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *ta = lv_textarea_create(input_bar);
+    ta = lv_textarea_create(input_bar);
     lv_textarea_set_placeholder_text(ta, "Type message or slash command (/goal, /plan)...");
     lv_obj_set_size(ta, lv_pct(82), 38);
     lv_obj_align(ta, LV_ALIGN_LEFT_MID, 0, 0);
@@ -307,28 +456,29 @@ static void antigravity_init(void)
     lv_obj_set_style_border_color(ta, p->surface_border, 0);
     lv_obj_set_style_text_color(ta, p->text_primary, 0);
 
-    lv_obj_t *btn_send = lv_button_create(input_bar);
+    btn_send = lv_button_create(input_bar);
     lv_obj_set_size(btn_send, lv_pct(16), 38);
     lv_obj_align(btn_send, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_send, 4, 0);
 
-    lv_obj_t *lbl_send = lv_label_create(btn_send);
+    lbl_send = lv_label_create(btn_send);
     lv_label_set_text(lbl_send, "Send " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_send);
-    lv_obj_set_style_text_color(lbl_send, lv_color_black(), 0);
+    lv_obj_set_style_text_color(lbl_send,
+        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
 
     /* ----------------------------------------------------------------------
      * 3. Right Inspector: Artifacts & Changes (300px)
      * ---------------------------------------------------------------------- */
-    lv_obj_t *lbl_insp_title = lv_label_create(right_panel);
+    lbl_insp_title = lv_label_create(right_panel);
     lv_label_set_text(lbl_insp_title, "INSPECTOR (Fn+])");
     lv_obj_set_pos(lbl_insp_title, 4, 4);
     lv_obj_set_style_text_font(lbl_insp_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_insp_title, p->text_secondary, 0);
 
     /* Inspector Tabs: Artifacts | Diffs | Tasks */
-    lv_obj_t *tab_artifacts = lv_button_create(right_panel);
+    tab_artifacts = lv_button_create(right_panel);
     lv_obj_set_size(tab_artifacts, DEVOS_PANE_RIGHT_WIDTH - 28, 32);
     lv_obj_set_pos(tab_artifacts, 4, 26);
     lv_obj_set_style_bg_color(tab_artifacts, p->surface_active, 0);
@@ -336,7 +486,7 @@ static void antigravity_init(void)
     lv_obj_set_style_border_width(tab_artifacts, 1, 0);
     lv_obj_set_style_radius(tab_artifacts, 4, 0);
 
-    lv_obj_t *lbl_tab_art = lv_label_create(tab_artifacts);
+    lbl_tab_art = lv_label_create(tab_artifacts);
     lv_label_set_text(lbl_tab_art, LV_SYMBOL_DIRECTORY " Artifacts & Diffs");
     lv_obj_center(lbl_tab_art);
     lv_obj_set_style_text_font(lbl_tab_art, &lv_font_montserrat_12, 0);
@@ -345,7 +495,7 @@ static void antigravity_init(void)
     /* Artifact list */
     const char *artifacts[3] = {LV_SYMBOL_FILE " welcome.md", LV_SYMBOL_FILE " devos_config.h", LV_SYMBOL_FILE " PLAN.md"};
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *btn_art = lv_button_create(right_panel);
+        lv_obj_t *btn_art = art_btns[i] = lv_button_create(right_panel);
         lv_obj_set_size(btn_art, DEVOS_PANE_RIGHT_WIDTH - 28, 34);
         lv_obj_set_pos(btn_art, 4, 68 + i * 40);
         lv_obj_set_style_bg_color(btn_art, p->surface, 0);
@@ -353,7 +503,7 @@ static void antigravity_init(void)
         lv_obj_set_style_border_width(btn_art, 1, 0);
         lv_obj_set_style_radius(btn_art, 4, 0);
 
-        lv_obj_t *la = lv_label_create(btn_art);
+        lv_obj_t *la = art_lbls[i] = lv_label_create(btn_art);
         lv_label_set_text(la, artifacts[i]);
         lv_obj_align(la, LV_ALIGN_LEFT_MID, 4, 0);
         lv_obj_set_style_text_font(la, &lv_font_montserrat_12, 0);
@@ -371,18 +521,18 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_all(modal_permission, 16, 0);
     lv_obj_add_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *lbl_m_title = lv_label_create(modal_permission);
+    lbl_m_title = lv_label_create(modal_permission);
     lv_label_set_text(lbl_m_title, LV_SYMBOL_WARNING " Agent Permission Request");
     lv_obj_set_style_text_font(lbl_m_title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(lbl_m_title, p->accent_warning, 0);
 
-    lv_obj_t *lbl_m_desc = lv_label_create(modal_permission);
+    lbl_m_desc = lv_label_create(modal_permission);
     lv_label_set_text(lbl_m_desc, "Execute tool: run_command\nTarget: 'ninja -C build_sim'");
     lv_obj_set_pos(lbl_m_desc, 0, 36);
     lv_obj_set_style_text_color(lbl_m_desc, p->text_primary, 0);
 
     /* Action Buttons: [Y] Approve, [N] Deny, [A] Always */
-    lv_obj_t *btn_y = lv_button_create(modal_permission);
+    btn_y = lv_button_create(modal_permission);
     lv_obj_set_size(btn_y, 120, 36);
     lv_obj_set_pos(btn_y, 0, 100);
     lv_obj_set_style_bg_color(btn_y, p->accent_secondary, 0);
@@ -393,7 +543,7 @@ static void antigravity_init(void)
     lv_obj_center(lbl_by);
     lv_obj_set_style_text_color(lbl_by, lv_color_black(), 0);
 
-    lv_obj_t *btn_n = lv_button_create(modal_permission);
+    btn_n = lv_button_create(modal_permission);
     lv_obj_set_size(btn_n, 120, 36);
     lv_obj_set_pos(btn_n, 135, 100);
     lv_obj_set_style_bg_color(btn_n, p->accent_danger, 0);
@@ -404,16 +554,18 @@ static void antigravity_init(void)
     lv_obj_center(lbl_bn);
     lv_obj_set_style_text_color(lbl_bn, lv_color_white(), 0);
 
-    lv_obj_t *btn_a = lv_button_create(modal_permission);
+    btn_a = lv_button_create(modal_permission);
     lv_obj_set_size(btn_a, 145, 36);
     lv_obj_set_pos(btn_a, 270, 100);
     lv_obj_set_style_bg_color(btn_a, p->surface_active, 0);
     lv_obj_add_event_cb(btn_a, permission_modal_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *lbl_ba = lv_label_create(btn_a);
+    lbl_ba = lv_label_create(btn_a);
     lv_label_set_text(lbl_ba, "[A] Always Allow");
     lv_obj_center(lbl_ba);
     lv_obj_set_style_text_color(lbl_ba, p->text_primary, 0);
+
+    devos_theme_add_listener(apply_theme, NULL);
 }
 
 static void antigravity_show(void)

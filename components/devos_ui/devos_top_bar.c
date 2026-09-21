@@ -11,8 +11,6 @@ static lv_obj_t *lbl_wifi = NULL;
 static lv_obj_t *box_ip = NULL;
 static lv_obj_t *icon_tailscale = NULL;
 static lv_obj_t *lbl_ip = NULL;
-static lv_obj_t *btn_theme = NULL;
-static lv_obj_t *lbl_theme = NULL;
 static lv_obj_t *lbl_battery = NULL;
 static lv_obj_t *lbl_clock = NULL;
 
@@ -20,12 +18,6 @@ static void home_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     devos_core_switch_app(DEVOS_APP_LAUNCHER);
-}
-
-static void theme_btn_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    devos_theme_toggle();
 }
 
 static void tailscale_icon_click_cb(lv_event_t *e)
@@ -89,11 +81,6 @@ static void on_theme_change(const devos_palette_t *p, void *user_data)
     if (icon_tailscale) {
         lv_obj_invalidate(icon_tailscale);
     }
-
-    lv_obj_set_style_bg_color(btn_theme, p->surface, 0);
-    lv_obj_set_style_border_color(btn_theme, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_theme, p->text_primary, 0);
-    lv_label_set_text(lbl_theme, devos_theme_is_dark() ? (LV_SYMBOL_EYE_CLOSE " Dark") : (LV_SYMBOL_EYE_OPEN " Light"));
 
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_color(lbl_clock, p->text_primary, 0);
@@ -189,23 +176,6 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_align_to(lbl_battery, lbl_clock, LV_ALIGN_OUT_LEFT_MID, -22, 0);
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_battery, &lv_font_montserrat_14, 0);
-
-    /* 6. Theme Toggle Button */
-    btn_theme = lv_button_create(top_bar_container);
-    lv_obj_set_size(btn_theme, 84, 26);
-    lv_obj_align_to(btn_theme, lbl_battery, LV_ALIGN_OUT_LEFT_MID, -20, 0);
-    lv_obj_set_style_bg_color(btn_theme, p->surface, 0);
-    lv_obj_set_style_border_color(btn_theme, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_theme, 1, 0);
-    lv_obj_set_style_radius(btn_theme, 4, 0);
-    lv_obj_set_style_pad_all(btn_theme, 0, 0);
-    lv_obj_add_event_cb(btn_theme, theme_btn_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_theme = lv_label_create(btn_theme);
-    lv_label_set_text(lbl_theme, devos_theme_is_dark() ? (LV_SYMBOL_EYE_CLOSE " Dark") : (LV_SYMBOL_EYE_OPEN " Light"));
-    lv_obj_center(lbl_theme);
-    lv_obj_set_style_text_color(lbl_theme, p->text_primary, 0);
-    lv_obj_set_style_text_font(lbl_theme, &lv_font_montserrat_12, 0);
 
     /* Register theme listener */
     devos_theme_add_listener(on_theme_change, NULL);

@@ -6,6 +6,52 @@
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 
+/* Theme-tracked widgets */
+static lv_obj_t *sidebar = NULL;
+static lv_obj_t *lbl_files = NULL;
+static lv_obj_t *file_btns[4] = {NULL};
+static lv_obj_t *file_lbls[4] = {NULL};
+static lv_obj_t *main_area = NULL;
+static lv_obj_t *top_bar = NULL;
+static lv_obj_t *lbl_fn = NULL;
+static lv_obj_t *text_container = NULL;
+static lv_obj_t *lbl_content = NULL;
+
+static void apply_theme(const devos_palette_t *p, void *user_data)
+{
+    LV_UNUSED(user_data);
+    if (!screen) return;
+
+    lv_obj_set_style_bg_color(screen, p->bg, 0);
+
+    if (sidebar) {
+        lv_obj_set_style_bg_color(sidebar, p->surface, 0);
+        lv_obj_set_style_border_color(sidebar, p->surface_border, 0);
+    }
+    if (lbl_files) lv_obj_set_style_text_color(lbl_files, p->text_secondary, 0);
+    for (int i = 0; i < 4; i++) {
+        if (file_btns[i]) {
+            /* ponytail: index 0 is the active file; re-derive instead of storing state */
+            lv_obj_set_style_bg_color(file_btns[i], (i == 0) ? p->surface_active : p->surface, 0);
+            lv_obj_set_style_border_color(file_btns[i],
+                (i == 0) ? p->accent_primary : p->surface_border, 0);
+        }
+        if (file_lbls[i]) {
+            lv_obj_set_style_text_color(file_lbls[i],
+                (i == 0) ? p->accent_primary : p->text_primary, 0);
+        }
+    }
+
+    if (main_area) lv_obj_set_style_bg_color(main_area, p->bg, 0);
+    if (top_bar) {
+        lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
+        lv_obj_set_style_border_color(top_bar, p->surface_border, 0);
+    }
+    if (lbl_fn) lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
+    if (text_container) lv_obj_set_style_bg_color(text_container, p->code_bg, 0);
+    if (lbl_content) lv_obj_set_style_text_color(lbl_content, p->text_primary, 0);
+}
+
 static void editor_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
@@ -22,7 +68,7 @@ static void editor_init(void)
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
     /* Left File Tree Sidebar (260px) */
-    lv_obj_t *sidebar = lv_obj_create(screen);
+    sidebar = lv_obj_create(screen);
     lv_obj_set_size(sidebar, DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
     lv_obj_set_pos(sidebar, 0, 0);
     lv_obj_set_style_bg_color(sidebar, p->surface, 0);
@@ -32,7 +78,7 @@ static void editor_init(void)
     lv_obj_set_style_radius(sidebar, 0, 0);
     lv_obj_set_style_pad_all(sidebar, 10, 0);
 
-    lv_obj_t *lbl_files = lv_label_create(sidebar);
+    lbl_files = lv_label_create(sidebar);
     lv_label_set_text(lbl_files, "STORAGE: /sdcard/notes/");
     lv_obj_set_pos(lbl_files, 4, 4);
     lv_obj_set_style_text_font(lbl_files, &lv_font_montserrat_12, 0);
@@ -40,7 +86,7 @@ static void editor_init(void)
 
     const char *files[4] = {LV_SYMBOL_FILE " welcome.md (Active)", LV_SYMBOL_FILE " todo.md", LV_SYMBOL_FILE " devos-spec.md", LV_SYMBOL_FILE " meeting-notes.md"};
     for (int i = 0; i < 4; i++) {
-        lv_obj_t *btn_f = lv_button_create(sidebar);
+        lv_obj_t *btn_f = file_btns[i] = lv_button_create(sidebar);
         lv_obj_set_size(btn_f, DEVOS_PANE_LEFT_WIDTH - 28, 34);
         lv_obj_set_pos(btn_f, 4, 28 + i * 40);
         lv_obj_set_style_bg_color(btn_f, (i == 0) ? p->surface_active : p->surface, 0);
@@ -48,7 +94,7 @@ static void editor_init(void)
         lv_obj_set_style_border_width(btn_f, 1, 0);
         lv_obj_set_style_radius(btn_f, 4, 0);
 
-        lv_obj_t *lf = lv_label_create(btn_f);
+        lv_obj_t *lf = file_lbls[i] = lv_label_create(btn_f);
         lv_label_set_text(lf, files[i]);
         lv_obj_align(lf, LV_ALIGN_LEFT_MID, 4, 0);
         lv_obj_set_style_text_font(lf, &lv_font_montserrat_12, 0);
@@ -56,7 +102,7 @@ static void editor_init(void)
     }
 
     /* Main Editor Area */
-    lv_obj_t *main_area = lv_obj_create(screen);
+    main_area = lv_obj_create(screen);
     lv_obj_set_size(main_area, DEVOS_SCREEN_WIDTH - DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
     lv_obj_set_pos(main_area, DEVOS_PANE_LEFT_WIDTH, 0);
     lv_obj_set_style_bg_color(main_area, p->bg, 0);
@@ -66,7 +112,7 @@ static void editor_init(void)
     lv_obj_clear_flag(main_area, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Action bar */
-    lv_obj_t *top_bar = lv_obj_create(main_area);
+    top_bar = lv_obj_create(main_area);
     lv_obj_set_size(top_bar, lv_pct(100), 34);
     lv_obj_set_pos(top_bar, 0, 0);
     lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
@@ -76,14 +122,14 @@ static void editor_init(void)
     lv_obj_set_style_radius(top_bar, 0, 0);
     lv_obj_set_style_pad_left(top_bar, 10, 0);
 
-    lv_obj_t *lbl_fn = lv_label_create(top_bar);
+    lbl_fn = lv_label_create(top_bar);
     lv_label_set_text(lbl_fn, "welcome.md  (14.2 KB) - Markdown Preview");
     lv_obj_align(lbl_fn, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_text_font(lbl_fn, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
 
     /* Editor Text Container */
-    lv_obj_t *text_container = lv_obj_create(main_area);
+    text_container = lv_obj_create(main_area);
     lv_obj_set_size(text_container, lv_pct(100), DEVOS_CONTENT_HEIGHT - 34);
     lv_obj_set_pos(text_container, 0, 34);
     lv_obj_set_style_bg_color(text_container, p->code_bg, 0);
@@ -91,7 +137,7 @@ static void editor_init(void)
     lv_obj_set_style_border_width(text_container, 0, 0);
     lv_obj_set_style_pad_all(text_container, 16, 0);
 
-    lv_obj_t *lbl_content = lv_label_create(text_container);
+    lbl_content = lv_label_create(text_container);
     lv_label_set_text(lbl_content,
         "# Welcome to devOS on M5Stack Tab5!\n\n"
         "devOS is an open-source, developer-focused mobile cyberdeck firmware.\n\n"
@@ -107,6 +153,8 @@ static void editor_init(void)
         "No cloud sync required - fully offline capable.");
     lv_obj_set_style_text_color(lbl_content, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_content, &lv_font_montserrat_14, 0);
+
+    devos_theme_add_listener(apply_theme, NULL);
 }
 
 static void editor_show(void) {}
