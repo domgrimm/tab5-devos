@@ -122,7 +122,7 @@ graph TD
 | **HTTP / SSE Client** | `esp_http_client` + `esp-tls` | Apache-2.0 | Custom lwIP socket client | Native IDF support with chunked transfer and SSE streaming for AI agent tokens |
 | **WebSocket Client** | `esp_websocket_client` | Apache-2.0 | Custom lwIP WS client | Native IDF support for low-latency bidirectional bridge communication |
 | **JSON Parser** | `cJSON` | MIT | `yyjson` | Built-in ESP-IDF component, fast, minimal footprint |
-| **Markdown Parser** | `md4c` (adapted for LVGL) | MIT | Custom line-tokenizer | High compliance with CommonMark, small footprint, fast token generation |
+| **Markdown Parser** | Inline CommonMark-subset renderer in `app_editor` (LVGL spangroup-based) | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |
 
 ---
@@ -134,7 +134,7 @@ graph TD
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
 *   **Visual Layout (1280×720):**
-    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, theme toggle button, battery percentage, and RTC clock.
+    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Fn + T`; the top bar carries no theme button.)
     *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
     *   **Interactive App Grid (2×3 Cards):**
         1.  `[1] OpenDev`: AI coding agent terminal (shows active session title and agent status; connects directly over LAN or optional mesh).
@@ -278,13 +278,13 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   `/sdcard/.devos/version.txt`: Writes active firmware version and build timestamp.
     *   **Visual Status:**
         *   Home Screen telemetry and top status bar display live SD card presence, capacity, and remaining free space (e.g. `SD: 29.4 GB Free`).
-*   **Editor Features:**
-    *   **Mode 1: Code/Text Editor:**
-        *   Monospace text editor with line numbers, cursor navigation via physical arrow keys, word wrap, and search/replace.
-        *   Physical keyboard shortcuts: `Ctrl+S` (save), `Ctrl+O` (open), `Ctrl+N` (new), `Ctrl+F` (find), `Ctrl+P` (quick command palette).
-    *   **Mode 2: Split View / Rendered Preview:**
-        *   Real-time or toggleable rendered view.
-        *   Parses Markdown: H1-H6 headers, bold, italics, inline code, fenced code blocks, unordered/ordered lists, blockquotes, horizontal rules, and task lists (`- [x]`).
+*   **Editor Features (as built):**
+    *   **File Explorer:** Live scan of `/sdcard/notes/*.md` (FATFS on target, `./sim_sdcard` in sim) on init and every show; up to 12 entries, tap/click or `Tab` → `↑/↓` → `Enter` to open (amber = keyboard cursor, cyan = open file).
+    *   **Multiline Editor:** Physical typing, arrows, backspace, Enter; `Ctrl+S` (save, `[*]` dirty flag), `Ctrl+O` (jump to file list), `Ctrl+N` (new `untitled-N.md`), `Tab` (focus list/editor), `Fn + [` (collapse file tree = fullscreen editing). Save/create failures report transient `SAVE FAILED`-style status (e.g. missing SD).
+    *   **View Modes:** `Ctrl+P` cycles Edit → Split → Preview; split preview re-renders on a 400 ms debounce while typing.
+    *   **Markdown Renderer (spangroup-based blocks):** H1–H6 (distinct size/color ladder), fenced code (single padded Unscii-16 mono block), GFM tables with/without outer pipes (`+---+` grid, header separator, `:--`/`:--:`/`--:` alignment, shrink-to-fit), `---`/`***`/`___` rules, blockquotes, ul/ol (renumbered)/task lists, paragraphs.
+    *   **Inline:** `**bold**` (underline — only a regular font exists), `*italic*` (secondary color), `~~strike~~` (decor), `` `code` ``, `[t](u)` (URL kept visible; balanced parens, `<dest>`, titles), `![a](s)`, `<autolink>`, backslash escapes, `*`/`_` flanking rules.
+    *   **Limits (documented in code):** 16 KB/file, setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths, no `Ctrl+F` find.
 *   **Agent Synergy:**
     *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context.
     *   **"Export Agent Plan"**: Save an agent's plan or code explanation directly to `/sdcard/plans/` as a markdown file.
@@ -426,11 +426,10 @@ State 2: Focus Mode (Full-Width Chat Mode - Fn + F)
         *   *Light Mode:* High-contrast light paper background (`#F8FAFC`) with dark, high-contrast ANSI colors (preventing washed-out yellow/cyan text on light backgrounds).
     *   **Markdown Editor:** Editor canvas switches from Dark Editor (monokai/charcoal) to Clean Paper (black text on crisp white with light code block backgrounds).
     *   **Keyboard RGB Backlight:** Tab5 A164 keyboard status LEDs sync with theme (e.g., cyan/amber ambient in Dark mode, crisp neutral daylight white in Light mode).
-*   **Toggle Controls & Persistence:**
+*   **Toggle Controls:**
     *   **Global Hotkey:** **`Fn + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
-    *   **Top Bar Quick Toggle:** Tap the `[☀️ / 🌙]` icon in the persistent top status bar.
-    *   **Settings App:** Manual selection or "Auto (RTC / Sun Schedule)" based on the RX8130CE real-time clock.
-    *   **Persistence:** Theme preference is stored in NVS and restored immediately at boot before the first frame renders.
+    *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Fn + T`.
+    *   **Boot Default:** Dark Cyberdeck. (NVS persistence of the theme preference is not yet implemented.)
 
 ---
 
@@ -522,7 +521,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 ### Phase 1: Core OS Shell, Home Screen, Themes & Window Manager
 - [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
 - [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
-- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock, Theme toggle button).
+- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock; theme control lives in Settings + `Fn + T`).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
 - [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
@@ -546,10 +545,10 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Live interactive SSH PTY session engine: real shell execution (`root@...`), concurrent sessions, focus trap, and seamless peer shell launching.
 
 ### Phase 4: Markdown Editor
-- [ ] Implement File Explorer UI with MicroSD directory navigation.
-- [ ] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`).
-- [ ] Integrate lightweight Markdown renderer (headings, code blocks, checklists).
-- [ ] Implement split-view and fullscreen editing modes.
+- [x] Implement File Explorer UI with MicroSD directory navigation (live `/sdcard/notes/*.md` scan, keyboard + touch open).
+- [x] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`, plus `Ctrl+N`, `Tab`, `Fn + [`).
+- [x] Integrate lightweight Markdown renderer (headings, bold/italic/strike/code, links, tables, code blocks, lists, quotes, rules, checklists; see §3.4 for exact coverage).
+- [x] Implement split-view and fullscreen editing modes (`Ctrl+P` cycle; 400 ms debounce re-render). Adversarial review fixes merged (pipe-less tables, balanced-paren URLs, UTF-8-safe truncation, save-failure feedback); unit test in `tools/md_preview_test.c`.
 
 ### Phase 5: Remote OpenCode & OpenChamber Client
 - [ ] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
@@ -585,8 +584,8 @@ tab5-devos/
 │   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
 │   ├── microlink/                 # Tailscale / WireGuard client
-│   ├── libssh2_port/              # libssh2 SSH client component
-│   └── markdown_parser/           # CommonMark token parser for LVGL
+│   └── libssh2_port/              # libssh2 SSH client component
+│                                 # (no markdown_parser component — renderer lives in app_editor)
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
 │   ├── apps/
@@ -608,7 +607,7 @@ tab5-devos/
 │   │   ├── transcript_watcher.py  # Realtime parser for transcript.jsonl
 │   │   └── requirements.txt       # Python dependencies
 │   └── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
-└── docs/                          # Architecture guides, schematics, API specs
+│   └── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
 ```
 
 ---
