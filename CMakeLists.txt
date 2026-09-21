@@ -14,6 +14,7 @@ else()
 
     # Enable LV_CONF_INCLUDE_SIMPLE and include directory for lv_conf.h
     add_compile_definitions(LV_CONF_INCLUDE_SIMPLE=1)
+    add_compile_definitions(DEVOS_SIMULATOR=1)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
     # Find SDL2
@@ -32,6 +33,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
         ${CMAKE_CURRENT_SOURCE_DIR}/components/bsp_tab5
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/microlink
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
     )
 
     # Sources
@@ -51,6 +54,8 @@ else()
         components/devos_storage/devos_storage.c
         components/bsp_tab5/bsp_tab5.c
         components/tab5_keyboard/tab5_keyboard.c
+        components/microlink/microlink.c
+        components/devos_net/devos_net.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
