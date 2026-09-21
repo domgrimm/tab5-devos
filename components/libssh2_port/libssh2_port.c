@@ -57,8 +57,8 @@ int ssh_port_init(void)
     }
 
 #ifndef ESP_PLATFORM
-    /* Automatically launch Session 1: Real SSH to Workstation (root@100.77.11.92) */
-    ssh_port_create_session("workstation", "100.77.11.92", 22, "root", SSH_AUTH_KEY,
+    /* Automatically launch Session 1: Real SSH to Workstation (root@10.2.132.54) directly over LAN */
+    ssh_port_create_session("workstation", "10.2.132.54", 22, "root", SSH_AUTH_KEY,
                             "./sim_sdcard/.ssh/id_ed25519",
                             DEVOS_TERM_COLS_COLLAPSED, DEVOS_TERM_ROWS);
 #endif

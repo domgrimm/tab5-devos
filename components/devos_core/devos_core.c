@@ -18,6 +18,7 @@ static devos_telemetry_t telemetry_data = {
     .wifi_connected         = true,
     .wifi_ssid              = "DevNet",
     .wifi_rssi              = -58,
+    .local_ip               = "10.2.132.54",
     .tailscale_online       = true,
     .tailscale_ip           = "100.77.11.92",
     .tailscale_peers_online = 6,
@@ -48,10 +49,38 @@ static devos_telemetry_t telemetry_data = {
     .agy_subagents_count    = 2
 };
 
+#ifndef ESP_PLATFORM
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+static void detect_local_ip(char *out_ip, size_t max_len)
+{
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == -1) return;
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+        if (strncmp(ifa->ifa_name, "tailscale", 9) == 0) continue;
+        if (strncmp(ifa->ifa_name, "docker", 6) == 0) continue;
+        if (strncmp(ifa->ifa_name, "br-", 3) == 0) continue;
+
+        struct sockaddr_in *pAddr = (struct sockaddr_in *)ifa->ifa_addr;
+        inet_ntop(AF_INET, &pAddr->sin_addr, out_ip, max_len);
+        break;
+    }
+    freeifaddrs(ifaddr);
+}
+#endif
+
 void devos_core_init(void)
 {
     current_app_id = DEVOS_APP_COUNT;
     previous_app_id = DEVOS_APP_LAUNCHER;
+
+#ifndef ESP_PLATFORM
+    detect_local_ip(telemetry_data.local_ip, sizeof(telemetry_data.local_ip));
+#endif
 }
 
 void devos_core_register_app(devos_app_descriptor_t *app)

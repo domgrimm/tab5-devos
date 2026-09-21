@@ -1116,7 +1116,7 @@ static void terminal_init(void)
     lv_obj_set_style_text_font(lbl_toggle_sidebar, &lv_font_montserrat_12, 0);
 
     lbl_term_info = lv_label_create(term_header);
-    lv_label_set_text(lbl_term_info, "SSH: workstation (100.77.11.92:22) - bash");
+    lv_label_set_text(lbl_term_info, "SSH: workstation (10.2.132.54:22) - bash");
     lv_obj_align(lbl_term_info, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_text_color(lbl_term_info, p->accent_primary, 0);
     lv_obj_set_style_text_font(lbl_term_info, &lv_font_montserrat_12, 0);
@@ -1205,7 +1205,7 @@ static void terminal_init(void)
     lv_obj_add_event_cb(ta_alias, ta_focus_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl_l_host = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_host, "Target Host or Tailscale IP:");
+    lv_label_set_text(lbl_l_host, "Target Host or IP:");
     lv_obj_set_pos(lbl_l_host, 150, 28);
     lv_obj_set_style_text_font(lbl_l_host, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_l_host, p->text_secondary, 0);
@@ -1213,7 +1213,7 @@ static void terminal_init(void)
     ta_host = lv_textarea_create(modal_connect);
     lv_obj_set_size(ta_host, 250, 36);
     lv_obj_set_pos(ta_host, 150, 48);
-    lv_textarea_set_placeholder_text(ta_host, "100.x.y.z or hostname");
+    lv_textarea_set_placeholder_text(ta_host, "10.x.y.z, 192.168.x.x, host");
     lv_textarea_set_one_line(ta_host, true);
     lv_obj_set_style_bg_color(ta_host, p->code_bg, 0);
     lv_obj_set_style_text_color(ta_host, p->text_primary, 0);
