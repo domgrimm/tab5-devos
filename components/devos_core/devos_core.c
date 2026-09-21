@@ -141,8 +141,8 @@ void devos_telemetry_tick_sim(void)
 
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 {
-    /* 1. Global Hotkey: Home Screen Return (Fn + H or Esc) */
-    if (((modifiers & DEVOS_MOD_FN) && (key == 'h' || key == 'H')) || key == LV_KEY_ESC) {
+    /* 1. Global Hotkey: Home Screen Return (Fn + H) */
+    if ((modifiers & DEVOS_MOD_FN) && (key == 'h' || key == 'H')) {
         devos_core_switch_app(DEVOS_APP_LAUNCHER);
         return true;
     }
@@ -168,18 +168,17 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 5. Launcher-specific quick launch: '1' .. '6' */
-    if (current_app_id == DEVOS_APP_LAUNCHER && (modifiers == DEVOS_MOD_NONE)) {
-        if (key >= '1' && key <= '6') {
-            devos_app_id_t target = (devos_app_id_t)(key - '0');
-            devos_core_switch_app(target);
+    /* 5. Forward to active app handler */
+    if (registered_apps[current_app_id] && registered_apps[current_app_id]->handle_key) {
+        if (registered_apps[current_app_id]->handle_key(key, modifiers)) {
             return true;
         }
     }
 
-    /* 6. Forward to active app if not handled globally */
-    if (registered_apps[current_app_id] && registered_apps[current_app_id]->handle_key) {
-        return registered_apps[current_app_id]->handle_key(key, modifiers);
+    /* 6. Fallback: Escape returns to Home Screen from any app if unhandled */
+    if (key == LV_KEY_ESC && current_app_id != DEVOS_APP_LAUNCHER) {
+        devos_core_switch_app(DEVOS_APP_LAUNCHER);
+        return true;
     }
 
     return false;

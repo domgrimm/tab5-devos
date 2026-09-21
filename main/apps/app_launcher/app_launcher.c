@@ -2,6 +2,10 @@
 #include "devos_config.h"
 #include "devos_theme.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define LAYOUT_CONFIG_FILE TAB5_SD_MOUNT_POINT "/.devos/launcher_layout.json"
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
@@ -11,6 +15,14 @@ static lv_obj_t *telemetry_box = NULL;
 static lv_obj_t *lbl_clock_date = NULL;
 static lv_obj_t *lbl_net_power = NULL;
 static lv_obj_t *lbl_mem_cpu = NULL;
+
+/* Arrange Mode Controls */
+static lv_obj_t *btn_arrange_toggle = NULL;
+static lv_obj_t *lbl_arrange_btn = NULL;
+static lv_obj_t *btn_arrange_reset = NULL;
+static lv_obj_t *lbl_arrange_reset = NULL;
+static lv_obj_t *banner_arrange = NULL;
+static lv_obj_t *lbl_arrange_banner = NULL;
 
 /* 6 App Cards */
 static lv_obj_t *cards[6] = {NULL};
@@ -24,10 +36,294 @@ static lv_obj_t *card_line3[6] = {NULL};
 static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
 
+/* Slot Mapping State (slot 0..5 -> app_id 1..6) */
+static int slot_to_app[6] = {1, 2, 3, 4, 5, 6};
+static bool arrange_mode = false;
+static int selected_slot = -1;
+
+typedef struct {
+    int x;
+    int y;
+} slot_coord_t;
+
+static const slot_coord_t slot_coords[6] = {
+    {18, 126},                      /* Slot 0: Top-Left */
+    {18 + 1 * (398 + 22), 126},     /* Slot 1: Top-Center */
+    {18 + 2 * (398 + 22), 126},     /* Slot 2: Top-Right */
+    {18, 126 + 245 + 18},           /* Slot 3: Bottom-Left */
+    {18 + 1 * (398 + 22), 126 + 245 + 18}, /* Slot 4: Bottom-Center */
+    {18 + 2 * (398 + 22), 126 + 245 + 18}, /* Slot 5: Bottom-Right */
+};
+
+static const char *app_names[6] = {
+    "OpenDev",
+    "Terminal/SSH",
+    "Markdown",
+    "Tailscale",
+    "Antigravity",
+    "Settings"
+};
+
+static const char *subtitles[6] = {
+    "AI Coding Agents",
+    "ANSI PTY Shell",
+    "Notes & Docs",
+    "Mesh Network",
+    "Native AGY Client",
+    "System & Config"
+};
+
+static const char *default_line1[6] = {
+    "* Status: Idle",
+    "* 1 Session (bash)",
+    "* welcome.md",
+    "* Peers: 6 Online",
+    "* Bridge: Online (:8420)",
+    "* Wi-Fi & Display"
+};
+
+static const char *default_line2[6] = {
+    "* Model: Sonnet 3.7",
+    "* Host: 100.77.11.92",
+    "* 14.2 KB",
+    "* DERP: Sydney (18ms)",
+    "* Subagents: 2 Active",
+    "* Battery & INA226"
+};
+
+static const char *default_line3[6] = {
+    "* REST/SSE :4096",
+    "* 160x45 Cols (SIGWINCH)",
+    "* Split Markdown View",
+    "* IP: 100.77.11.92",
+    "* /goal /plan /boost",
+    "* NVS & Storage"
+};
+
+/* --------------------------------------------------------------------------
+ * Persistence: Load and Save Layout
+ * -------------------------------------------------------------------------- */
+static void save_layout(void)
+{
+    FILE *f = fopen(LAYOUT_CONFIG_FILE, "w");
+    if (f) {
+        fprintf(f, "[\n  %d, %d, %d,\n  %d, %d, %d\n]\n",
+                slot_to_app[0], slot_to_app[1], slot_to_app[2],
+                slot_to_app[3], slot_to_app[4], slot_to_app[5]);
+        fclose(f);
+    }
+}
+
+static void load_layout(void)
+{
+    FILE *f = fopen(LAYOUT_CONFIG_FILE, "r");
+    if (!f) return;
+
+    int a[6];
+    int count = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF && count < 6) {
+        if (c >= '1' && c <= '6') {
+            a[count++] = c - '0';
+        }
+    }
+    fclose(f);
+
+    if (count == 6) {
+        /* Validate permutation of 1..6 */
+        bool seen[7] = {false};
+        bool valid = true;
+        for (int i = 0; i < 6; i++) {
+            if (a[i] < 1 || a[i] > 6 || seen[a[i]]) {
+                valid = false;
+                break;
+            }
+            seen[a[i]] = true;
+        }
+        if (valid) {
+            for (int i = 0; i < 6; i++) {
+                slot_to_app[i] = a[i];
+            }
+        }
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Card Positioning & Visual Refresh
+ * -------------------------------------------------------------------------- */
+static void refresh_card_positions(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+
+    for (int slot = 0; slot < 6; slot++) {
+        int app_id = slot_to_app[slot];
+        int card_idx = app_id - 1;
+        if (card_idx >= 0 && card_idx < 6 && cards[card_idx]) {
+            lv_obj_set_pos(cards[card_idx], slot_coords[slot].x, slot_coords[slot].y);
+
+            char title_buf[64];
+            if (arrange_mode) {
+                if (selected_slot == slot) {
+                    snprintf(title_buf, sizeof(title_buf), "[⇄ Slot %d] %s", slot + 1, app_names[card_idx]);
+                } else {
+                    snprintf(title_buf, sizeof(title_buf), "[Slot %d] %s", slot + 1, app_names[card_idx]);
+                }
+            } else {
+                snprintf(title_buf, sizeof(title_buf), "[%d] %s", slot + 1, app_names[card_idx]);
+            }
+            lv_label_set_text(card_titles[card_idx], title_buf);
+
+            /* Border styling */
+            if (arrange_mode && selected_slot == slot) {
+                lv_obj_set_style_border_color(cards[card_idx], p->accent_warning, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 3, 0);
+            } else if (arrange_mode) {
+                lv_obj_set_style_border_color(cards[card_idx], p->border_highlight, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 1, 0);
+            } else {
+                lv_obj_set_style_border_color(cards[card_idx], p->surface_border, 0);
+                lv_obj_set_style_border_width(cards[card_idx], 1, 0);
+            }
+        }
+    }
+
+    /* Update Arrange Banner and Buttons */
+    if (banner_arrange) {
+        if (arrange_mode) {
+            lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(lbl_arrange_btn, "✓ Done");
+            lv_obj_set_style_bg_color(btn_arrange_toggle, p->accent_secondary, 0);
+
+            if (selected_slot >= 0) {
+                char b_buf[128];
+                int app_id = slot_to_app[selected_slot];
+                snprintf(b_buf, sizeof(b_buf), "⇋ Slot %d (%s) selected. Tap destination tile to swap!",
+                         selected_slot + 1, app_names[app_id - 1]);
+                lv_label_set_text(lbl_arrange_banner, b_buf);
+            } else {
+                lv_label_set_text(lbl_arrange_banner,
+                    "⇋ ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Swap Slot | [R] Reset");
+            }
+        } else {
+            lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(lbl_arrange_btn, "⇋ Arrange");
+            lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
+        }
+    }
+
+    /* Update Bottom Hint Bar */
+    if (lbl_bottom_hint) {
+        if (arrange_mode) {
+            lv_label_set_text(lbl_bottom_hint,
+                "[Tap/Click] Select & Swap  |  [1-6] Swap Keys  |  [R] Reset Default  |  [Esc/Done] Exit Arrange Mode");
+        } else {
+            lv_label_set_text(lbl_bottom_hint,
+                "[Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Fn+E/E] Arrange Tiles  |  [Fn+T] Theme");
+        }
+    }
+}
+
+void app_launcher_swap_slots(int slot_a, int slot_b)
+{
+    if (slot_a < 0 || slot_a >= 6 || slot_b < 0 || slot_b >= 6 || slot_a == slot_b) {
+        return;
+    }
+
+    int temp = slot_to_app[slot_a];
+    slot_to_app[slot_a] = slot_to_app[slot_b];
+    slot_to_app[slot_b] = temp;
+
+    save_layout();
+    refresh_card_positions();
+}
+
+void app_launcher_reset_layout(void)
+{
+    for (int i = 0; i < 6; i++) {
+        slot_to_app[i] = i + 1;
+    }
+    selected_slot = -1;
+    save_layout();
+    refresh_card_positions();
+}
+
+int app_launcher_get_app_in_slot(int slot)
+{
+    if (slot >= 0 && slot < 6) {
+        return slot_to_app[slot];
+    }
+    return -1;
+}
+
+void app_launcher_set_arrange_mode(bool active)
+{
+    if (arrange_mode != active) {
+        arrange_mode = active;
+        selected_slot = -1;
+        refresh_card_positions();
+    }
+}
+
+void app_launcher_toggle_arrange_mode(void)
+{
+    app_launcher_set_arrange_mode(!arrange_mode);
+}
+
+bool app_launcher_is_arrange_mode(void)
+{
+    return arrange_mode;
+}
+
+/* --------------------------------------------------------------------------
+ * Card and Button Event Handlers
+ * -------------------------------------------------------------------------- */
 static void card_click_cb(lv_event_t *e)
 {
     int app_id = (int)(intptr_t)lv_event_get_user_data(e);
-    devos_core_switch_app((devos_app_id_t)app_id);
+
+    if (!arrange_mode) {
+        /* Normal Mode: Launch the application */
+        devos_core_switch_app((devos_app_id_t)app_id);
+    } else {
+        /* Arrange Mode: Select or Swap */
+        int clicked_slot = -1;
+        for (int i = 0; i < 6; i++) {
+            if (slot_to_app[i] == app_id) {
+                clicked_slot = i;
+                break;
+            }
+        }
+
+        if (clicked_slot >= 0) {
+            if (selected_slot == -1) {
+                /* First tile clicked: Pick up for swap */
+                selected_slot = clicked_slot;
+                refresh_card_positions();
+            } else if (selected_slot == clicked_slot) {
+                /* Same tile clicked: Deselect */
+                selected_slot = -1;
+                refresh_card_positions();
+            } else {
+                /* Second tile clicked: Swap! */
+                app_launcher_swap_slots(selected_slot, clicked_slot);
+                selected_slot = -1;
+            }
+        }
+    }
+}
+
+static void arrange_toggle_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    app_launcher_toggle_arrange_mode();
+}
+
+static void arrange_reset_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    app_launcher_reset_layout();
 }
 
 static void apply_theme(const devos_palette_t *p, void *user_data)
@@ -44,11 +340,26 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     lv_obj_set_style_text_color(lbl_net_power, p->text_primary, 0);
     lv_obj_set_style_text_color(lbl_mem_cpu, p->text_secondary, 0);
 
+    /* Arrange buttons */
+    if (btn_arrange_toggle) {
+        lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
+        lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
+    }
+    if (btn_arrange_reset) {
+        lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
+        lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
+        lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
+    }
+    if (banner_arrange) {
+        lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
+        lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
+        lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
+    }
+
     /* Cards */
     for (int i = 0; i < 6; i++) {
         if (cards[i]) {
             lv_obj_set_style_bg_color(cards[i], p->surface, 0);
-            lv_obj_set_style_border_color(cards[i], p->surface_border, 0);
             lv_obj_set_style_text_color(card_titles[i], p->accent_primary, 0);
             lv_obj_set_style_text_color(card_subtitles[i], p->text_secondary, 0);
             lv_obj_set_style_text_color(card_line1[i], p->text_primary, 0);
@@ -63,6 +374,8 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
         lv_obj_set_style_border_color(bottom_bar, p->surface_border, 0);
         lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);
     }
+
+    refresh_card_positions();
 }
 
 void app_launcher_update_telemetry(void)
@@ -118,9 +431,59 @@ void app_launcher_update_telemetry(void)
     lv_label_set_text(card_line2[4], buf);
 }
 
+static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
+{
+    /* 1. Toggle Arrange Mode: 'e' / 'E' or Fn + E */
+    if (key == 'e' || key == 'E' || ((modifiers & DEVOS_MOD_FN) && (key == 'e' || key == 'E'))) {
+        app_launcher_toggle_arrange_mode();
+        return true;
+    }
+
+    /* 2. In Arrange Mode */
+    if (arrange_mode) {
+        if (key == LV_KEY_ESC) {
+            app_launcher_set_arrange_mode(false);
+            return true;
+        }
+
+        if (key == 'r' || key == 'R') {
+            app_launcher_reset_layout();
+            return true;
+        }
+
+        if (key >= '1' && key <= '6') {
+            int slot = key - '1';
+            if (selected_slot == -1) {
+                selected_slot = slot;
+                refresh_card_positions();
+            } else if (selected_slot == slot) {
+                selected_slot = -1;
+                refresh_card_positions();
+            } else {
+                app_launcher_swap_slots(selected_slot, slot);
+                selected_slot = -1;
+            }
+            return true;
+        }
+    } else {
+        /* 3. Normal Mode: Quick launch by current slot index */
+        if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '6') {
+            int slot = key - '1';
+            devos_app_id_t target = (devos_app_id_t)slot_to_app[slot];
+            devos_core_switch_app(target);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void launcher_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
+
+    /* Load saved layout order if available */
+    load_layout();
 
     /* Screen root container */
     screen = lv_obj_create(lv_screen_active());
@@ -162,68 +525,65 @@ static void launcher_init(void)
     lv_obj_set_style_text_font(lbl_mem_cpu, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_mem_cpu, p->text_secondary, 0);
 
-    /* 2. 2x3 App Cards Grid */
-    const char *titles[6] = {
-        "[1] OpenDev",
-        "[2] Terminal/SSH",
-        "[3] Markdown",
-        "[4] Tailscale",
-        "[5] Antigravity",
-        "[6] Settings"
-    };
+    /* Arrange Mode Toggle Button */
+    btn_arrange_toggle = lv_button_create(telemetry_box);
+    lv_obj_set_size(btn_arrange_toggle, 110, 30);
+    lv_obj_align(btn_arrange_toggle, LV_ALIGN_RIGHT_MID, 0, -12);
+    lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_arrange_toggle, 1, 0);
+    lv_obj_set_style_radius(btn_arrange_toggle, 4, 0);
+    lv_obj_add_event_cb(btn_arrange_toggle, arrange_toggle_cb, LV_EVENT_CLICKED, NULL);
 
-    const char *subtitles[6] = {
-        "AI Coding Agents",
-        "ANSI PTY Shell",
-        "Notes & Docs",
-        "Mesh Network",
-        "Native AGY Client",
-        "System & Config"
-    };
+    lbl_arrange_btn = lv_label_create(btn_arrange_toggle);
+    lv_label_set_text(lbl_arrange_btn, "⇋ Arrange");
+    lv_obj_center(lbl_arrange_btn);
+    lv_obj_set_style_text_font(lbl_arrange_btn, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_arrange_btn, p->text_primary, 0);
 
-    const char *default_line1[6] = {
-        "* Status: Idle",
-        "* 1 Session (bash)",
-        "* welcome.md",
-        "* Peers: 6 Online",
-        "* Bridge: Online (:8420)",
-        "* Wi-Fi & Display"
-    };
+    /* Arrange Reset Button (Hidden unless arrange mode active) */
+    btn_arrange_reset = lv_button_create(telemetry_box);
+    lv_obj_set_size(btn_arrange_reset, 110, 24);
+    lv_obj_align(btn_arrange_reset, LV_ALIGN_RIGHT_MID, 0, 18);
+    lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
+    lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_arrange_reset, 1, 0);
+    lv_obj_set_style_radius(btn_arrange_reset, 4, 0);
+    lv_obj_add_event_cb(btn_arrange_reset, arrange_reset_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
 
-    const char *default_line2[6] = {
-        "* Model: Sonnet 3.7",
-        "* Host: 100.77.11.92",
-        "* 14.2 KB",
-        "* DERP: Sydney (18ms)",
-        "* Subagents: 2 Active",
-        "* Battery & INA226"
-    };
+    lbl_arrange_reset = lv_label_create(btn_arrange_reset);
+    lv_label_set_text(lbl_arrange_reset, "↺ Defaults");
+    lv_obj_center(lbl_arrange_reset);
+    lv_obj_set_style_text_font(lbl_arrange_reset, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_arrange_reset, p->accent_danger, 0);
 
-    const char *default_line3[6] = {
-        "* REST/SSE :4096",
-        "* 160x45 Cols (SIGWINCH)",
-        "* Split Markdown View",
-        "* IP: 100.77.11.92",
-        "* /goal /plan /boost",
-        "* NVS & Storage"
-    };
+    /* Arrange Active Banner */
+    banner_arrange = lv_obj_create(screen);
+    lv_obj_set_size(banner_arrange, DEVOS_SCREEN_WIDTH - 32, 28);
+    lv_obj_set_pos(banner_arrange, 16, 120);
+    lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
+    lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
+    lv_obj_set_style_border_width(banner_arrange, 1, 0);
+    lv_obj_set_style_radius(banner_arrange, 4, 0);
+    lv_obj_set_style_pad_all(banner_arrange, 2, 0);
+    lv_obj_clear_flag(banner_arrange, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
 
+    lbl_arrange_banner = lv_label_create(banner_arrange);
+    lv_label_set_text(lbl_arrange_banner,
+        "⇋ ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Keys | [R] Reset");
+    lv_obj_align(lbl_arrange_banner, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
+
+    /* 2. 2x3 App Cards */
     const int card_w = 398;
     const int card_h = 245;
-    const int start_y = 126;
-    const int gap_x = 22;
-    const int gap_y = 18;
-    const int start_x = 18;
 
     for (int i = 0; i < 6; i++) {
-        int row = i / 3;
-        int col = i % 3;
-        int x = start_x + col * (card_w + gap_x);
-        int y = start_y + row * (card_h + gap_y);
-
         cards[i] = lv_button_create(screen);
         lv_obj_set_size(cards[i], card_w, card_h);
-        lv_obj_set_pos(cards[i], x, y);
         lv_obj_set_style_bg_color(cards[i], p->surface, 0);
         lv_obj_set_style_border_color(cards[i], p->surface_border, 0);
         lv_obj_set_style_border_width(cards[i], 1, 0);
@@ -236,12 +596,12 @@ static void launcher_init(void)
         lv_obj_set_style_border_width(cards[i], 2, LV_STATE_FOCUSED);
 
         /* Connect click handler */
-        int target_app = i + 1; /* 1..6 */
-        lv_obj_add_event_cb(cards[i], card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)target_app);
+        int app_id = i + 1; /* 1..6 */
+        lv_obj_add_event_cb(cards[i], card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)app_id);
 
         /* Card Header Title */
         card_titles[i] = lv_label_create(cards[i]);
-        lv_label_set_text(card_titles[i], titles[i]);
+        lv_label_set_text(card_titles[i], app_names[i]);
         lv_obj_set_pos(card_titles[i], 0, 0);
         lv_obj_set_style_text_font(card_titles[i], &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(card_titles[i], p->accent_primary, 0);
@@ -293,7 +653,8 @@ static void launcher_init(void)
     lv_obj_clear_flag(bottom_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_bottom_hint = lv_label_create(bottom_bar);
-    lv_label_set_text(lbl_bottom_hint, "[Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Alt+Tab] Switch  |  [Fn+T] Theme");
+    lv_label_set_text(lbl_bottom_hint,
+        "[Enter/Tap] Launch  |  [1-6] Quick Key  |  [Fn+H] Home  |  [Fn+E/E] Arrange Tiles  |  [Fn+T] Theme");
     lv_obj_center(lbl_bottom_hint);
     lv_obj_set_style_text_font(lbl_bottom_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);
@@ -301,17 +662,23 @@ static void launcher_init(void)
     /* Hook theme updates */
     devos_theme_add_listener(apply_theme, NULL);
 
-    /* Initial telemetry fill */
+    /* Set up initial positions and telemetry */
+    load_layout();
+    refresh_card_positions();
     app_launcher_update_telemetry();
 }
 
 static void launcher_show(void)
 {
+    selected_slot = -1;
+    refresh_card_positions();
     app_launcher_update_telemetry();
 }
 
 static void launcher_hide(void)
 {
+    arrange_mode = false;
+    selected_slot = -1;
 }
 
 devos_app_descriptor_t *app_launcher_get_descriptor(void)
@@ -324,7 +691,7 @@ devos_app_descriptor_t *app_launcher_get_descriptor(void)
     app_descriptor.init = launcher_init;
     app_descriptor.show = launcher_show;
     app_descriptor.hide = launcher_hide;
-    app_descriptor.handle_key = NULL;
+    app_descriptor.handle_key = launcher_handle_key;
 
     return &app_descriptor;
 }

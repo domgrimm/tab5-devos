@@ -19,18 +19,18 @@ echo "[SIM] Compiling devos_sim..."
 ninja -C build_sim devos_sim
 
 # 2. Start Xvfb Virtual Framebuffer (:99 @ 1280x720) if not running
-if ! pgrep -f "Xvfb :99" >/dev/null; then
+if ! pgrep -f "[X]vfb :99" >/dev/null 2>&1; then
     echo "[SIM] Starting Xvfb on display :99 (1280x720x24)..."
-    nohup Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 &
+    setsid Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 &
     sleep 1
 else
     echo "[SIM] Xvfb already running on :99."
 fi
 
 # 3. Start x11vnc on port 5900 if not running
-if ! pgrep -f "x11vnc.*:99" >/dev/null; then
+if ! pgrep -f "[x]11vnc.*:99" >/dev/null 2>&1; then
     echo "[SIM] Starting x11vnc on port 5900..."
-    nohup x11vnc -display :99 -forever -nopw -shared -rfbport 5900 >/tmp/x11vnc.log 2>&1 &
+    setsid x11vnc -display :99 -forever -nopw -shared -rfbport 5900 >/tmp/x11vnc.log 2>&1 &
     sleep 1
 else
     echo "[SIM] x11vnc already running on port 5900."
@@ -38,9 +38,9 @@ fi
 
 # 4. Start websockify / noVNC on port 6080 if not running
 NOVNC_DIR="/usr/share/novnc"
-if ! pgrep -f "websockify.*6080" >/dev/null; then
+if ! pgrep -f "[w]ebsockify.*6080" >/dev/null 2>&1; then
     echo "[SIM] Starting websockify on port 6080 with web directory $NOVNC_DIR..."
-    nohup websockify --web="$NOVNC_DIR" 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
+    setsid websockify --web="$NOVNC_DIR" 6080 localhost:5900 >/tmp/websockify.log 2>&1 &
     sleep 1
 else
     echo "[SIM] websockify already running on port 6080."
@@ -53,9 +53,9 @@ if pgrep -x "devos_sim" >/dev/null; then
     sleep 1
 fi
 
-# 6. Launch devos_sim with nohup
+# 6. Launch devos_sim with setsid
 echo "[SIM] Launching devos_sim on DISPLAY=:99..."
-nohup env DISPLAY=:99 ./build_sim/devos_sim > /tmp/devos_sim.log 2>&1 &
+setsid env DISPLAY=:99 ./build_sim/devos_sim > /tmp/devos_sim.log 2>&1 < /dev/null &
 SIM_PID=$!
 
 echo ""
