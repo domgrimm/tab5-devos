@@ -258,6 +258,41 @@ int microlink_init(const microlink_config_t *config)
     /* Load persistent config */
     microlink_nvs_load();
 
+    /* Check for one-shot auth key file on SD card root (ts_key).
+     * If the file exists and contains a valid key, enroll it, connect,
+     * and delete the file so it's not reused on next boot. */
+    {
+        const char *ts_key_path = TAB5_SD_MOUNT_POINT "/ts_key";
+        FILE *kf = fopen(ts_key_path, "r");
+        if (kf) {
+            char key_buf[MICROLINK_MAX_KEY_LEN] = {0};
+            size_t n = fread(key_buf, 1, sizeof(key_buf) - 1, kf);
+            fclose(kf);
+
+            /* Trim trailing whitespace/newlines */
+            while (n > 0 && (key_buf[n - 1] == '\n' || key_buf[n - 1] == '\r' ||
+                             key_buf[n - 1] == ' '  || key_buf[n - 1] == '\t')) {
+                key_buf[--n] = '\0';
+            }
+
+            if (n > 0 && strncmp(key_buf, "tskey-", 6) == 0) {
+                printf("[microlink] Found ts_key file with valid key prefix, enrolling...\n");
+                strncpy(s_config.auth_key, key_buf, sizeof(s_config.auth_key) - 1);
+                microlink_nvs_save();
+                s_config.auto_connect = true;
+
+                /* Delete the file after successful read */
+                if (remove(ts_key_path) == 0) {
+                    printf("[microlink] ts_key file consumed and deleted.\n");
+                } else {
+                    printf("[microlink] Warning: could not delete ts_key file.\n");
+                }
+            } else if (n > 0) {
+                printf("[microlink] ts_key file found but key doesn't start with 'tskey-', ignoring.\n");
+            }
+        }
+    }
+
 #ifndef ESP_PLATFORM
     load_live_tailscale_status();
 #else
