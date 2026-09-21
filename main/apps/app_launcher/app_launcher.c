@@ -47,12 +47,12 @@ typedef struct {
 } slot_coord_t;
 
 static const slot_coord_t slot_coords[6] = {
-    {18, 126},                      /* Slot 0: Top-Left */
-    {18 + 1 * (398 + 22), 126},     /* Slot 1: Top-Center */
-    {18 + 2 * (398 + 22), 126},     /* Slot 2: Top-Right */
-    {18, 126 + 245 + 18},           /* Slot 3: Bottom-Left */
-    {18 + 1 * (398 + 22), 126 + 245 + 18}, /* Slot 4: Bottom-Center */
-    {18 + 2 * (398 + 22), 126 + 245 + 18}, /* Slot 5: Bottom-Right */
+    {18, 146},                             /* Slot 0: Top-Left */
+    {18 + 1 * (398 + 22), 146},            /* Slot 1: Top-Center */
+    {18 + 2 * (398 + 22), 146},            /* Slot 2: Top-Right */
+    {18, 146 + 245 + 16},                  /* Slot 3: Bottom-Left */
+    {18 + 1 * (398 + 22), 146 + 245 + 16}, /* Slot 4: Bottom-Center */
+    {18 + 2 * (398 + 22), 146 + 245 + 16}, /* Slot 5: Bottom-Right */
 };
 
 static const char *app_names[6] = {
@@ -198,6 +198,7 @@ static void refresh_card_positions(void)
     if (banner_arrange) {
         if (arrange_mode) {
             lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(banner_arrange);
             lv_obj_remove_flag(btn_arrange_reset, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(lbl_arrange_btn, LV_SYMBOL_OK " Done");
             lv_obj_set_style_bg_color(btn_arrange_toggle, p->accent_secondary, 0);
@@ -579,20 +580,20 @@ static void launcher_init(void)
 
     /* Arrange Active Banner */
     banner_arrange = lv_obj_create(screen);
-    lv_obj_set_size(banner_arrange, DEVOS_SCREEN_WIDTH - 32, 28);
-    lv_obj_set_pos(banner_arrange, 16, 120);
+    lv_obj_set_size(banner_arrange, 1238, 24);
+    lv_obj_set_pos(banner_arrange, 18, 116);
     lv_obj_set_style_bg_color(banner_arrange, p->surface_active, 0);
     lv_obj_set_style_border_color(banner_arrange, p->accent_primary, 0);
     lv_obj_set_style_border_width(banner_arrange, 1, 0);
     lv_obj_set_style_radius(banner_arrange, 4, 0);
-    lv_obj_set_style_pad_all(banner_arrange, 2, 0);
+    lv_obj_set_style_pad_all(banner_arrange, 0, 0);
     lv_obj_clear_flag(banner_arrange, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
 
     lbl_arrange_banner = lv_label_create(banner_arrange);
     lv_label_set_text(lbl_arrange_banner,
         LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination to swap | [1-6] Keys | [R] Reset");
-    lv_obj_align(lbl_arrange_banner, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_center(lbl_arrange_banner);
     lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
 
