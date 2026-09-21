@@ -5,8 +5,10 @@
  *
  *   mkdir -p /tmp/opencode/engtest && cd /tmp/opencode/engtest && \
  *   gcc -o opendev_test /home/dom/dev/tab5-devos/tools/opendev_test.c \
+ *     /home/dom/dev/tab5-devos/components/devos_json/devos_json.c \
  *     -I/home/dom/dev/tab5-devos/main/include \
  *     -I/home/dom/dev/tab5-devos/components/opendev_client \
+ *     -I/home/dom/dev/tab5-devos/components/devos_json \
  *     -I/home/dom/dev/tab5-devos/components/devos_net \
  *     -I/home/dom/dev/tab5-devos/components/devos_core && ./opendev_test
  */
@@ -20,6 +22,10 @@ int devos_net_socket_connect(const char *h, int p, int t)
     (void)h; (void)p; (void)t; return -1;
 }
 int devos_net_socket_send(int s, const void *d, size_t l)
+{
+    (void)s; (void)d; (void)l; return -1;
+}
+int devos_net_socket_send_all(int s, const void *d, size_t l)
 {
     (void)s; (void)d; (void)l; return -1;
 }
@@ -56,33 +62,33 @@ int main(void)
 {
     char out[256];
 
-    /* js_parse_str escapes incl \u */
+    /* devos_json_parse_str escapes incl \u */
     const char *j1 = "\"a\\\"b\\nc\\u0041\"";
-    CHECK(js_parse_str(j1, j1 + strlen(j1), out, sizeof(out)) != NULL);
+    CHECK(devos_json_parse_str(j1, j1 + strlen(j1), out, sizeof(out)) != NULL);
     CHECK(strcmp(out, "a\"b\ncA") == 0);
-    CHECK(js_parse_str("\"unterminated", "\"unterminated\" + 13", out,
+    CHECK(devos_json_parse_str("\"unterminated", "\"unterminated\" + 13", out,
                        sizeof(out)) == NULL);
 
-    /* js_get_str first match + missing key */
+    /* devos_json_get_str first match + missing key */
     const char *j2 = "{\"id\":\"ses_1\",\"title\":\"Dev\",\"n\":3}";
-    CHECK(js_get_str(j2, strlen(j2), "id", out, sizeof(out)) == 0);
+    CHECK(devos_json_get_str(j2, strlen(j2), "id", out, sizeof(out)) == 0);
     CHECK(strcmp(out, "ses_1") == 0);
-    CHECK(js_get_str(j2, strlen(j2), "nope", out, sizeof(out)) != 0);
+    CHECK(devos_json_get_str(j2, strlen(j2), "nope", out, sizeof(out)) != 0);
     /* key inside a string value must not match */
     const char *j3 = "{\"text\":\"say \\\"id\\\" loud\",\"id\":\"real\"}";
-    CHECK(js_get_str(j3, strlen(j3), "id", out, sizeof(out)) == 0);
+    CHECK(devos_json_get_str(j3, strlen(j3), "id", out, sizeof(out)) == 0);
     CHECK(strcmp(out, "real") == 0);
 
-    /* js_array_each: objects, ws, empty, malformed */
+    /* devos_json_array_each: objects, ws, empty, malformed */
     each_count = 0;
     const char *a1 = "[{\"a\":1}, {\"b\": [1,2]}, 3 ]";
-    js_array_each(a1, strlen(a1), count_cb, (void *)0);
+    devos_json_array_each(a1, strlen(a1), count_cb, (void *)0);
     CHECK(each_count == 3);
     each_count = 0;
-    js_array_each("[]", 2, count_cb, (void *)0);
+    devos_json_array_each("[]", 2, count_cb, (void *)0);
     CHECK(each_count == 0);
     each_count = 0;
-    js_array_each("[{\"a\":1}, {\"b\":2", 16, count_cb, (void *)0);
+    devos_json_array_each("[{\"a\":1}, {\"b\":2", 16, count_cb, (void *)0);
     CHECK(each_count == 1); /* second element truncated: only first fires */
 
     /* sessions list end-to-end (exercises sessions_each_cb) */
@@ -91,7 +97,7 @@ int main(void)
         " {\"id\":\"ses_bbb222\"}]";
     extern int s_session_count;
     s_session_count = 0;
-    js_array_each(sess, strlen(sess), sessions_each_cb, NULL);
+    devos_json_array_each(sess, strlen(sess), sessions_each_cb, NULL);
     CHECK(opendev_client_session_count() == 2);
     CHECK(strcmp(opendev_client_session(0)->id, "ses_aaa111") == 0);
     CHECK(strcmp(opendev_client_session(0)->title, "Fix login") == 0);
@@ -108,7 +114,7 @@ int main(void)
     extern int s_block_count;
     extern opendev_block_t s_blocks[];
     s_block_count = 0;
-    js_array_each(msgs, strlen(msgs), messages_each_cb, NULL);
+    devos_json_array_each(msgs, strlen(msgs), messages_each_cb, NULL);
     CHECK(opendev_client_block_count() == 4);
     CHECK(opendev_client_block(0)->role == OPENDEV_ROLE_USER);
     CHECK(strcmp(opendev_client_block(0)->text, "hi") == 0);
@@ -192,9 +198,9 @@ int main(void)
     /* reset back to opencode mode for subsequent empty-token checks */
     CHECK(opendev_client_set_server("192.168.1.50", 4096) == 0);
 
-    /* js_escape roundtrip essentials */
+    /* devos_json_escape roundtrip essentials */
     char esc[64];
-    js_escape("a\"b\\c\nd", esc, sizeof(esc));
+    devos_json_escape("a\"b\\c\nd", esc, sizeof(esc));
     CHECK(strcmp(esc, "a\\\"b\\\\c\\nd") == 0);
 
     /* adversarial: failed send must not leave a stuck busy badge */
@@ -202,7 +208,7 @@ int main(void)
     extern int s_active;
     extern int s_block_count;
     s_session_count = 0;
-    js_array_each(sess, strlen(sess), sessions_each_cb, NULL);
+    devos_json_array_each(sess, strlen(sess), sessions_each_cb, NULL);
     opendev_client_select(0); /* fetch fails (dead transport), keeps active */
     CHECK(opendev_client_active() == 0);
     s_block_count = 0;

@@ -1,6 +1,8 @@
 #include "app_settings.h"
 #include "devos_config.h"
 #include "devos_theme.h"
+#include "devos_power.h"
+#include "devos_ota.h"
 #include <stdio.h>
 
 static devos_app_descriptor_t app_descriptor;
@@ -14,9 +16,38 @@ static lv_obj_t *theme_switch = NULL;
 static lv_obj_t *card_pwr = NULL;
 static lv_obj_t *lbl_p = NULL;
 static lv_obj_t *lbl_pwr_info = NULL;
+static lv_obj_t *lbl_pwr_mode = NULL;
+static lv_obj_t *btn_sleep = NULL;
+static lv_obj_t *lbl_sleep = NULL;
 static lv_obj_t *card_hw = NULL;
 static lv_obj_t *lbl_h = NULL;
 static lv_obj_t *lbl_hw_info = NULL;
+static lv_obj_t *lbl_fw = NULL;
+static lv_obj_t *btn_ota = NULL;
+static lv_obj_t *lbl_ota_btn = NULL;
+static lv_obj_t *lbl_ota = NULL;
+
+static void refresh_dynamic(void)
+{
+    if (lbl_pwr_mode) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Mode: %s  |  Idle: %us  |  Bright: %d%%",
+                 devos_power_mode_text(), devos_power_idle_s(),
+                 devos_power_brightness());
+        lv_label_set_text(lbl_pwr_mode, buf);
+    }
+    if (lbl_fw) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Firmware: %s", DEVOS_VERSION_STR);
+        lv_label_set_text(lbl_fw, buf);
+    }
+    if (lbl_ota) lv_label_set_text(lbl_ota, devos_ota_update_text());
+    if (lbl_ota_btn) {
+        lv_label_set_text(lbl_ota_btn, devos_ota_has_update()
+                          ? LV_SYMBOL_DOWNLOAD " Flash update"
+                          : LV_SYMBOL_REFRESH " Check updates");
+    }
+}
 
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
@@ -54,6 +85,14 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     }
     if (lbl_p) lv_obj_set_style_text_color(lbl_p, p->accent_secondary, 0);
     if (lbl_pwr_info) lv_obj_set_style_text_color(lbl_pwr_info, p->text_primary, 0);
+    if (lbl_pwr_mode) {
+        lv_obj_set_style_text_color(lbl_pwr_mode, p->accent_primary, 0);
+    }
+    if (btn_sleep) {
+        lv_obj_set_style_bg_color(btn_sleep, p->surface_active, 0);
+        lv_obj_set_style_border_color(btn_sleep, p->surface_border, 0);
+    }
+    if (lbl_sleep) lv_obj_set_style_text_color(lbl_sleep, p->text_primary, 0);
 
     if (card_hw) {
         lv_obj_set_style_bg_color(card_hw, p->surface, 0);
@@ -61,6 +100,17 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     }
     if (lbl_h) lv_obj_set_style_text_color(lbl_h, p->accent_primary, 0);
     if (lbl_hw_info) lv_obj_set_style_text_color(lbl_hw_info, p->text_primary, 0);
+    if (lbl_fw) lv_obj_set_style_text_color(lbl_fw, p->accent_secondary, 0);
+    if (btn_ota) {
+        lv_obj_set_style_bg_color(btn_ota, p->surface_active, 0);
+        lv_obj_set_style_border_color(btn_ota, p->surface_border, 0);
+    }
+    if (lbl_ota_btn) {
+        lv_obj_set_style_text_color(lbl_ota_btn, p->text_primary, 0);
+    }
+    if (lbl_ota) lv_obj_set_style_text_color(lbl_ota, p->text_secondary, 0);
+
+    refresh_dynamic();
 }
 
 static void theme_switch_cb(lv_event_t *e)
@@ -68,6 +118,27 @@ static void theme_switch_cb(lv_event_t *e)
     lv_obj_t *sw = lv_event_get_target(e);
     devos_theme_set(lv_obj_has_state(sw, LV_STATE_CHECKED)
                     ? DEVOS_THEME_LIGHT : DEVOS_THEME_DARK);
+}
+
+static void sleep_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    devos_power_sleep_now();
+    refresh_dynamic();
+}
+
+static void ota_check_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    /* ponytail: the same button flashes a pending update once known */
+    if (devos_ota_has_update()) {
+        devos_ota_apply();
+        refresh_dynamic();
+        return;
+    }
+    if (lbl_ota) lv_label_set_text(lbl_ota, "Checking feed...");
+    devos_ota_check();
+    refresh_dynamic();
 }
 
 /* Sun icon: core + 8 rays. Moon icon: crescent via offset cut-out.
@@ -233,9 +304,30 @@ static void settings_init(void)
     lv_obj_set_style_text_font(lbl_pwr_info, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_pwr_info, p->text_primary, 0);
 
-    /* Section 3: Hardware & Storage Info */
+    lbl_pwr_mode = lv_label_create(card_pwr);
+    lv_label_set_text(lbl_pwr_mode, "Mode: Active");
+    lv_obj_set_pos(lbl_pwr_mode, 0, 150);
+    lv_obj_set_style_text_font(lbl_pwr_mode, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_pwr_mode, p->accent_primary, 0);
+
+    btn_sleep = lv_button_create(card_pwr);
+    lv_obj_set_size(btn_sleep, 150, 30);
+    lv_obj_set_pos(btn_sleep, 0, 172);
+    lv_obj_set_style_bg_color(btn_sleep, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_sleep, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_sleep, 1, 0);
+    lv_obj_set_style_radius(btn_sleep, 4, 0);
+    lv_obj_add_event_cb(btn_sleep, sleep_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_sleep = lv_label_create(btn_sleep);
+    lv_label_set_text(lbl_sleep, LV_SYMBOL_POWER " Sleep now");
+    lv_obj_center(lbl_sleep);
+    lv_obj_set_style_text_font(lbl_sleep, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_sleep, p->text_primary, 0);
+
+    /* Section 3: Hardware & Storage Info + Firmware Update */
     card_hw = lv_obj_create(screen);
-    lv_obj_set_size(card_hw, DEVOS_SCREEN_WIDTH - 32, 200);
+    lv_obj_set_size(card_hw, DEVOS_SCREEN_WIDTH - 32, 250);
     lv_obj_set_pos(card_hw, 0, 236);
     lv_obj_set_style_bg_color(card_hw, p->surface, 0);
     lv_obj_set_style_border_color(card_hw, p->surface_border, 0);
@@ -260,10 +352,41 @@ static void settings_init(void)
     lv_obj_set_style_text_font(lbl_hw_info, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_hw_info, p->text_primary, 0);
 
+    lbl_fw = lv_label_create(card_hw);
+    lv_label_set_text(lbl_fw, "Firmware: ?");
+    lv_obj_set_pos(lbl_fw, 0, 140);
+    lv_obj_set_style_text_font(lbl_fw, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_fw, p->accent_secondary, 0);
+
+    btn_ota = lv_button_create(card_hw);
+    lv_obj_set_size(btn_ota, 170, 32);
+    lv_obj_set_pos(btn_ota, 0, 162);
+    lv_obj_set_style_bg_color(btn_ota, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_ota, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_ota, 1, 0);
+    lv_obj_set_style_radius(btn_ota, 4, 0);
+    lv_obj_add_event_cb(btn_ota, ota_check_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_ota_btn = lv_label_create(btn_ota);
+    lv_label_set_text(lbl_ota_btn, LV_SYMBOL_REFRESH " Check updates");
+    lv_obj_center(lbl_ota_btn);
+    lv_obj_set_style_text_font(lbl_ota_btn, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_ota_btn, p->text_primary, 0);
+
+    lbl_ota = lv_label_create(card_hw);
+    lv_label_set_text(lbl_ota, "Never checked");
+    lv_obj_set_pos(lbl_ota, 180, 168);
+    lv_obj_set_style_text_font(lbl_ota, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_ota, p->text_secondary, 0);
+
     devos_theme_add_listener(apply_theme, NULL);
+    refresh_dynamic();
 }
 
-static void settings_show(void) {}
+static void settings_show(void)
+{
+    refresh_dynamic();
+}
 static void settings_hide(void) {}
 
 devos_app_descriptor_t *app_settings_get_descriptor(void)

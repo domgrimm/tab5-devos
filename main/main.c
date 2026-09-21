@@ -3,6 +3,8 @@
 #include "devos_core.h"
 #include "devos_top_bar.h"
 #include "devos_storage.h"
+#include "devos_power.h"
+#include "devos_ota.h"
 #include "bsp_tab5.h"
 #include "tab5_keyboard.h"
 #include "devos_net.h"
@@ -159,6 +161,12 @@ static void devos_system_bringup(void)
     /* 5. devOS Core engine initialization */
     devos_core_init();
 
+    /* 5b. Power-mode state machine */
+    devos_power_init();
+
+    /* 5c. OTA feed config */
+    devos_ota_init();
+
     /* 6. Network & Transparent Socket Routing bring-up */
     devos_net_init();
 
@@ -222,6 +230,7 @@ int main(int argc, char **argv)
     devos_system_bringup();
 
     uint32_t last_telemetry_tick = SDL_GetTicks();
+    uint32_t sim_seconds = 0;
 
     /* Simulator 60 FPS Event Loop */
     while (1) {
@@ -230,6 +239,7 @@ int main(int argc, char **argv)
         uint32_t now = SDL_GetTicks();
         if (now - last_telemetry_tick >= 1000) {
             devos_telemetry_tick_sim();
+            devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
             last_telemetry_tick = now;

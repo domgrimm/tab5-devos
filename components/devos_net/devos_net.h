@@ -40,11 +40,20 @@ int devos_net_socket_connect(const char *host, int port, int timeout_ms);
 int devos_net_socket_send(int sock, const void *data, size_t len);
 int devos_net_socket_recv(int sock, void *buf, size_t max_len, int timeout_ms);
 int devos_net_socket_close(int sock);
+/* Blocking full-buffer send; NOSIGNAL where available so a server RST
+ * returns -1 instead of SIGPIPE-killing the caller. */
+int devos_net_socket_send_all(int sock, const void *data, size_t len);
 
 /* Non-blocking variant: start returns an in-progress fd (or -1); poll wait
  * until it returns 0 (connected) or -1 (failed). 1 means keep polling. */
 int devos_net_socket_connect_start(const char *host, int port);
 int devos_net_socket_connect_wait(int sock, int timeout_ms);
+
+/* One-shot HTTP/1.1 GET (blocking, bounded by timeout_ms). Returns 0 with
+ * status + body shifted to resp[0], -1 on transport error. UI actions only. */
+int devos_net_http_get(const char *host, int port, const char *path,
+                       char *resp, size_t cap, int timeout_ms,
+                       int *status_out);
 
 #ifdef __cplusplus
 }

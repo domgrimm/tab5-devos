@@ -33,6 +33,11 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 6. **Automatic MicroSD Scaffolding:**
    * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/plans/`, `/diffs/`, `/.devos/`) and missing starter templates (`welcome.md`, `bookmarks.json`). Zero manual file creation on PC/Mac.
 
+7. **Shared Engines, Never Forked Renderers or Parsers:**
+   * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview, the agent artifact viewer, and assistant chat bubbles. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
+   * One JSON reader (`components/devos_json/`) serves all HTTP/WS engines (`opendev_client`, `agy_client`). Same rule: extend, don't duplicate.
+   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once.
+
 ---
 
 ## 2. Hardware Interfaces & Pinout Reference
@@ -62,11 +67,16 @@ tab5-devos/
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher
 │   ├── devos_ui/                  # LVGL v9 theme engine, widgets, top bar, home dashboard
-│   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing
+│   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
+│   ├── devos_json/                # Shared minimal JSON reader (engines only)
+│   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
+│   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
+│   ├── devos_ota/                 # OTA manifest check + target flash path
 │   ├── microlink/                 # Tailscale / WireGuard client component
 │   ├── libssh2_port/              # libssh2 SSH client component & PTY manager
-│   └── markdown_parser/           # CommonMark token parser for LVGL text renderer
+│   ├── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
+│   └── agy_client/                # Antigravity bridge WebSocket engine
 ├── main/
 │   ├── main.c                     # Hardware bring-up, task creation, launch
 │   ├── apps/
@@ -84,6 +94,10 @@ tab5-devos/
     │   ├── bridge_server.py       # FastAPI WebSocket bridge listening on 100.x.y.z:8420
     │   ├── transcript_watcher.py  # Realtime parser for transcript.jsonl
     │   └── requirements.txt       # Python dependencies
+    ├── *_test.c                   # Host-side unit tests (md, opendev, agy, ota).
+    │                              # Run from an ISOLATED CWD — engine tests persist
+    │                              # sim config JSON relative to CWD. See each file's
+    │                              # header for its exact gcc line.
     └── flash_c6_slave.sh          # Helper script to flash ESP-Hosted slave to C6
 ```
 
