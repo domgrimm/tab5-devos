@@ -84,7 +84,7 @@ static const char *default_line1[6] = {
 
 static const char *default_line2[6] = {
     "* Model: Sonnet 3.7",
-    "* Host: 100.77.11.92",
+    "* Host: workstation",
     "* 14.2 KB",
     "* DERP: Sydney (18ms)",
     "* Subagents: 2 Active",
@@ -95,7 +95,7 @@ static const char *default_line3[6] = {
     "* REST/SSE :4096",
     "* 160x45 Cols (SIGWINCH)",
     "* Split Markdown View",
-    "* IP: 100.77.11.92",
+    "* Optional Mesh Overlay",
     "* /goal /plan /boost",
     "* NVS & Storage"
 };
@@ -407,13 +407,20 @@ void app_launcher_update_telemetry(void)
     snprintf(buf, sizeof(buf), "%02d:%02d   %s", t->rtc_hour, t->rtc_min, t->rtc_date_str);
     lv_label_set_text(lbl_clock_date, buf);
 
-    snprintf(buf, sizeof(buf), "Tailnet: %s (%s)  |  Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
-             t->tailscale_ip,
-             t->tailscale_online ? "Online" : "Offline",
-             t->battery_voltage_mv / 1000.0f,
-             t->battery_power_mw / 1000.0f,
-             t->runtime_minutes_left / 60.0f,
-             t->sd_free_mb / 1024.0f);
+    if (t->tailscale_online) {
+        snprintf(buf, sizeof(buf), "Tailscale: %s  |  Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
+                 t->tailscale_ip,
+                 t->battery_voltage_mv / 1000.0f,
+                 t->battery_power_mw / 1000.0f,
+                 t->runtime_minutes_left / 60.0f,
+                 t->sd_free_mb / 1024.0f);
+    } else {
+        snprintf(buf, sizeof(buf), "Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
+                 t->battery_voltage_mv / 1000.0f,
+                 t->battery_power_mw / 1000.0f,
+                 t->runtime_minutes_left / 60.0f,
+                 t->sd_free_mb / 1024.0f);
+    }
     lv_label_set_text(lbl_net_power, buf);
 
     snprintf(buf, sizeof(buf), "Memory: %.1f MB Free PSRAM, %d KB SRAM  |  CPU: Core 0: %d%% | Core 1: %d%%",
@@ -439,10 +446,18 @@ void app_launcher_update_telemetry(void)
     snprintf(buf, sizeof(buf), "* %d KB", t->editor_file_kb);
     lv_label_set_text(card_line2[2], buf);
 
-    snprintf(buf, sizeof(buf), "* Peers: %d Online", t->tailscale_peers_online);
-    lv_label_set_text(card_line1[3], buf);
-    snprintf(buf, sizeof(buf), "* DERP: %s", t->tailscale_derp);
-    lv_label_set_text(card_line2[3], buf);
+    if (t->tailscale_online) {
+        snprintf(buf, sizeof(buf), "* Peers: %d Online", t->tailscale_peers_online);
+        lv_label_set_text(card_line1[3], buf);
+        snprintf(buf, sizeof(buf), "* DERP: %s", t->tailscale_derp);
+        lv_label_set_text(card_line2[3], buf);
+        snprintf(buf, sizeof(buf), "* IP: %s", t->tailscale_ip);
+        lv_label_set_text(card_line3[3], buf);
+    } else {
+        lv_label_set_text(card_line1[3], "* Status: Disconnected");
+        lv_label_set_text(card_line2[3], "* Mesh: Inactive (Optional)");
+        lv_label_set_text(card_line3[3], "* Direct LAN routing active");
+    }
 
     snprintf(buf, sizeof(buf), "* Bridge: %s", t->agy_bridge_online ? "Online (:8420)" : "Offline");
     lv_label_set_text(card_line1[4], buf);

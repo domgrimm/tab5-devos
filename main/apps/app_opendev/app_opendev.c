@@ -85,7 +85,7 @@ static void opendev_init(void)
 
     lv_obj_t *lbl_msg = lv_label_create(msg_card);
     lv_label_set_text(lbl_msg,
-        "Connected to OpenCode Server on http://100.77.11.92:4096\n\n"
+        "Connected to OpenCode Server on http://10.2.132.54:4096 (Direct LAN / Optional Mesh)\n\n"
         "Active Stream: SSE /event\n"
         "State: Awaiting instruction from Tab5 keyboard.");
     lv_obj_set_style_text_color(lbl_msg, p->text_primary, 0);

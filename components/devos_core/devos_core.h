@@ -41,6 +41,7 @@ typedef struct {
     bool     wifi_connected;
     char     wifi_ssid[32];
     int8_t   wifi_rssi;
+    char     local_ip[20];
     bool     tailscale_online;
     char     tailscale_ip[20];
     uint8_t  tailscale_peers_online;

@@ -6,12 +6,12 @@
 
 ```
   +-----------------------------------------------------------------------------+
-  | [devOS]          [WiFi: DevNet -58dBm]     [Tailscale: 100.84.12.9]     94% |
+  | [devOS]          [WiFi: DevNet -58dBm]        [IP: 10.2.132.54]         94% |
   +-----------------------------------------------------------------------------+
   |                                                                             |
   |   14:28  Wednesday, Sep 20                                                  |
-  |   Tailnet: 100.84.12.9 (Online) | Battery: 7.8V (3.2W, ~4.8h left)          |
-  |   Memory: 28.4 MB Free PSRAM    | CPU: Core 0: 4% | Core 1: 18%             |
+  |   Tailscale: 100.77.11.92 (if connected) | Battery: 7.8V (3.2W, ~4.8h left) |
+  |   Memory: 28.4 MB Free PSRAM             | CPU: Core 0: 4% | Core 1: 18%    |
   |                                                                             |
   |  +-------------------+  +-------------------+  +-------------------+        |
   |  | [1] OpenDev       |  | [2] Terminal/SSH  |  | [3] Markdown      |        |
@@ -134,14 +134,14 @@ graph TD
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
 *   **Visual Layout (1280×720):**
-    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), active Tailscale IP (`100.x.y.z`), battery percentage, and RTC clock.
-    *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, Tailscale peer status, free PSRAM/SRAM, and per-core CPU load.
+    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not)**, battery percentage, and RTC clock.
+    *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
     *   **Interactive App Grid (2×3 Cards):**
-        1.  `[1] OpenDev`: AI coding agent terminal (shows active session title and agent status).
-        2.  `[2] Terminal/SSH`: Multi-session PTY terminal (shows open sessions and favorite hosts).
+        1.  `[1] OpenDev`: AI coding agent terminal (shows active session title and agent status; connects directly over LAN or optional mesh).
+        2.  `[2] Terminal/SSH`: Multi-session PTY terminal (shows open sessions and favorite hosts; connects directly to any LAN IP, hostname, or Tailscale peer).
         3.  `[3] Markdown`: Notes & documentation editor (shows recently edited files).
-        4.  `[4] Tailscale`: Mesh network manager (shows peer count, DERP latency, ping diagnostics).
-        5.  `[5] Antigravity`: Native AGY agent client (shows bridge connection state and active subagent count).
+        4.  `[4] Tailscale`: Optional mesh network manager (shows peer count, DERP latency, ping diagnostics).
+        5.  `[5] Antigravity`: Native AGY agent client (shows bridge connection state and active subagent count; connects directly over LAN or optional mesh).
         6.  `[6] Settings`: Wi-Fi provisioning, display brightness, battery stats, storage info.
 *   **Navigation & Ergonomics:**
     *   **Direct Key Launch:** Pressing keys `1` through `6` on the A164 keyboard immediately launches that app.
@@ -158,21 +158,22 @@ The Home Screen serves as the operational dashboard and application launcher for
 
 ---
 
-### 3.1 Subsystem 1: Tailscale Mesh Networking (`net_tailscale`)
+### 3.1 Subsystem 1: Optional Mesh Networking via Tailscale (`net_tailscale`)
 
-The Tailscale client connects the Tab5 directly to the user's private tailnet (`100.x.y.z`), allowing secure access to remote dev machines, cloud instances, and home servers without public IP addresses or port forwarding.
+The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.z`), allowing secure access to remote dev machines, cloud instances, and home servers across the internet without public IP addresses or port forwarding. **devOS is completely independent of Tailscale:** if a user does not want or need Tailscale, all core capabilities (SSH shells, OpenCode, OpenChamber, Antigravity bridge) operate directly over standard local Wi-Fi and LAN IP / DNS routing.
 
 *   **Engine:** `MicroLink` (Tailscale client for ESP-IDF).
 *   **Virtual Socket Integration:**
     *   *Challenge:* MicroLink traditionally exposes its own socket interface (`microlink_tcp_connect`) rather than binding automatically to lwIP global default routes.
     *   *Architecture:* devOS implements a **Transparent Socket Transport Layer**:
         *   Standard DNS lookups check for `.ts.net` or `100.x.y.z` addresses.
-        *   Tailnet traffic routes through the MicroLink WireGuard tunnel.
-        *   Standard internet traffic routes through the default Wi-Fi gateway.
+        *   Tailnet traffic routes through the MicroLink WireGuard tunnel when active.
+        *   Standard local LAN and internet traffic routes directly through the default Wi-Fi gateway.
 *   **Enrollment & Provisioning:**
     *   Onboarding via Ephemeral or Pre-authenticated Auth Keys (`tskey-auth-...`).
     *   Settings UI displays assigned Tailnet IP, connected DERP relay, peer latency, and active node list.
     *   NVS encrypted storage for the persistent node private key, avoiding re-authentication on reboot.
+    *   Can be toggled Disconnected at any time; top bar and homescreen dynamically remove all Tailscale telemetry when disconnected.
 
 ---
 
@@ -482,7 +483,7 @@ The Tab5 physical keyboard is a critical input surface for `devOS`.
 
 ---
 
-### 4.4 Remote Web UI Simulator & Live Verification (Option 1: noVNC over Tailscale)
+### 4.4 Remote Web UI Simulator & Live Verification (noVNC over LAN / Tailscale)
 
 To enable the developer to test and evaluate UI/UX progress remotely from their local macOS laptop without flashing the Tab5 hardware:
 
@@ -492,14 +493,14 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
        │                                                   ▲
        ▼                                                   │ (Mouse = Touch)
   Xvfb (Virtual Screen) ──► noVNC Web Stream (Port 6080) ──┘ (Keys = A164)
-                              [ Tailscale IP: 100.77.11.92:6080 ]
+                   [ LAN IP: 10.2.132.54:6080 | Tailscale: 100.77.11.92:6080 ]
 ```
 
 *   **Headless Simulator Architecture (`tools/sim/`):**
     *   **Virtual Screen (`Xvfb`):** Spawns a 1280×720×24 virtual X11 framebuffer (`:99`) matching the Tab5's native pixel geometry.
     *   **VNC Engine (`x11vnc`):** Captures the virtual display buffer at 60 FPS without graphical degradation.
     *   **WebSocket Bridge (`noVNC` / `websockify`):** Streams the display buffer as an interactive HTML5 canvas over port `6080`.
-    *   **Direct Developer URL:** `http://100.77.11.92:6080/vnc.html` (accessible securely over Tailscale from any browser).
+    *   **Direct Developer URLs:** `http://10.2.132.54:6080/vnc.html` (direct LAN) or `http://100.77.11.92:6080/vnc.html` (Tailscale).
 *   **Emulated Inputs:**
     *   *Mouse clicks & drags* map directly to GT911 capacitive touch events (tap, swipe, scroll).
     *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Fn + T` for Theme, `Fn + F` for Focus Mode, `Fn + [` / `Fn + ]` for Sidebars, and `1`..`6` for App launcher).
@@ -521,17 +522,17 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 ### Phase 1: Core OS Shell, Home Screen, Themes & Window Manager
 - [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
 - [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
-- [x] Build Top Status Bar (Wi-Fi RSSI, Tailscale IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
+- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP, Battery percentage via INA226, RTC Clock, Theme toggle icon).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
 - [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
-- [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://100.77.11.92:6080/vnc.html`).
+- [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
-### Phase 2: Tailscale Mesh Networking
+### Phase 2: Optional Tailscale Mesh Networking
 - [x] Port/integrate `MicroLink` component into the ESP-IDF project.
 - [x] Implement NVS encrypted storage for Tailscale node credentials.
-- [x] Implement virtual socket routing layer bridging lwIP TCP connections across the WireGuard tunnel.
+- [x] Implement virtual socket routing layer bridging lwIP TCP connections across the WireGuard tunnel (fallback to direct LAN when inactive).
 - [x] Build Tailscale Status UI: connection toggle, node status, peer list, DERP ping diagnostics.
 - [x] Connect to live Tailscale network: real-time discovery of live tailnet peers, node IPs, DERP latency, and per-peer ping diagnostics.
 
