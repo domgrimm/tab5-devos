@@ -5,7 +5,6 @@
  *
  *   mkdir -p /tmp/opencode/agytest && cd /tmp/opencode/agytest && \
  *   gcc -o agy_test /home/dom/dev/tab5-devos/tools/agy_test.c \
- *     /home/dom/dev/tab5-devos/components/agy_client/agy_client.c \
  *     /home/dom/dev/tab5-devos/components/devos_json/devos_json.c \
  *     -I/home/dom/dev/tab5-devos/main/include \
  *     -I/home/dom/dev/tab5-devos/components/agy_client \
@@ -150,7 +149,9 @@ int main(void)
      * masked PONG answered to the server PING.
      * ponytail: client frames are masked; unmask to inspect. */
     send_cap[send_cap_len] = '\0';
-    CHECK(strstr(send_cap, "GET /ws HTTP/1.1") != NULL);
+    const char *upg1 = strstr(send_cap, "GET /ws HTTP/1.1");
+    CHECK(upg1 != NULL);
+    CHECK(strstr(upg1 + 16, "GET /ws HTTP/1.1") == NULL); /* sent once only */
     CHECK(strstr(send_cap, "Sec-WebSocket-Key: ") != NULL);
     static char plain[8192];
     size_t po = 0;

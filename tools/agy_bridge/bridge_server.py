@@ -41,15 +41,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from transcript_watcher import TranscriptWatcher, find_latest_transcript
+from transcript_watcher import TranscriptWatcher, find_latest_transcript, get_conversation_id
 
 app = FastAPI(title="devOS Antigravity Bridge Server")
 
 PSK = ""
 DEMO = False
-CONVERSATION_ID = "41b1d485-b5bb-4ba8-b4a4-a1194ae1aa5c"
 MODEL = "Gemini 3.8 Flash (High)"
 watcher = TranscriptWatcher()
+
+
+def get_current_conv_id() -> str:
+    return get_conversation_id()
 
 
 class PromptRequest(BaseModel):
@@ -61,6 +64,7 @@ class PromptRequest(BaseModel):
 async def get_status():
     return {
         "status": "online",
+        "conversation_id": get_current_conv_id(),
         "active_transcript": find_latest_transcript(),
         "demo": DEMO,
         "service": "agy-bridge",
@@ -97,14 +101,45 @@ def demo_script(prompt: str, command: str) -> List[Dict[str, Any]]:
 
 
 def transcript_to_events() -> List[Dict[str, Any]]:
-    """Forward new transcript lines: text-ish lines become tokens."""
+    """Forward new transcript lines: thinking, tools, tokens, artifacts."""
     out = []
     for ev in watcher.get_events():
         if not isinstance(ev, dict):
             continue
-        text = ev.get("text") or ev.get("content") or ev.get("message")
-        if isinstance(text, str) and text.strip():
-            out.append({"type": "TOKEN", "text": text[:500]})
+
+        # 1. Thinking trace
+        thinking = ev.get("thinking")
+        if isinstance(thinking, str) and thinking.strip():
+            out.append({"type": "THINKING", "text": thinking[:1200]})
+
+        # 2. Tool calls
+        tool_calls = ev.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tname = tc.get("name") or tc.get("tool_name") or "tool"
+                    targs = tc.get("args") or tc.get("parameters") or {}
+                    summary = ""
+                    if isinstance(targs, dict):
+                        summary = targs.get("toolSummary") or targs.get("toolAction") or ""
+                        if not summary:
+                            for k, v in targs.items():
+                                summary = f"{k}={v}"
+                                break
+                    else:
+                        summary = str(targs)
+                    out.append({"type": "TOOL", "name": tname, "detail": str(summary)[:120]})
+
+        # 3. Model tokens / response content
+        if ev.get("type") == "PLANNER_RESPONSE" or ev.get("source") == "MODEL":
+            content = ev.get("content")
+            if isinstance(content, str) and content.strip():
+                out.append({"type": "TOKEN", "text": content})
+        elif ev.get("type") != "USER_INPUT":
+            text = ev.get("text") or ev.get("content") or ev.get("message")
+            if isinstance(text, str) and text.strip():
+                out.append({"type": "TOKEN", "text": text[:500]})
+
     return out
 
 
@@ -119,7 +154,7 @@ async def websocket_endpoint(websocket: WebSocket):
     if authed:
         await send(websocket, {
             "type": "WELCOME",
-            "conversation_id": CONVERSATION_ID,
+            "conversation_id": get_current_conv_id(),
             "model": MODEL,
             "subagents": [{"name": "research", "state": "idle"},
                           {"name": "self", "state": "idle"}],
@@ -149,7 +184,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     authed = True
                     await send(websocket, {
                         "type": "WELCOME",
-                        "conversation_id": CONVERSATION_ID,
+                        "conversation_id": get_current_conv_id(),
                         "model": MODEL,
                         "subagents": [{"name": "research", "state": "idle"},
                                       {"name": "self", "state": "idle"}],

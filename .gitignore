@@ -9,3 +9,8 @@ compile_commands.json
 # IDE
 .vscode/
 .idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

@@ -1,14 +1,11 @@
 /* Ponytail check: OTA manifest fetch/compare + power state machine.
  *
- * Needs the stub manifest shelf on :8090 (see phase notes) and an
- * isolated CWD (feed URL persists to ./sim_sdcard/.devos/ota_nvs.json):
+ * Runs standalone with mocked network GET and isolated CWD:
  *
  *   mkdir -p /tmp/opencode/otatest && cd /tmp/opencode/otatest && \
  *   gcc -o ota_test /home/dom/dev/tab5-devos/tools/ota_test.c \
  *     /home/dom/dev/tab5-devos/components/devos_ota/devos_ota.c \
  *     /home/dom/dev/tab5-devos/components/devos_json/devos_json.c \
- *     /home/dom/dev/tab5-devos/components/devos_net/devos_net.c \
- *     /home/dom/dev/tab5-devos/components/microlink/microlink.c \
  *     /home/dom/dev/tab5-devos/components/devos_power/devos_power.c \
  *     -I/home/dom/dev/tab5-devos/main/include \
  *     -I/home/dom/dev/tab5-devos/components/devos_ota \
@@ -17,7 +14,7 @@
  *     -I/home/dom/dev/tab5-devos/components/devos_power \
  *     -I/home/dom/dev/tab5-devos/components/devos_core \
  *     -I/home/dom/dev/tab5-devos/components/devos_storage \
- *     -I/home/dom/dev/tab5-devos/components/microlink && ./ota_test
+ *     -I/home/dom/dev/tab5-devos/components/lvgl && ./ota_test
  */
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +23,21 @@
 static devos_telemetry_t fake_t;
 const devos_telemetry_t *devos_telemetry_get(void) { return &fake_t; }
 void devos_telemetry_update(const devos_telemetry_t *t) { fake_t = *t; }
+
+int devos_net_http_get(const char *host, int port, const char *path,
+                       char *resp, size_t cap, int timeout_ms,
+                       int *status_out)
+{
+    (void)host; (void)path; (void)timeout_ms;
+    if (port == 8090) {
+        if (status_out) *status_out = 200;
+        const char *json = "{\"version\":\"v9.9.9\",\"url\":\"http://10.2.132.54:8090/tab5-devos.bin\",\"size\":2097152}";
+        snprintf(resp, cap, "%s", json);
+        return 0;
+    }
+    if (status_out) *status_out = 0;
+    return -1;
+}
 
 #include "devos_ota.h"
 #include "devos_power.h"

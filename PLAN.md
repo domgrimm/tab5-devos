@@ -579,15 +579,19 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Camera-Based OpenChamber QR Pairing: onboard SC2356 MIPI-CSI camera capture + `quirc` QR decoder on Core 0 with live viewfinder modal in `app_opendev`, pairing token extraction, and simulator mock support.
 
 ### Phase 6: Antigravity Native Client (Path B)
-- [ ] Design and implement the host-side `agy-bridge` Python daemon in `tools/agy_bridge/`.
-- [ ] Implement `esp_websocket_client` transport in devOS connecting to `100.x.y.z:8420`.
-- [ ] Build native Antigravity UI canvas (`app_antigravity`):
-  - [ ] Subagent hierarchy tree panel.
-  - [ ] Collapsible thinking/reasoning accordions.
-  - [ ] Interactive tool permission and question modals with keyboard hotkeys.
-  - [ ] Artifacts inspector with Markdown viewer integration.
-- [ ] Add power management: INA226 battery gauge, screen dimming, and sleep modes.
-- [ ] Implement OTA (Over-The-Air) firmware update mechanism.
+- [x] Design and implement the host-side `agy-bridge` Python daemon in `tools/agy_bridge/` (dynamic conversation ID detection from transcript path, realtime parsing of `PLANNER_RESPONSE` thinking, tool execution, token streaming, and demo scripting mode).
+- [x] Implement WebSocket transport engine in devOS (`components/agy_client/`) connecting to `100.x.y.z:8420` with non-blocking handshake, single-upgrade enforcement, stream compaction on partial frames, and ping/pong keepalives.
+- [x] Build native Antigravity UI canvas (`app_antigravity`):
+  - [x] Subagent live pool status cards with active state indicators.
+  - [x] Chronological thinking/reasoning traces with collapsible accordions.
+  - [x] Full Markdown renderer integration for assistant chat bubbles and artifacts using `components/devos_mdview/`.
+  - [x] Unified diff viewer in right inspector with color-coded additions/deletions, hunk headers, and `[Save Diff]` button exporting to `/sdcard/diffs/`.
+  - [x] Artifact viewer modal with Markdown rendering, theme adaptation, and `[Save]` button exporting to `/sdcard/plans/`.
+  - [x] Interactive tool permission popup (`[Y]`, `[N]`, `[A]`) and question picker modals (`[1..4]`) with physical keyboard bindings.
+  - [x] Input bar with prompt textarea, `[Note]` injection button (`Fn + N`), `/command` preservation, and Send trigger.
+  - [x] Cross-app synergy: active note attachment from Editor to Antigravity, and background telemetry sync to launcher tile [5].
+- [x] Add power management (`components/devos_power/`): INA226 battery gauge telemetry, screen dimming after 120s, sleep mode after 600s, activity wakeup on keyboard and capacitive touch/click, and live 1 Hz settings refresh.
+- [x] Implement OTA (Over-The-Air) firmware update mechanism (`components/devos_ota/`): manifest version checks, LAN staging server support, checksum validation, and dry-run simulation mode. Unit tested in `tools/ota_test.c`.
 
 ---
 

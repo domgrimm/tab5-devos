@@ -32,6 +32,10 @@
 static int sdl_event_watcher(void *userdata, SDL_Event *event)
 {
     LV_UNUSED(userdata);
+    if (event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_FINGERDOWN) {
+        devos_power_activity();
+        return 1;
+    }
     if (event->type == SDL_KEYDOWN) {
         SDL_Keycode sym = event->key.keysym.sym;
         Uint16 mod = event->key.keysym.mod;

@@ -4,6 +4,7 @@
 #include "devos_core.h"
 #include "devos_mdview.h"
 #include "opendev_client.h"
+#include "agy_client.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -460,12 +461,21 @@ static void btn_attach_cb(lv_event_t *e)
     }
     char msg[OPENDEV_BLOCK_MAX];
     snprintf(msg, sizeof(msg), "[Context from %s]:\n%s", s_files[s_active], text);
-    int rc = opendev_client_send(msg);
-    if (rc == 0) {
-        flash_msg("Attached to OpenDev session!");
-    } else {
-        flash_msg("Attach failed (server offline)");
+    if (opendev_client_status() == OPENDEV_UP) {
+        int rc = opendev_client_send(msg);
+        if (rc == 0) {
+            flash_msg("Attached to OpenDev session!");
+            return;
+        }
     }
+    if (agy_client_status() == AGY_UP) {
+        int rc = agy_client_send(msg, NULL);
+        if (rc == 0) {
+            flash_msg("Attached to Antigravity session!");
+            return;
+        }
+    }
+    flash_msg("Attach failed (no agent connected)");
 }
 
 static void btn_mode_cb(lv_event_t *e)

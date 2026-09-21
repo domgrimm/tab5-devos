@@ -3,10 +3,13 @@
 #include "devos_theme.h"
 #include "devos_agent_viewport.h"
 #include "devos_mdview.h"
+#include "apps/app_editor/app_editor.h"
 #include "agy_client.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 
 #define AGY_SUB_BTNS AGY_MAX_AGENTS
 #define AGY_ART_BTNS AGY_MAX_ARTIFACTS
@@ -40,6 +43,8 @@ static lv_obj_t *lbl_strip = NULL;
 static lv_obj_t *chat_scroll = NULL;
 static lv_obj_t *input_bar = NULL;
 static lv_obj_t *ta = NULL;
+static lv_obj_t *btn_note = NULL;
+static lv_obj_t *lbl_note = NULL;
 static lv_obj_t *btn_send = NULL;
 static lv_obj_t *lbl_send = NULL;
 
@@ -49,7 +54,9 @@ static lv_obj_t *lbl_art_h = NULL;
 static lv_obj_t *art_btns[AGY_ART_BTNS] = {NULL};
 static lv_obj_t *art_lbls[AGY_ART_BTNS] = {NULL};
 static lv_obj_t *lbl_diff_h = NULL;
-static lv_obj_t *lbl_diff = NULL;
+static lv_obj_t *btn_save_diff = NULL;
+static lv_obj_t *lbl_save_diff = NULL;
+static lv_obj_t *diff_scroll = NULL;
 
 /* Permission modal */
 static lv_obj_t *modal_permission = NULL;
@@ -69,6 +76,8 @@ static lv_obj_t *q_lbls[AGY_Q_BTNS] = {NULL};
 static lv_obj_t *modal_artifact = NULL;
 static lv_obj_t *lbl_art_title = NULL;
 static lv_obj_t *art_scroll = NULL;
+static lv_obj_t *btn_art_save = NULL;
+static lv_obj_t *lbl_art_save = NULL;
 static lv_obj_t *lbl_art_close = NULL;
 static int s_open_artifact = -1;
 
@@ -152,6 +161,11 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
         lv_obj_set_style_border_color(ta, p->surface_border, 0);
         lv_obj_set_style_text_color(ta, p->text_primary, 0);
     }
+    if (btn_note) {
+        lv_obj_set_style_bg_color(btn_note, p->surface, 0);
+        lv_obj_set_style_border_color(btn_note, p->surface_border, 0);
+    }
+    if (lbl_note) lv_obj_set_style_text_color(lbl_note, p->text_primary, 0);
     if (btn_send) lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
     if (lbl_send) lv_obj_set_style_text_color(lbl_send, on_accent, 0);
 
@@ -171,7 +185,17 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     if (lbl_diff_h) {
         lv_obj_set_style_text_color(lbl_diff_h, p->accent_primary, 0);
     }
-    if (lbl_diff) lv_obj_set_style_text_color(lbl_diff, p->text_secondary, 0);
+    if (btn_save_diff) {
+        lv_obj_set_style_bg_color(btn_save_diff, p->surface_active, 0);
+        lv_obj_set_style_border_color(btn_save_diff, p->surface_border, 0);
+    }
+    if (lbl_save_diff) {
+        lv_obj_set_style_text_color(lbl_save_diff, p->text_primary, 0);
+    }
+    if (diff_scroll) {
+        lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
+        lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
+    }
 
     if (modal_permission) {
         lv_obj_set_style_bg_color(modal_permission, p->surface, 0);
@@ -226,6 +250,13 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
             lv_obj_clean(art_scroll);
             devos_md_render(art_scroll, a->text);
         }
+    }
+    if (btn_art_save) {
+        lv_obj_set_style_bg_color(btn_art_save, p->surface_active, 0);
+        lv_obj_set_style_border_color(btn_art_save, p->surface_border, 0);
+    }
+    if (lbl_art_save) {
+        lv_obj_set_style_text_color(lbl_art_save, p->text_primary, 0);
     }
     if (lbl_art_close) {
         lv_obj_set_style_text_color(lbl_art_close, p->text_primary, 0);
@@ -289,6 +320,54 @@ static void toggle_thinking_cb(lv_event_t *e)
     refresh_all();
 }
 
+static void render_diff_view(const char *raw_diff, const devos_palette_t *p)
+{
+    if (!diff_scroll) return;
+    lv_obj_clean(diff_scroll);
+    if (!raw_diff || !*raw_diff || strcmp(raw_diff, "(no changes)") == 0 ||
+        strcmp(raw_diff, "(diff unavailable)") == 0) {
+        lv_obj_t *lbl = lv_label_create(diff_scroll);
+        lv_label_set_text(lbl, (raw_diff && *raw_diff) ? raw_diff : "(no changes)");
+        lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        return;
+    }
+
+    const char *line = raw_diff;
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+        if (len > 0) {
+            char line_buf[256];
+            size_t take = len < sizeof(line_buf) - 1 ? len : sizeof(line_buf) - 1;
+            memcpy(line_buf, line, take);
+            line_buf[take] = '\0';
+
+            lv_obj_t *lbl = lv_label_create(diff_scroll);
+            lv_label_set_text(lbl, line_buf);
+            lv_obj_set_width(lbl, lv_pct(100));
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(lbl, &lv_font_nimbus_mono_14, 0);
+
+            if (line_buf[0] == '+' && line_buf[1] != '+') {
+                lv_obj_set_style_text_color(lbl, p->accent_secondary, 0);
+            } else if (line_buf[0] == '-' && line_buf[1] != '-') {
+                lv_obj_set_style_text_color(lbl, p->accent_danger, 0);
+            } else if (line_buf[0] == '@' && line_buf[1] == '@') {
+                lv_obj_set_style_text_color(lbl, p->accent_primary, 0);
+            } else if (strncmp(line_buf, "diff ", 5) == 0 ||
+                       strncmp(line_buf, "index ", 6) == 0 ||
+                       strncmp(line_buf, "---", 3) == 0 ||
+                       strncmp(line_buf, "+++", 3) == 0) {
+                lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
+            } else {
+                lv_obj_set_style_text_color(lbl, p->text_primary, 0);
+            }
+        }
+        line = next ? next + 1 : line + len;
+    }
+}
+
 static void refresh_all(void)
 {
     if (!screen) return;
@@ -345,47 +424,45 @@ static void refresh_all(void)
         lv_label_set_text(lbl_strip, buf);
     }
 
-    /* Center: chat blocks */
+    /* Center: chat blocks in chronological order */
     if (chat_scroll) {
         lv_obj_clean(chat_scroll);
         int nb = agy_client_block_count();
-        bool has_think = false;
-        for (int i = 0; i < nb; i++) {
+        for (int i = 0; i < nb;) {
             const agy_block_t *b = agy_client_block(i);
-            if (b && b->kind == AGY_KIND_THINK && b->text[0]) {
-                has_think = true;
-                break;
-            }
-        }
-        if (has_think) {
-            lv_obj_t *box = chat_card(p, p->thinking_border);
-            lv_obj_set_style_bg_color(box, p->thinking_bg, 0);
-            lv_obj_add_event_cb(box, toggle_thinking_cb, LV_EVENT_CLICKED,
-                                NULL);
-            lv_obj_t *arrow = lv_label_create(box);
-            lv_label_set_text(arrow, thinking_expanded
-                              ? LV_SYMBOL_DOWN " Thinking"
-                              : LV_SYMBOL_RIGHT " Thinking (collapsed)");
-            lv_obj_set_style_text_color(arrow, p->accent_primary, 0);
-            lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
-            if (thinking_expanded) {
-                lv_obj_t *body = lv_obj_create(box);
-                lv_obj_set_size(body, lv_pct(100), LV_SIZE_CONTENT);
-                lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(body, 0, 0);
-                lv_obj_set_style_pad_all(body, 0, 0);
-                for (int i = 0; i < nb; i++) {
-                    const agy_block_t *b = agy_client_block(i);
-                    if (b && b->kind == AGY_KIND_THINK) {
-                        chat_text(body, b->text, p->text_secondary,
+            if (!b) { i++; continue; }
+            if (b->kind == AGY_KIND_THINK) {
+                lv_obj_t *box = chat_card(p, p->thinking_border);
+                lv_obj_set_style_bg_color(box, p->thinking_bg, 0);
+                lv_obj_add_event_cb(box, toggle_thinking_cb, LV_EVENT_CLICKED,
+                                    NULL);
+                lv_obj_t *arrow = lv_label_create(box);
+                lv_label_set_text(arrow, thinking_expanded
+                                  ? LV_SYMBOL_DOWN " Thinking"
+                                  : LV_SYMBOL_RIGHT " Thinking (collapsed)");
+                lv_obj_set_style_text_color(arrow, p->accent_primary, 0);
+                lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
+                if (thinking_expanded) {
+                    lv_obj_t *body = lv_obj_create(box);
+                    lv_obj_set_size(body, lv_pct(100), LV_SIZE_CONTENT);
+                    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_width(body, 0, 0);
+                    lv_obj_set_style_pad_all(body, 0, 0);
+                    while (i < nb && agy_client_block(i) &&
+                           agy_client_block(i)->kind == AGY_KIND_THINK) {
+                        chat_text(body, agy_client_block(i)->text,
+                                  p->text_secondary,
                                   &lv_font_montserrat_12);
+                        i++;
+                    }
+                } else {
+                    while (i < nb && agy_client_block(i) &&
+                           agy_client_block(i)->kind == AGY_KIND_THINK) {
+                        i++;
                     }
                 }
+                continue;
             }
-        }
-        for (int i = 0; i < nb; i++) {
-            const agy_block_t *b = agy_client_block(i);
-            if (!b || b->kind == AGY_KIND_THINK) continue;
             if (b->kind == AGY_KIND_TOOL) {
                 lv_obj_t *card = chat_card(p, p->tool_card_border);
                 lv_obj_set_style_bg_color(card, p->tool_card_bg, 0);
@@ -397,10 +474,30 @@ static void refresh_all(void)
                                                   : p->surface_border);
                 if (user) {
                     lv_obj_set_style_bg_color(card, p->surface_active, 0);
+                    chat_text(card, b->text, p->text_primary,
+                              &lv_font_montserrat_14);
+                } else {
+                    /* ponytail: agent output renders through the shared
+                     * markdown engine; measured inner container + explicit height */
+                    lv_obj_update_layout(card);
+                    lv_obj_t *inner = lv_obj_create(card);
+                    lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
+                    lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_border_width(inner, 0, 0);
+                    lv_obj_set_style_pad_all(inner, 0, 0);
+                    lv_obj_update_layout(inner);
+                    int endy = devos_md_render(inner, b->text);
+                    if (endy <= 0) {
+                        lv_obj_delete(inner);
+                        chat_text(card, b->text, p->text_primary,
+                                  &lv_font_montserrat_14);
+                    } else {
+                        lv_obj_set_height(inner, endy);
+                        lv_obj_set_height(card, endy + 20);
+                    }
                 }
-                chat_text(card, b->text, p->text_primary,
-                          &lv_font_montserrat_14);
             }
+            i++;
         }
         if (nb == 0) {
             lv_obj_t *card = chat_card(p, p->surface_border);
@@ -429,7 +526,7 @@ static void refresh_all(void)
         snprintf(buf, sizeof(buf), "%s %s", LV_SYMBOL_FILE, a->name);
         lv_label_set_text(art_lbls[i], buf);
     }
-    if (lbl_diff) lv_label_set_text(lbl_diff, agy_client_diff_text());
+    render_diff_view(agy_client_diff_text(), p);
 
     /* Permission modal */
     agy_permission_t perm;
@@ -485,10 +582,9 @@ static void send_current(void)
             cmd[k] = '\0';
             body = t + k;
             while (*body == ' ' || *body == '\t') body++;
-            /* ponytail: bare "/goal" sends literally (nothing to strip) */
+            /* bare "/goal" sends literally (keep command intact) */
             if (!*body) {
                 body = t;
-                cmd[0] = '\0';
             }
         }
     }
@@ -501,6 +597,37 @@ static void send_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     send_current();
+}
+
+static void note_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    const char *fn = app_editor_get_active_filename();
+    const char *txt = app_editor_get_active_text();
+    if (!fn || !txt || !*txt) {
+        if (ta) lv_textarea_set_placeholder_text(ta, "(No active note in Markdown Editor)");
+        return;
+    }
+    if (ta) {
+        char prefix[AGY_BLOCK_MAX];
+        snprintf(prefix, sizeof(prefix), "[Note: %s]\n%s\n\n", fn, txt);
+        lv_textarea_set_text(ta, prefix);
+        lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);
+    }
+}
+
+static void save_diff_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    const char *dt = agy_client_diff_text();
+    if (!dt || !*dt || strcmp(dt, "(diff unavailable)") == 0 ||
+        strcmp(dt, "(no changes)") == 0) {
+        return;
+    }
+    const char *conv = agy_client_conversation_id();
+    char title[64];
+    snprintf(title, sizeof(title), "agy-%.16s", (conv && conv[0]) ? conv : "session");
+    app_editor_save_diff(title, dt);
 }
 
 static void cmd_btn_cb(lv_event_t *e)
@@ -588,6 +715,15 @@ static void art_btn_cb(lv_event_t *e)
     art_open((int)(intptr_t)lv_event_get_user_data(e));
 }
 
+static void art_save_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (s_open_artifact < 0) return;
+    const agy_artifact_t *a = agy_client_artifact(s_open_artifact);
+    if (!a || !a->name[0] || !a->text[0]) return;
+    app_editor_save_plan(a->name, a->text);
+}
+
 static void art_close_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -622,12 +758,17 @@ static void srv_cancel_cb(lv_event_t *e)
 static void poll_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
-    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
     agy_client_poll();
     uint32_t g = agy_client_generation();
     if (g != s_seen_gen) {
         s_seen_gen = g;
-        refresh_all();
+        devos_telemetry_t telem = *devos_telemetry_get();
+        telem.agy_bridge_online = (agy_client_status() == AGY_UP);
+        telem.agy_subagents_count = (uint8_t)agy_client_agent_count();
+        devos_telemetry_update(&telem);
+        if (screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) {
+            refresh_all();
+        }
     }
 }
 
@@ -689,6 +830,9 @@ static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
             return true;
         } else if (key == ']') {
             app_antigravity_toggle_right();
+            return true;
+        } else if (key == 'n' || key == 'N') {
+            note_btn_cb(NULL);
             return true;
         }
     }
@@ -1004,19 +1148,35 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(input_bar, 0, 0);
     lv_obj_set_style_pad_all(input_bar, 6, 0);
     lv_obj_clear_flag(input_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(input_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(input_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(input_bar, 6, 0);
 
     ta = lv_textarea_create(input_bar);
-    lv_textarea_set_placeholder_text(ta, "Prompt or /command...");
+    lv_textarea_set_placeholder_text(ta, "Prompt or /command (Fn+N adds note)...");
     lv_textarea_set_one_line(ta, true);
-    lv_obj_set_size(ta, lv_pct(82), 38);
-    lv_obj_align(ta, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_size(ta, 0, 38);
+    lv_obj_set_flex_grow(ta, 1);
     lv_obj_set_style_bg_color(ta, p->bg_alt, 0);
     lv_obj_set_style_border_color(ta, p->surface_border, 0);
     lv_obj_set_style_text_color(ta, p->text_primary, 0);
 
+    btn_note = lv_button_create(input_bar);
+    lv_obj_set_size(btn_note, 88, 38);
+    lv_obj_set_style_bg_color(btn_note, p->surface, 0);
+    lv_obj_set_style_border_color(btn_note, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_note, 1, 0);
+    lv_obj_set_style_radius(btn_note, 4, 0);
+    lv_obj_add_event_cb(btn_note, note_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_note = lv_label_create(btn_note);
+    lv_label_set_text(lbl_note, LV_SYMBOL_FILE " Note");
+    lv_obj_center(lbl_note);
+    lv_obj_set_style_text_font(lbl_note, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_note, p->text_primary, 0);
+
     btn_send = lv_button_create(input_bar);
-    lv_obj_set_size(btn_send, lv_pct(16), 38);
-    lv_obj_align(btn_send, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_size(btn_send, 92, 38);
     lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_send, 4, 0);
     lv_obj_add_event_cb(btn_send, send_btn_cb, LV_EVENT_CLICKED, NULL);
@@ -1024,6 +1184,7 @@ static void antigravity_init(void)
     lbl_send = lv_label_create(btn_send);
     lv_label_set_text(lbl_send, "Send " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_send);
+    lv_obj_set_style_text_font(lbl_send, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_send,
         devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
 
@@ -1054,17 +1215,34 @@ static void antigravity_init(void)
 
     lbl_diff_h = lv_label_create(right_panel);
     lv_label_set_text(lbl_diff_h, "DIFFS");
-    lv_obj_set_pos(lbl_diff_h, 4, 52 + AGY_ART_BTNS * 40);
+    lv_obj_set_pos(lbl_diff_h, 4, 52 + AGY_ART_BTNS * 40 + 4);
     lv_obj_set_style_text_font(lbl_diff_h, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_diff_h, p->accent_primary, 0);
 
-    lbl_diff = lv_label_create(right_panel);
-    lv_label_set_text(lbl_diff, "");
-    lv_obj_set_pos(lbl_diff, 4, 76 + AGY_ART_BTNS * 40);
-    lv_obj_set_size(lbl_diff, DEVOS_PANE_RIGHT_WIDTH - 36, 200);
-    lv_label_set_long_mode(lbl_diff, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(lbl_diff, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_diff, p->text_secondary, 0);
+    btn_save_diff = lv_button_create(right_panel);
+    lv_obj_set_size(btn_save_diff, 84, 26);
+    lv_obj_set_pos(btn_save_diff, DEVOS_PANE_RIGHT_WIDTH - 84 - 24, 52 + AGY_ART_BTNS * 40);
+    lv_obj_set_style_bg_color(btn_save_diff, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_save_diff, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_save_diff, 1, 0);
+    lv_obj_set_style_radius(btn_save_diff, 4, 0);
+    lv_obj_add_event_cb(btn_save_diff, save_diff_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_save_diff = lv_label_create(btn_save_diff);
+    lv_label_set_text(lbl_save_diff, LV_SYMBOL_SAVE " Save");
+    lv_obj_center(lbl_save_diff);
+    lv_obj_set_style_text_font(lbl_save_diff, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_save_diff, p->text_primary, 0);
+
+    diff_scroll = lv_obj_create(right_panel);
+    lv_obj_set_pos(diff_scroll, 4, 82 + AGY_ART_BTNS * 40);
+    lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28,
+                    DEVOS_CONTENT_HEIGHT - (82 + AGY_ART_BTNS * 40) - 10);
+    lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
+    lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
+    lv_obj_set_style_border_width(diff_scroll, 1, 0);
+    lv_obj_set_style_radius(diff_scroll, 4, 0);
+    lv_obj_set_style_pad_all(diff_scroll, 6, 0);
 
     /* 4. Permission modal */
     modal_permission = mk_modal(460, 190, p->accent_warning);
@@ -1146,8 +1324,21 @@ static void antigravity_init(void)
     lv_obj_set_style_border_width(art_scroll, 0, 0);
     lv_obj_set_style_pad_all(art_scroll, 10, 0);
 
+    btn_art_save = lv_button_create(modal_artifact);
+    lv_obj_set_size(btn_art_save, 110, 32);
+    lv_obj_set_pos(btn_art_save, 360, 344);
+    lv_obj_set_style_bg_color(btn_art_save, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_art_save, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_art_save, 1, 0);
+    lv_obj_set_style_radius(btn_art_save, 4, 0);
+    lv_obj_add_event_cb(btn_art_save, art_save_cb, LV_EVENT_CLICKED, NULL);
+    lbl_art_save = lv_label_create(btn_art_save);
+    lv_label_set_text(lbl_art_save, LV_SYMBOL_SAVE " Save");
+    lv_obj_center(lbl_art_save);
+    lv_obj_set_style_text_color(lbl_art_save, p->text_primary, 0);
+
     lv_obj_t *btn_art_close = lv_button_create(modal_artifact);
-    lv_obj_set_size(btn_art_close, 120, 32);
+    lv_obj_set_size(btn_art_close, 110, 32);
     lv_obj_set_pos(btn_art_close, 488, 344);
     lv_obj_set_style_bg_color(btn_art_close, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_art_close, p->surface_border, 0);

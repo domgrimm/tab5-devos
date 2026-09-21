@@ -49,6 +49,13 @@ static void refresh_dynamic(void)
     }
 }
 
+static void settings_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
+    refresh_dynamic();
+}
+
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
@@ -380,6 +387,7 @@ static void settings_init(void)
     lv_obj_set_style_text_color(lbl_ota, p->text_secondary, 0);
 
     devos_theme_add_listener(apply_theme, NULL);
+    lv_timer_create(settings_timer_cb, 1000, NULL);
     refresh_dynamic();
 }
 

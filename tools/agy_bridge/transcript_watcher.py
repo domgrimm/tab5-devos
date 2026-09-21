@@ -28,6 +28,14 @@ def find_latest_transcript() -> Optional[str]:
         return log_file
     return None
 
+def get_conversation_id(transcript_path: Optional[str] = None) -> str:
+    path = transcript_path or find_latest_transcript()
+    if path:
+        parts = os.path.normpath(path).split(os.sep)
+        if len(parts) >= 4 and parts[-3] == ".system_generated":
+            return parts[-4]
+    return "41b1d485-b5bb-4ba8-b4a4-a1194ae1aa5c"
+
 class TranscriptWatcher:
     def __init__(self, file_path: Optional[str] = None):
         self.file_path = file_path or find_latest_transcript()
@@ -35,7 +43,12 @@ class TranscriptWatcher:
 
     def get_events(self) -> Generator[Dict[str, Any], None, None]:
         if not self.file_path or not os.path.exists(self.file_path):
-            return
+            latest = find_latest_transcript()
+            if latest and os.path.exists(latest):
+                self.file_path = latest
+                self._last_pos = 0
+            else:
+                return
 
         with open(self.file_path, "r", encoding="utf-8") as f:
             f.seek(self._last_pos)

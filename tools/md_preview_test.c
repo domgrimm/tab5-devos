@@ -121,6 +121,24 @@ int main(void)
     CHECK(devos_md_trunc_ok(e2, 1) == 1);
     CHECK(devos_md_trunc_ok(e2, 0) == 0);
 
+    /* 3-byte UTF-8: Euro sign "\xE2\x82\xAC" */
+    const char e3[] = {'a', (char)0xE2, (char)0x82, (char)0xAC, 'b', '\0'};
+    CHECK(devos_md_trunc_ok(e3, 4) == 4);
+    CHECK(devos_md_trunc_ok(e3, 3) == 1);
+    CHECK(devos_md_trunc_ok(e3, 2) == 1);
+    CHECK(devos_md_trunc_ok(e3, 1) == 1);
+    CHECK(devos_md_trunc_ok(e3, 0) == 0);
+    const char e3_sub[] = {'a', (char)0xE2, (char)0x82, '\0'};
+    CHECK(devos_md_trunc_ok(e3_sub, 3) == 1);
+
+    /* 4-byte UTF-8: Emoji "\xF0\x9F\x9A\x80" */
+    const char e4[] = {'x', (char)0xF0, (char)0x9F, (char)0x9A, (char)0x80, 'y', '\0'};
+    CHECK(devos_md_trunc_ok(e4, 5) == 5);
+    CHECK(devos_md_trunc_ok(e4, 4) == 1);
+    CHECK(devos_md_trunc_ok(e4, 3) == 1);
+    CHECK(devos_md_trunc_ok(e4, 2) == 1);
+    CHECK(devos_md_trunc_ok(e4, 1) == 1);
+
     if (failures == 0) printf("md unit tests: ALL PASS\n");
     return failures != 0;
 }
