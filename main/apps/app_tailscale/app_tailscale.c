@@ -482,11 +482,13 @@ static void tailscale_init(void)
 
     ta_auth_key = lv_textarea_create(modal_auth);
     lv_textarea_set_placeholder_text(ta_auth_key, "tskey-auth-k1234567890abcdef...");
+    lv_textarea_set_one_line(ta_auth_key, true);
     lv_obj_set_size(ta_auth_key, 508, 38);
     lv_obj_set_pos(ta_auth_key, 0, 50);
     lv_obj_set_style_bg_color(ta_auth_key, p->bg_alt, 0);
     lv_obj_set_style_border_color(ta_auth_key, p->surface_border, 0);
     lv_obj_set_style_text_color(ta_auth_key, p->text_primary, 0);
+    lv_obj_clear_flag(ta_auth_key, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *btn_enroll = lv_button_create(modal_auth);
     lv_obj_set_size(btn_enroll, 130, 34);
