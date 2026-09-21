@@ -353,9 +353,22 @@ int ssh_port_save_bookmark(const ssh_bookmark_t *bm)
     int count = 0;
     ssh_port_load_bookmarks(existing, SSH_MAX_BOOKMARKS - 1, &count);
 
-    /* Append */
-    if (count < SSH_MAX_BOOKMARKS) {
+    /* Update existing if matching alias or (host + user + port), else append */
+    int target_idx = -1;
+    for (int i = 0; i < count; i++) {
+        if ((strlen(bm->alias) > 0 && strcmp(existing[i].alias, bm->alias) == 0) ||
+            (strcmp(existing[i].host, bm->host) == 0 && strcmp(existing[i].user, bm->user) == 0 && existing[i].port == bm->port)) {
+            target_idx = i;
+            break;
+        }
+    }
+
+    if (target_idx >= 0) {
+        memcpy(&existing[target_idx], bm, sizeof(ssh_bookmark_t));
+    } else if (count < SSH_MAX_BOOKMARKS) {
         memcpy(&existing[count++], bm, sizeof(ssh_bookmark_t));
+    } else {
+        return -1;
     }
 
     FILE *f = fopen(SSH_BOOKMARKS_FILE, "w");
@@ -402,7 +415,12 @@ int ssh_port_delete_bookmark(int index)
         fprintf(f, "    \"host\": \"%s\",\n", existing[i].host);
         fprintf(f, "    \"port\": %d,\n", existing[i].port);
         fprintf(f, "    \"user\": \"%s\",\n", existing[i].user);
-        fprintf(f, "    \"auth\": \"%s\"\n", existing[i].auth_type == SSH_AUTH_KEY ? "key" : "password");
+        fprintf(f, "    \"auth\": \"%s\"", existing[i].auth_type == SSH_AUTH_KEY ? "key" : "password");
+        if (existing[i].key_path[0]) {
+            fprintf(f, ",\n    \"key_path\": \"%s\"\n", existing[i].key_path);
+        } else {
+            fprintf(f, "\n");
+        }
         fprintf(f, "  }%s\n", written < count - 2 ? "," : "");
         written++;
     }

@@ -31,13 +31,28 @@ static lv_obj_t *bm_cards[TERM_MAX_BOOKMARKS] = {NULL};
 static lv_obj_t *bm_labels[TERM_MAX_BOOKMARKS] = {NULL};
 static lv_obj_t *bm_sub_labels[TERM_MAX_BOOKMARKS] = {NULL};
 static lv_obj_t *bm_conn_btns[TERM_MAX_BOOKMARKS] = {NULL};
+static lv_obj_t *bm_delete_btns[TERM_MAX_BOOKMARKS] = {NULL};
+
+/* Bottom sidebar buttons */
+static lv_obj_t *btn_add_sess = NULL;
+static lv_obj_t *lbl_add_sess = NULL;
+static lv_obj_t *btn_add_bm = NULL;
+static lv_obj_t *lbl_add_bm = NULL;
 
 /* Modals */
 static lv_obj_t *modal_connect = NULL;
+static lv_obj_t *lbl_mtitle = NULL;
+static lv_obj_t *ta_alias = NULL;
 static lv_obj_t *ta_host = NULL;
 static lv_obj_t *ta_user = NULL;
 static lv_obj_t *ta_port = NULL;
+static lv_obj_t *btn_modal_save_bm = NULL;
+static lv_obj_t *lbl_modal_save_bm = NULL;
+static lv_obj_t *btn_conn_cancel = NULL;
+static lv_obj_t *btn_conn_sub = NULL;
+static lv_obj_t *lbl_conn_sub = NULL;
 static lv_obj_t *s_focused_ta = NULL;
+static bool s_modal_is_add_bookmark = false;
 
 /* Main Terminal Container */
 static lv_obj_t *terminal_container = NULL;
@@ -269,12 +284,23 @@ static void bookmark_connect_cb(lv_event_t *e)
     }
 }
 
+static void bookmark_delete_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    ssh_port_delete_bookmark(idx);
+    refresh_sidebar();
+}
+
 static void ta_focus_cb(lv_event_t *e)
 {
     lv_obj_t *target = lv_event_get_target(e);
     s_focused_ta = target;
     const devos_palette_t *p = devos_theme_get();
 
+    if (ta_alias) {
+        lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
+    }
     if (ta_host) {
         lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
         lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
@@ -294,15 +320,91 @@ static void ta_focus_cb(lv_event_t *e)
     }
 }
 
+static bool save_bookmark_from_modal(bool close_modal)
+{
+    if (!ta_host || !ta_user || !ta_port || !ta_alias) return false;
+
+    const char *host = lv_textarea_get_text(ta_host);
+    const char *user = lv_textarea_get_text(ta_user);
+    const char *port_s = lv_textarea_get_text(ta_port);
+    const char *alias = lv_textarea_get_text(ta_alias);
+
+    if (!host || strlen(host) == 0) return false;
+
+    int port = atoi(port_s);
+    if (port <= 0) port = 22;
+    if (!user || strlen(user) == 0) user = "root";
+
+    ssh_bookmark_t bm;
+    memset(&bm, 0, sizeof(bm));
+    strncpy(bm.alias, (alias && strlen(alias) > 0) ? alias : host, sizeof(bm.alias) - 1);
+    strncpy(bm.host, host, sizeof(bm.host) - 1);
+    bm.port = port;
+    strncpy(bm.user, user, sizeof(bm.user) - 1);
+    bm.auth_type = SSH_AUTH_KEY;
+    strncpy(bm.key_path, TAB5_SD_MOUNT_POINT "/.ssh/id_ed25519", sizeof(bm.key_path) - 1);
+
+    int rc = ssh_port_save_bookmark(&bm);
+    if (rc == 0) {
+        refresh_sidebar();
+        if (lbl_modal_save_bm) {
+            lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_OK " Saved!");
+        }
+        if (close_modal && modal_connect) {
+            lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
+            s_focused_ta = NULL;
+        }
+        return true;
+    }
+    return false;
+}
+
+static void connect_modal_save_bm_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    save_bookmark_from_modal(false);
+}
+
 static void open_connect_modal_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     if (modal_connect) {
+        s_modal_is_add_bookmark = false;
         lv_obj_remove_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(modal_connect);
 
+        if (lbl_mtitle) {
+            lv_label_set_text(lbl_mtitle, LV_SYMBOL_SETTINGS " Quick Connect New SSH Session");
+        }
+        if (lbl_conn_sub) {
+            lv_label_set_text(lbl_conn_sub, LV_SYMBOL_OK " Connect");
+        }
+        if (btn_modal_save_bm) {
+            lv_obj_remove_flag(btn_modal_save_bm, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lbl_modal_save_bm) {
+            lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_SAVE " Save Bookmark");
+        }
+        if (btn_conn_sub) {
+            lv_obj_set_size(btn_conn_sub, 120, 34);
+            lv_obj_set_pos(btn_conn_sub, 384, 168);
+        }
+        if (btn_conn_cancel) {
+            lv_obj_set_pos(btn_conn_cancel, 276, 168);
+        }
+
+        /* Clear text areas */
+        if (ta_alias) lv_textarea_set_text(ta_alias, "");
+        if (ta_host) lv_textarea_set_text(ta_host, "");
+        if (ta_port) lv_textarea_set_text(ta_port, "22");
+        if (ta_user) lv_textarea_set_text(ta_user, "root");
+
         s_focused_ta = ta_host;
         const devos_palette_t *p = devos_theme_get();
+        if (ta_alias) {
+            lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
+        }
         if (ta_port) {
             lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
             lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
@@ -314,6 +416,58 @@ static void open_connect_modal_cb(lv_event_t *e)
         if (ta_host) {
             lv_obj_add_state(ta_host, LV_STATE_FOCUSED);
             lv_obj_set_style_border_color(ta_host, p->accent_primary, 0);
+        }
+    }
+}
+
+static void open_add_bookmark_modal_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (modal_connect) {
+        s_modal_is_add_bookmark = true;
+        lv_obj_remove_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(modal_connect);
+
+        if (lbl_mtitle) {
+            lv_label_set_text(lbl_mtitle, LV_SYMBOL_PLUS " Add New SSH Bookmark");
+        }
+        if (lbl_conn_sub) {
+            lv_label_set_text(lbl_conn_sub, LV_SYMBOL_SAVE " Save Bookmark");
+        }
+        if (btn_modal_save_bm) {
+            lv_obj_add_flag(btn_modal_save_bm, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (btn_conn_sub) {
+            lv_obj_set_size(btn_conn_sub, 140, 34);
+            lv_obj_set_pos(btn_conn_sub, 364, 168);
+        }
+        if (btn_conn_cancel) {
+            lv_obj_set_pos(btn_conn_cancel, 256, 168);
+        }
+
+        /* Clear text areas */
+        if (ta_alias) lv_textarea_set_text(ta_alias, "");
+        if (ta_host) lv_textarea_set_text(ta_host, "");
+        if (ta_port) lv_textarea_set_text(ta_port, "22");
+        if (ta_user) lv_textarea_set_text(ta_user, "root");
+
+        s_focused_ta = ta_alias;
+        const devos_palette_t *p = devos_theme_get();
+        if (ta_host) {
+            lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
+        }
+        if (ta_port) {
+            lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
+        }
+        if (ta_user) {
+            lv_obj_clear_state(ta_user, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
+        }
+        if (ta_alias) {
+            lv_obj_add_state(ta_alias, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_color(ta_alias, p->accent_primary, 0);
         }
     }
 }
@@ -330,17 +484,24 @@ static void close_connect_modal_cb(lv_event_t *e)
 static void connect_modal_submit_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if (s_modal_is_add_bookmark) {
+        save_bookmark_from_modal(true);
+        return;
+    }
+
     if (!ta_host || !ta_user || !ta_port) return;
 
     const char *host = lv_textarea_get_text(ta_host);
     const char *user = lv_textarea_get_text(ta_user);
     const char *port_s = lv_textarea_get_text(ta_port);
+    const char *alias = lv_textarea_get_text(ta_alias);
     int port = atoi(port_s);
     if (port <= 0) port = 22;
     if (!user || strlen(user) == 0) user = "root";
 
     if (host && strlen(host) > 0) {
-        int new_id = ssh_port_create_session(host, host, port, user, SSH_AUTH_KEY, NULL, current_cols, current_rows);
+        const char *sess_alias = (alias && strlen(alias) > 0) ? alias : host;
+        int new_id = ssh_port_create_session(sess_alias, host, port, user, SSH_AUTH_KEY, NULL, current_cols, current_rows);
         if (new_id > 0) {
             s_sidebar_tab = 0;
             app_terminal_switch_session(new_id);
@@ -443,6 +604,8 @@ static void refresh_sidebar(void)
         /* Active Sessions Tab */
         lv_obj_remove_flag(container_active, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(container_bookmarks, LV_OBJ_FLAG_HIDDEN);
+        if (btn_add_sess) lv_obj_remove_flag(btn_add_sess, LV_OBJ_FLAG_HIDDEN);
+        if (btn_add_bm) lv_obj_add_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_style_bg_color(btn_tab_active, p->surface_active, 0);
         lv_obj_set_style_text_color(lbl_tab_active, p->accent_primary, 0);
@@ -486,6 +649,8 @@ static void refresh_sidebar(void)
         /* Bookmarks Tab */
         lv_obj_add_flag(container_active, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(container_bookmarks, LV_OBJ_FLAG_HIDDEN);
+        if (btn_add_sess) lv_obj_add_flag(btn_add_sess, LV_OBJ_FLAG_HIDDEN);
+        if (btn_add_bm) lv_obj_remove_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_style_bg_color(btn_tab_active, p->surface, 0);
         lv_obj_set_style_text_color(lbl_tab_active, p->text_secondary, 0);
@@ -499,13 +664,22 @@ static void refresh_sidebar(void)
         for (int i = 0; i < TERM_MAX_BOOKMARKS; i++) {
             if (i < bm_count) {
                 lv_obj_remove_flag(bm_cards[i], LV_OBJ_FLAG_HIDDEN);
-                lv_label_set_text(bm_labels[i], bms[i].alias);
+                lv_obj_set_style_bg_color(bm_cards[i], p->surface, 0);
+                lv_obj_set_style_border_color(bm_cards[i], p->surface_border, 0);
+                lv_label_set_text(bm_labels[i], bms[i].alias[0] ? bms[i].alias : bms[i].host);
+                lv_obj_set_style_text_color(bm_labels[i], p->accent_primary, 0);
 
                 char sub[64];
                 snprintf(sub, sizeof(sub), "%s@%s:%d (%s)",
                          bms[i].user, bms[i].host, bms[i].port,
                          bms[i].auth_type == SSH_AUTH_KEY ? "key" : "pwd");
                 lv_label_set_text(bm_sub_labels[i], sub);
+                lv_obj_set_style_text_color(bm_sub_labels[i], p->text_secondary, 0);
+
+                if (bm_delete_btns[i]) {
+                    lv_obj_set_style_bg_color(bm_delete_btns[i], p->surface, 0);
+                    lv_obj_set_style_border_color(bm_delete_btns[i], p->surface_border, 0);
+                }
             } else {
                 lv_obj_add_flag(bm_cards[i], LV_OBJ_FLAG_HIDDEN);
             }
@@ -566,14 +740,20 @@ static bool terminal_handle_key(uint32_t key, uint8_t modifiers)
 
         /* Tab cycles between text fields */
         if (key == '\t') {
-            if (s_focused_ta == ta_host) {
+            if (s_focused_ta == ta_alias) {
+                s_focused_ta = ta_host;
+            } else if (s_focused_ta == ta_host) {
                 s_focused_ta = ta_port;
             } else if (s_focused_ta == ta_port) {
                 s_focused_ta = ta_user;
             } else {
-                s_focused_ta = ta_host;
+                s_focused_ta = ta_alias;
             }
             const devos_palette_t *p = devos_theme_get();
+            if (ta_alias) {
+                lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
+                lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
+            }
             if (ta_host) {
                 lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
                 lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
@@ -760,7 +940,7 @@ static void terminal_init(void)
 
     /* 1.A Active Sessions Container */
     container_active = lv_obj_create(sidebar);
-    lv_obj_set_size(container_active, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 80);
+    lv_obj_set_size(container_active, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 84);
     lv_obj_set_pos(container_active, 0, 36);
     lv_obj_set_style_bg_color(container_active, p->surface, 0);
     lv_obj_set_style_border_width(container_active, 0, 0);
@@ -798,25 +978,9 @@ static void terminal_init(void)
         lv_obj_set_style_text_color(lbl_x, p->accent_danger, 0);
     }
 
-    /* Add Session Button at bottom of active list */
-    lv_obj_t *btn_add_sess = lv_button_create(sidebar);
-    lv_obj_set_size(btn_add_sess, DEVOS_PANE_LEFT_WIDTH - 16, 32);
-    lv_obj_set_pos(btn_add_sess, 0, DEVOS_CONTENT_HEIGHT - 44);
-    lv_obj_set_style_bg_color(btn_add_sess, p->surface, 0);
-    lv_obj_set_style_border_color(btn_add_sess, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_add_sess, 1, 0);
-    lv_obj_set_style_radius(btn_add_sess, 4, 0);
-    lv_obj_add_event_cb(btn_add_sess, open_connect_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *lbl_add_sess = lv_label_create(btn_add_sess);
-    lv_label_set_text(lbl_add_sess, LV_SYMBOL_PLUS " Quick Connect / New Session");
-    lv_obj_center(lbl_add_sess);
-    lv_obj_set_style_text_font(lbl_add_sess, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_add_sess, p->accent_primary, 0);
-
     /* 1.B Bookmarks Container */
     container_bookmarks = lv_obj_create(sidebar);
-    lv_obj_set_size(container_bookmarks, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 48);
+    lv_obj_set_size(container_bookmarks, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 84);
     lv_obj_set_pos(container_bookmarks, 0, 36);
     lv_obj_set_style_bg_color(container_bookmarks, p->surface, 0);
     lv_obj_set_style_border_width(container_bookmarks, 0, 0);
@@ -836,19 +1000,25 @@ static void terminal_init(void)
 
         bm_labels[i] = lv_label_create(bm_cards[i]);
         lv_obj_set_pos(bm_labels[i], 2, 2);
+        lv_obj_set_width(bm_labels[i], 136);
+        lv_label_set_long_mode(bm_labels[i], LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_font(bm_labels[i], &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(bm_labels[i], p->accent_primary, 0);
 
         bm_sub_labels[i] = lv_label_create(bm_cards[i]);
         lv_obj_set_pos(bm_sub_labels[i], 2, 24);
+        lv_obj_set_width(bm_sub_labels[i], 136);
+        lv_label_set_long_mode(bm_sub_labels[i], LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_font(bm_sub_labels[i], &lv_font_montserrat_10, 0);
         lv_obj_set_style_text_color(bm_sub_labels[i], p->text_secondary, 0);
 
+        /* Connect / Open button */
         bm_conn_btns[i] = lv_button_create(bm_cards[i]);
-        lv_obj_set_size(bm_conn_btns[i], 58, 24);
-        lv_obj_align(bm_conn_btns[i], LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_size(bm_conn_btns[i], 50, 24);
+        lv_obj_align(bm_conn_btns[i], LV_ALIGN_RIGHT_MID, -28, 0);
         lv_obj_set_style_bg_color(bm_conn_btns[i], p->accent_primary, 0);
         lv_obj_set_style_radius(bm_conn_btns[i], 3, 0);
+        lv_obj_set_style_pad_all(bm_conn_btns[i], 0, 0);
         lv_obj_add_event_cb(bm_conn_btns[i], bookmark_connect_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         lv_obj_t *lbl_c = lv_label_create(bm_conn_btns[i]);
@@ -856,7 +1026,56 @@ static void terminal_init(void)
         lv_obj_center(lbl_c);
         lv_obj_set_style_text_color(lbl_c, lv_color_black(), 0);
         lv_obj_set_style_text_font(lbl_c, &lv_font_montserrat_10, 0);
+
+        /* Delete button [x] */
+        bm_delete_btns[i] = lv_button_create(bm_cards[i]);
+        lv_obj_set_size(bm_delete_btns[i], 24, 24);
+        lv_obj_align(bm_delete_btns[i], LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_set_style_bg_color(bm_delete_btns[i], p->surface, 0);
+        lv_obj_set_style_border_color(bm_delete_btns[i], p->surface_border, 0);
+        lv_obj_set_style_border_width(bm_delete_btns[i], 1, 0);
+        lv_obj_set_style_radius(bm_delete_btns[i], 3, 0);
+        lv_obj_set_style_pad_all(bm_delete_btns[i], 0, 0);
+        lv_obj_add_event_cb(bm_delete_btns[i], bookmark_delete_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *lbl_x = lv_label_create(bm_delete_btns[i]);
+        lv_label_set_text(lbl_x, "x");
+        lv_obj_center(lbl_x);
+        lv_obj_set_style_text_color(lbl_x, p->accent_danger, 0);
+        lv_obj_set_style_text_font(lbl_x, &lv_font_montserrat_12, 0);
     }
+
+    /* 1.C Bottom Action Buttons */
+    btn_add_sess = lv_button_create(sidebar);
+    lv_obj_set_size(btn_add_sess, DEVOS_PANE_LEFT_WIDTH - 16, 32);
+    lv_obj_set_pos(btn_add_sess, 0, DEVOS_CONTENT_HEIGHT - 44);
+    lv_obj_set_style_bg_color(btn_add_sess, p->surface, 0);
+    lv_obj_set_style_border_color(btn_add_sess, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_add_sess, 1, 0);
+    lv_obj_set_style_radius(btn_add_sess, 4, 0);
+    lv_obj_add_event_cb(btn_add_sess, open_connect_modal_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_add_sess = lv_label_create(btn_add_sess);
+    lv_label_set_text(lbl_add_sess, LV_SYMBOL_PLUS " Quick Connect / New Session");
+    lv_obj_center(lbl_add_sess);
+    lv_obj_set_style_text_font(lbl_add_sess, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_add_sess, p->accent_primary, 0);
+
+    btn_add_bm = lv_button_create(sidebar);
+    lv_obj_set_size(btn_add_bm, DEVOS_PANE_LEFT_WIDTH - 16, 32);
+    lv_obj_set_pos(btn_add_bm, 0, DEVOS_CONTENT_HEIGHT - 44);
+    lv_obj_set_style_bg_color(btn_add_bm, p->surface, 0);
+    lv_obj_set_style_border_color(btn_add_bm, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_add_bm, 1, 0);
+    lv_obj_set_style_radius(btn_add_bm, 4, 0);
+    lv_obj_add_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(btn_add_bm, open_add_bookmark_modal_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_add_bm = lv_label_create(btn_add_bm);
+    lv_label_set_text(lbl_add_bm, LV_SYMBOL_PLUS " Add Bookmark");
+    lv_obj_center(lbl_add_bm);
+    lv_obj_set_style_text_font(lbl_add_bm, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_add_bm, p->accent_primary, 0);
 
     /* 2. Main Terminal Container */
     terminal_container = lv_obj_create(screen);
@@ -959,22 +1178,41 @@ static void terminal_init(void)
     lv_obj_clear_flag(modal_connect, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *lbl_mtitle = lv_label_create(modal_connect);
+    lbl_mtitle = lv_label_create(modal_connect);
     lv_label_set_text(lbl_mtitle, LV_SYMBOL_SETTINGS " Quick Connect New SSH Session");
     lv_obj_set_pos(lbl_mtitle, 0, 0);
     lv_obj_set_style_text_font(lbl_mtitle, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_mtitle, p->accent_primary, 0);
 
-    /* Row 1: Target Host / IP and Port */
+    /* Row 1: Alias, Target Host / IP, and Port */
+    lv_obj_t *lbl_l_alias = lv_label_create(modal_connect);
+    lv_label_set_text(lbl_l_alias, "Alias (optional):");
+    lv_obj_set_pos(lbl_l_alias, 0, 28);
+    lv_obj_set_style_text_font(lbl_l_alias, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_l_alias, p->text_secondary, 0);
+
+    ta_alias = lv_textarea_create(modal_connect);
+    lv_obj_set_size(ta_alias, 140, 36);
+    lv_obj_set_pos(ta_alias, 0, 48);
+    lv_textarea_set_placeholder_text(ta_alias, "e.g. Workstation");
+    lv_textarea_set_one_line(ta_alias, true);
+    lv_obj_set_style_bg_color(ta_alias, p->code_bg, 0);
+    lv_obj_set_style_text_color(ta_alias, p->text_primary, 0);
+    lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
+    lv_obj_set_style_border_width(ta_alias, 1, 0);
+    lv_obj_set_style_radius(ta_alias, 4, 0);
+    lv_obj_set_style_pad_all(ta_alias, 8, 0);
+    lv_obj_add_event_cb(ta_alias, ta_focus_cb, LV_EVENT_CLICKED, NULL);
+
     lv_obj_t *lbl_l_host = lv_label_create(modal_connect);
     lv_label_set_text(lbl_l_host, "Target Host or Tailscale IP:");
-    lv_obj_set_pos(lbl_l_host, 0, 28);
+    lv_obj_set_pos(lbl_l_host, 150, 28);
     lv_obj_set_style_text_font(lbl_l_host, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_l_host, p->text_secondary, 0);
 
     ta_host = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_host, 380, 36);
-    lv_obj_set_pos(ta_host, 0, 48);
+    lv_obj_set_size(ta_host, 250, 36);
+    lv_obj_set_pos(ta_host, 150, 48);
     lv_textarea_set_placeholder_text(ta_host, "100.x.y.z or hostname");
     lv_textarea_set_one_line(ta_host, true);
     lv_obj_set_style_bg_color(ta_host, p->code_bg, 0);
@@ -987,13 +1225,13 @@ static void terminal_init(void)
 
     lv_obj_t *lbl_l_port = lv_label_create(modal_connect);
     lv_label_set_text(lbl_l_port, "Port:");
-    lv_obj_set_pos(lbl_l_port, 396, 28);
+    lv_obj_set_pos(lbl_l_port, 410, 28);
     lv_obj_set_style_text_font(lbl_l_port, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_l_port, p->text_secondary, 0);
 
     ta_port = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_port, 108, 36);
-    lv_obj_set_pos(ta_port, 396, 48);
+    lv_obj_set_size(ta_port, 94, 36);
+    lv_obj_set_pos(ta_port, 410, 48);
     lv_textarea_set_text(ta_port, "22");
     lv_textarea_set_one_line(ta_port, true);
     lv_obj_set_style_bg_color(ta_port, p->code_bg, 0);
@@ -1037,8 +1275,23 @@ static void terminal_init(void)
     lv_obj_set_style_text_font(lbl_auth_desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_auth_desc, p->accent_secondary, 0);
 
-    /* Row 3: Action Buttons (Right-aligned) */
-    lv_obj_t *btn_conn_cancel = lv_button_create(modal_connect);
+    /* Row 3: Action Buttons */
+    btn_modal_save_bm = lv_button_create(modal_connect);
+    lv_obj_set_size(btn_modal_save_bm, 150, 34);
+    lv_obj_set_pos(btn_modal_save_bm, 0, 168);
+    lv_obj_set_style_bg_color(btn_modal_save_bm, p->surface, 0);
+    lv_obj_set_style_border_color(btn_modal_save_bm, p->surface_border, 0);
+    lv_obj_set_style_border_width(btn_modal_save_bm, 1, 0);
+    lv_obj_set_style_radius(btn_modal_save_bm, 4, 0);
+    lv_obj_add_event_cb(btn_modal_save_bm, connect_modal_save_bm_cb, LV_EVENT_CLICKED, NULL);
+
+    lbl_modal_save_bm = lv_label_create(btn_modal_save_bm);
+    lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_SAVE " Save Bookmark");
+    lv_obj_center(lbl_modal_save_bm);
+    lv_obj_set_style_text_color(lbl_modal_save_bm, p->text_primary, 0);
+    lv_obj_set_style_text_font(lbl_modal_save_bm, &lv_font_montserrat_12, 0);
+
+    btn_conn_cancel = lv_button_create(modal_connect);
     lv_obj_set_size(btn_conn_cancel, 100, 34);
     lv_obj_set_pos(btn_conn_cancel, 276, 168);
     lv_obj_set_style_bg_color(btn_conn_cancel, p->surface, 0);
@@ -1052,17 +1305,17 @@ static void terminal_init(void)
     lv_obj_center(lbl_can);
     lv_obj_set_style_text_color(lbl_can, p->text_primary, 0);
 
-    lv_obj_t *btn_conn_sub = lv_button_create(modal_connect);
+    btn_conn_sub = lv_button_create(modal_connect);
     lv_obj_set_size(btn_conn_sub, 120, 34);
     lv_obj_set_pos(btn_conn_sub, 384, 168);
     lv_obj_set_style_bg_color(btn_conn_sub, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_conn_sub, 4, 0);
     lv_obj_add_event_cb(btn_conn_sub, connect_modal_submit_cb, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *lbl_sub = lv_label_create(btn_conn_sub);
-    lv_label_set_text(lbl_sub, LV_SYMBOL_OK " Connect");
-    lv_obj_center(lbl_sub);
-    lv_obj_set_style_text_color(lbl_sub, lv_color_black(), 0);
+    lbl_conn_sub = lv_label_create(btn_conn_sub);
+    lv_label_set_text(lbl_conn_sub, LV_SYMBOL_OK " Connect");
+    lv_obj_center(lbl_conn_sub);
+    lv_obj_set_style_text_color(lbl_conn_sub, lv_color_black(), 0);
 
     /* 4. Timer for polling terminal I/O */
     term_poll_timer = lv_timer_create(terminal_poll_cb, 30, NULL);
