@@ -523,12 +523,12 @@ static size_t md_pad_string(const char *cell, int width, int align,
     return o;
 }
 
-#define MD_ADVANCE_LINE() do { \
-    if (len < full_len) { cur += len; continue; } \
+#define MD_ADVANCE_LINE() { \
+    if (raw_len < full_len) { cur += raw_len; continue; } \
     if (!nl) goto md_done; \
     cur = nl + 1; \
     continue; \
-} while (0)
+}
 
 int devos_md_render(lv_obj_t *parent, const char *text)
 {
@@ -554,10 +554,11 @@ int devos_md_render(lv_obj_t *parent, const char *text)
     for (;;) {
         const char *nl = strchr(cur, '\n');
         size_t full_len = nl ? (size_t)(nl - cur) : strlen(cur);
-        size_t len = full_len;
-        if (len > sizeof(line) - 1) len = devos_md_trunc_ok(cur, sizeof(line) - 1);
-        memcpy(line, cur, len);
-        line[len] = '\0';
+        size_t raw_len = full_len;
+        if (raw_len > sizeof(line) - 1) raw_len = devos_md_trunc_ok(cur, sizeof(line) - 1);
+        memcpy(line, cur, raw_len);
+        line[raw_len] = '\0';
+        size_t len = raw_len;
         while (len > 0 && line[len - 1] == '\r') line[--len] = '\0';
 
         const char *t = line;
