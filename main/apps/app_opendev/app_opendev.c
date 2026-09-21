@@ -62,7 +62,7 @@ static void opendev_init(void)
     lv_obj_set_style_radius(btn_sess, 4, 0);
 
     lv_obj_t *lbl_s = lv_label_create(btn_sess);
-    lv_label_set_text(lbl_s, "● Session: devos-firmware\nModel: Claude 3.7 Sonnet");
+    lv_label_set_text(lbl_s, LV_SYMBOL_BULLET " Session: devos-firmware\nModel: Claude 3.7 Sonnet");
     lv_obj_align(lbl_s, LV_ALIGN_LEFT_MID, 4, 0);
     lv_obj_set_style_text_font(lbl_s, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_s, p->accent_primary, 0);
@@ -114,7 +114,7 @@ static void opendev_init(void)
     lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
 
     lv_obj_t *lbl_send = lv_label_create(btn_send);
-    lv_label_set_text(lbl_send, "Send ↵");
+    lv_label_set_text(lbl_send, "Send " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_send);
     lv_obj_set_style_text_color(lbl_send, lv_color_black(), 0);
 

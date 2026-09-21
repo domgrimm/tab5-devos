@@ -22,10 +22,10 @@ static void toggle_thinking_cb(lv_event_t *e)
     thinking_expanded = !thinking_expanded;
     if (thinking_expanded) {
         lv_obj_remove_flag(thinking_body, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(lbl_thinking_arrow, "▼ Thinking Trace (1.8s)");
+        lv_label_set_text(lbl_thinking_arrow, LV_SYMBOL_DOWN " Thinking Trace (1.8s)");
     } else {
         lv_obj_add_flag(thinking_body, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(lbl_thinking_arrow, "▶ Thinking Trace (1.8s - Collapsed)");
+        lv_label_set_text(lbl_thinking_arrow, LV_SYMBOL_RIGHT " Thinking Trace (1.8s - Collapsed)");
     }
 }
 
@@ -145,7 +145,7 @@ static void antigravity_init(void)
     lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_sub, p->accent_secondary, 0);
 
-    const char *subagents[2] = {"● research (idle)", "● self (running)"};
+    const char *subagents[2] = {LV_SYMBOL_BULLET " research (idle)", LV_SYMBOL_BULLET " self (running)"};
     for (int i = 0; i < 2; i++) {
         lv_obj_t *btn_sa = lv_button_create(left_panel);
         lv_obj_set_size(btn_sa, DEVOS_PANE_LEFT_WIDTH - 28, 34);
@@ -232,7 +232,7 @@ static void antigravity_init(void)
     lv_obj_add_event_cb(thinking_box, toggle_thinking_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_thinking_arrow = lv_label_create(thinking_box);
-    lv_label_set_text(lbl_thinking_arrow, "▼ Thinking Trace (1.8s)");
+    lv_label_set_text(lbl_thinking_arrow, LV_SYMBOL_DOWN " Thinking Trace (1.8s)");
     lv_obj_set_style_text_color(lbl_thinking_arrow, p->accent_primary, 0);
     lv_obj_set_style_text_font(lbl_thinking_arrow, &lv_font_montserrat_14, 0);
 
@@ -256,7 +256,7 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_all(tool_card, 8, 0);
 
     lv_obj_t *lbl_tool_title = lv_label_create(tool_card);
-    lv_label_set_text(lbl_tool_title, "⚙ Tool: run_command - cmake -B build_sim -S . -DDEVOS_SIMULATOR=ON");
+    lv_label_set_text(lbl_tool_title, LV_SYMBOL_SETTINGS " Tool: run_command - cmake -B build_sim -S . -DDEVOS_SIMULATOR=ON");
     lv_obj_set_style_text_color(lbl_tool_title, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_tool_title, &lv_font_montserrat_12, 0);
 
@@ -314,7 +314,7 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(btn_send, 4, 0);
 
     lv_obj_t *lbl_send = lv_label_create(btn_send);
-    lv_label_set_text(lbl_send, "Send ↵");
+    lv_label_set_text(lbl_send, "Send " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_send);
     lv_obj_set_style_text_color(lbl_send, lv_color_black(), 0);
 
@@ -337,13 +337,13 @@ static void antigravity_init(void)
     lv_obj_set_style_radius(tab_artifacts, 4, 0);
 
     lv_obj_t *lbl_tab_art = lv_label_create(tab_artifacts);
-    lv_label_set_text(lbl_tab_art, "📁 Artifacts & Diffs");
+    lv_label_set_text(lbl_tab_art, LV_SYMBOL_DIRECTORY " Artifacts & Diffs");
     lv_obj_center(lbl_tab_art);
     lv_obj_set_style_text_font(lbl_tab_art, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_tab_art, p->accent_primary, 0);
 
     /* Artifact list */
-    const char *artifacts[3] = {"📄 welcome.md", "📄 devos_config.h", "📄 PLAN.md"};
+    const char *artifacts[3] = {LV_SYMBOL_FILE " welcome.md", LV_SYMBOL_FILE " devos_config.h", LV_SYMBOL_FILE " PLAN.md"};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *btn_art = lv_button_create(right_panel);
         lv_obj_set_size(btn_art, DEVOS_PANE_RIGHT_WIDTH - 28, 34);
@@ -372,7 +372,7 @@ static void antigravity_init(void)
     lv_obj_add_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *lbl_m_title = lv_label_create(modal_permission);
-    lv_label_set_text(lbl_m_title, "⚠️ Agent Permission Request");
+    lv_label_set_text(lbl_m_title, LV_SYMBOL_WARNING " Agent Permission Request");
     lv_obj_set_style_text_font(lbl_m_title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(lbl_m_title, p->accent_warning, 0);
 
