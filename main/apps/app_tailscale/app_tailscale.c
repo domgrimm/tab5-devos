@@ -86,9 +86,8 @@ static void peer_click_cb(lv_event_t *e)
     refresh_ui();
 }
 
-static void peer_ssh_cb(lv_event_t *e)
+static void open_peer_ssh(int idx)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
     microlink_status_t st;
     if (microlink_get_status(&st) == 0 && idx >= 0 && idx < st.peer_count) {
         /* Update telemetry with selected host and launch Terminal */
@@ -99,6 +98,12 @@ static void peer_ssh_cb(lv_event_t *e)
 
         devos_core_switch_app(DEVOS_APP_TERMINAL);
     }
+}
+
+static void peer_ssh_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    open_peer_ssh(idx);
 }
 
 static void peer_ping_cb(lv_event_t *e)
@@ -209,16 +214,22 @@ static void refresh_ui(void)
 
     /* 3. Peer Cards */
     int card_y = 0;
-    for (int i = 0; i < st.peer_count; i++) {
+    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
         if (!peer_cards[i]) continue;
 
+        if (i >= st.peer_count) {
+            lv_obj_add_flag(peer_cards[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+
+        lv_obj_remove_flag(peer_cards[i], LV_OBJ_FLAG_HIDDEN);
         microlink_peer_t *peer = &st.peers[i];
 
         /* Title Line */
         snprintf(buf, sizeof(buf), "%s [%d] %s (%s) - %s",
                  peer->is_online ? LV_SYMBOL_BULLET : "-",
                  i + 1,
-                 peer->fqdn,
+                 peer->name,
                  peer->ip,
                  peer->os_desc);
         lv_label_set_text(peer_title_lbls[i], buf);
@@ -227,12 +238,12 @@ static void refresh_ui(void)
 
         /* Subtitle Line */
         char sub_buf[128];
-        snprintf(sub_buf, sizeof(sub_buf), "%s (%dms)  |  Rx: %u KB, Tx: %u KB  |  Last seen: %ds ago",
+        snprintf(sub_buf, sizeof(sub_buf), "%s (%dms)  |  Rx: %u KB, Tx: %u KB  |  %s",
                  peer->is_direct ? "Direct P2P" : "DERP Relay",
                  peer->ping_ms,
                  (unsigned int)(peer->rx_bytes / 1024),
                  (unsigned int)(peer->tx_bytes / 1024),
-                 (unsigned int)peer->last_seen_sec);
+                 peer->fqdn);
         lv_label_set_text(peer_sub_lbls[i], sub_buf);
         lv_obj_set_style_text_color(peer_sub_lbls[i],
                                     peer->is_direct ? p->accent_secondary : p->accent_warning, 0);
@@ -385,9 +396,7 @@ static void tailscale_init(void)
     lv_obj_set_style_pad_all(peer_list_scroll, 0, 0);
 
     microlink_status_t st;
-    microlink_get_status(&st);
-
-    for (int i = 0; i < st.peer_count; i++) {
+    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
         peer_cards[i] = lv_button_create(peer_list_scroll);
         lv_obj_set_size(peer_cards[i], DEVOS_SCREEN_WIDTH - 36, 56);
         lv_obj_set_style_bg_color(peer_cards[i], p->surface, 0);
@@ -571,15 +580,18 @@ static bool tailscale_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '6') {
+    if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '9') {
         int idx = key - '1';
-        s_selected_peer = (s_selected_peer == idx) ? -1 : idx;
-        refresh_ui();
-        return true;
+        microlink_status_t st;
+        if (microlink_get_status(&st) == 0 && idx < st.peer_count) {
+            s_selected_peer = (s_selected_peer == idx) ? -1 : idx;
+            refresh_ui();
+            return true;
+        }
     }
 
-    if (key == LV_KEY_ENTER && s_selected_peer >= 0) {
-        peer_ssh_cb((lv_event_t *)(intptr_t)s_selected_peer);
+    if ((key == LV_KEY_ENTER || key == '\r' || key == '\n') && s_selected_peer >= 0) {
+        open_peer_ssh(s_selected_peer);
         return true;
     }
 

@@ -53,10 +53,11 @@ if pgrep -x "devos_sim" >/dev/null; then
     sleep 1
 fi
 
-# 6. Launch devos_sim with setsid
+# 6. Launch devos_sim with nohup in background
 echo "[SIM] Launching devos_sim on DISPLAY=:99..."
-setsid env DISPLAY=:99 ./build_sim/devos_sim > /tmp/devos_sim.log 2>&1 < /dev/null &
+DISPLAY=:99 nohup ./build_sim/devos_sim > /tmp/devos_sim.log 2>&1 &
 SIM_PID=$!
+disown $SIM_PID
 
 echo ""
 echo "======================================================="

@@ -16,14 +16,20 @@
 static const char *TAG = "libssh2_port";
 #else
 #define TAG "libssh2_port"
+#include <pty.h>
+#include <utmp.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <errno.h>
 #endif
 
 #define SSH_BOOKMARKS_FILE TAB5_SD_MOUNT_POINT "/.ssh/bookmarks.json"
 #define SSH_KEYS_DIR       TAB5_SD_MOUNT_POINT "/.ssh"
 
 static ssh_session_t s_sessions[SSH_MAX_SESSIONS];
-static char s_input_line_buf[SSH_MAX_SESSIONS][256];
-static size_t s_input_line_len[SSH_MAX_SESSIONS];
 
 /* Push data to session ring buffer */
 static void push_to_rx(ssh_session_t *sess, const char *data, size_t len)
@@ -43,187 +49,19 @@ static void push_to_rx(ssh_session_t *sess, const char *data, size_t len)
     sess->rx_bytes += len;
 }
 
-static void send_prompt(ssh_session_t *sess)
-{
-    char prompt[128];
-    if (sess->user[0] && sess->alias[0]) {
-        snprintf(prompt, sizeof(prompt), "\033[1;32m%s@%s\033[0m:\033[1;34m~\033[0m%s ",
-                 sess->user, sess->alias, strcmp(sess->user, "root") == 0 ? "#" : "$");
-    } else {
-        snprintf(prompt, sizeof(prompt), "\033[1;32mdevos@tab5\033[0m:\033[1;34m~\033[0m$ ");
-    }
-    push_to_rx(sess, prompt, strlen(prompt));
-}
-
-static void simulate_command_response(ssh_session_t *sess, const char *cmd)
-{
-    /* Trim whitespace */
-    while (*cmd == ' ') cmd++;
-
-    if (strlen(cmd) == 0) {
-        push_to_rx(sess, "\r\n", 2);
-        send_prompt(sess);
-        return;
-    }
-
-    push_to_rx(sess, "\r\n", 2);
-
-    if (strcmp(cmd, "clear") == 0) {
-        push_to_rx(sess, "\033[2J\033[H", 7);
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "help") == 0) {
-        const char *help_msg =
-            "\033[1;37mdevOS Built-in Shell & Diagnostics Commands:\033[0m\r\n"
-            "  ls, ll, dir      List files in directory\r\n"
-            "  git status       Check active repository status\r\n"
-            "  agy, agy status  Inspect Antigravity daemon status\r\n"
-            "  uname -a         Display system architecture and kernel\r\n"
-            "  whoami           Show current logged in user\r\n"
-            "  date             Display network synchronized clock\r\n"
-            "  htop, top        Display live process summary\r\n"
-            "  clear            Clear terminal screen\r\n"
-            "  exit             Close active session\r\n";
-        push_to_rx(sess, help_msg, strlen(help_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "git status") == 0) {
-        const char *git_msg =
-            "On branch \033[1;32mmain\033[0m\r\n"
-            "Your branch is up to date with 'origin/main'.\r\n\r\n"
-            "Changes to be committed:\r\n"
-            "  (use \"git restore --staged <file>...\" to unstage)\r\n"
-            "    \033[32mnew file:   components/libssh2_port/libssh2_port.c\033[0m\r\n"
-            "    \033[32mnew file:   components/libssh2_port/libssh2_port.h\033[0m\r\n"
-            "    \033[32mmodified:   main/apps/app_terminal/app_terminal.c\033[0m\r\n\r\n";
-        push_to_rx(sess, git_msg, strlen(git_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strncmp(cmd, "agy", 3) == 0) {
-        const char *agy_msg =
-            "\033[1;35mAntigravity CLI v2.4.0 (Autonomous Agent Engine)\033[0m\r\n"
-            "Target: M5Stack Tab5 (ESP32-P4 + A164 Keyboard)\r\n"
-            "Connected to agy-bridge sidecar on \033[1;33m100.77.11.92:8420\033[0m [OK]\r\n"
-            "Subagents Active: \033[1;36m0 idle, 1 waiting\033[0m\r\n";
-        push_to_rx(sess, agy_msg, strlen(agy_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "ls -la") == 0 || strcmp(cmd, "ll") == 0) {
-        const char *ls_msg =
-            "\033[1;34m.\033[0m   \033[1;34m..\033[0m   \033[1;34mcomponents\033[0m   \033[1;34mmain\033[0m   \033[1;34mtools\033[0m   \033[1;32mCMakeLists.txt\033[0m   \033[36mPLAN.md\033[0m   \033[36mAGENTS.md\033[0m\r\n";
-        push_to_rx(sess, ls_msg, strlen(ls_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "uname -a") == 0) {
-        const char *uname_msg =
-            "Linux workstation 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux\r\n";
-        push_to_rx(sess, uname_msg, strlen(uname_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "whoami") == 0) {
-        char who_msg[128];
-        snprintf(who_msg, sizeof(who_msg), "%s\r\n", sess->user[0] ? sess->user : "root");
-        push_to_rx(sess, who_msg, strlen(who_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "date") == 0) {
-        const char *date_msg = "Mon Sep 21 12:00:00 AEST 2026\r\n";
-        push_to_rx(sess, date_msg, strlen(date_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "htop") == 0 || strcmp(cmd, "top") == 0) {
-        const char *top_msg =
-            "\033[1;36mTasks: 142 total, 1 running, 141 sleeping\033[0m\r\n"
-            "CPU: [||||||                      14.2%]   Core 0: 12% | Core 1: 16%\r\n"
-            "Mem: [||||||||||||||||            8.2G/64G] PSRAM: 28.5M/32M\r\n\r\n"
-            "  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\r\n"
-            " 1024 dom       20   0 1420580 412500 120400 S  12.4   0.6   4:12.10 agy-bridge\r\n"
-            " 1089 dom       20   0  945200 230100  85200 S   6.2   0.3   1:45.02 python3\r\n"
-            " 2045 root      20   0  512000 110400  42000 S   1.8   0.1   0:18.44 tailscaled\r\n"
-            " 3201 dom       20   0  128400  32100  12000 R   0.5   0.0   0:00.08 htop\r\n";
-        push_to_rx(sess, top_msg, strlen(top_msg));
-        send_prompt(sess);
-        return;
-    }
-
-    if (strcmp(cmd, "exit") == 0) {
-        push_to_rx(sess, "logout\r\nConnection closed by remote host.\r\n", 40);
-        sess->state = SSH_SESSION_CLOSED;
-        return;
-    }
-
-    /* Fallback generic echo */
-    char generic[256];
-    snprintf(generic, sizeof(generic), "bash: %s: command not found (type 'help' for devOS diagnostic shell)\r\n", cmd);
-    push_to_rx(sess, generic, strlen(generic));
-    send_prompt(sess);
-}
-
 int ssh_port_init(void)
 {
     memset(s_sessions, 0, sizeof(s_sessions));
-    memset(s_input_line_buf, 0, sizeof(s_input_line_buf));
-    memset(s_input_line_len, 0, sizeof(s_input_line_len));
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        s_sessions[i].sock_fd = -1;
+    }
 
-    /* Pre-populate Session 1: Workstation (bash) */
-    s_sessions[0].id = 1;
-    s_sessions[0].state = SSH_SESSION_CONNECTED;
-    strncpy(s_sessions[0].alias, "workstation", sizeof(s_sessions[0].alias));
-    strncpy(s_sessions[0].host, "100.77.11.92", sizeof(s_sessions[0].host));
-    s_sessions[0].port = 22;
-    strncpy(s_sessions[0].user, "root", sizeof(s_sessions[0].user));
-    strncpy(s_sessions[0].command, "bash", sizeof(s_sessions[0].command));
-    s_sessions[0].cols = DEVOS_TERM_COLS_COLLAPSED;
-    s_sessions[0].rows = DEVOS_TERM_ROWS;
-    s_sessions[0].ping_ms = 2;
-
-    const char *sess1_banner =
-        "\033[1;36mLinux workstation 6.12.1-arch1-1 #1 SMP PREEMPT_DYNAMIC x86_64\033[0m\r\n"
-        "Welcome to Arch Linux (Tailscale IP: \033[1;32m100.77.11.92\033[0m)!\r\n"
-        "System load: 0.14, 0.22, 0.18 | Memory: 8.2 GiB / 64.0 GiB | Uptime: 14d 6h\r\n\r\n"
-        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# git status\r\n"
-        "On branch main\r\n"
-        "Your branch is up to date with 'origin/main'.\r\n\r\n"
-        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# agy --version\r\n"
-        "\033[1;35mAntigravity CLI v2.4.0 (Autonomous Agent Engine)\033[0m\r\n"
-        "Connected to agy-bridge daemon on \033[1;33m100.77.11.92:8420\033[0m [OK]\r\n\r\n"
-        "\033[1;32mroot@workstation\033[0m:\033[1;34m~/dev/tab5-devos\033[0m# ";
-    push_to_rx(&s_sessions[0], sess1_banner, strlen(sess1_banner));
-
-    /* Pre-populate Session 2: Prod Cluster (htop) */
-    s_sessions[1].id = 2;
-    s_sessions[1].state = SSH_SESSION_CONNECTED;
-    strncpy(s_sessions[1].alias, "prod-cluster", sizeof(s_sessions[1].alias));
-    strncpy(s_sessions[1].host, "100.99.20.1", sizeof(s_sessions[1].host));
-    s_sessions[1].port = 22;
-    strncpy(s_sessions[1].user, "root", sizeof(s_sessions[1].user));
-    strncpy(s_sessions[1].command, "htop", sizeof(s_sessions[1].command));
-    s_sessions[1].cols = DEVOS_TERM_COLS_COLLAPSED;
-    s_sessions[1].rows = DEVOS_TERM_ROWS;
-    s_sessions[1].ping_ms = 12;
-
-    const char *sess2_banner =
-        "\033[1;36mUbuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic x86_64)\033[0m\r\n"
-        "Welcome to Production Cluster Node 1 (IP: \033[1;32m100.99.20.1\033[0m)\r\n"
-        "System load: 0.85, 0.92, 0.78 | Memory: 31.4 GiB / 64.0 GiB | Uptime: 45d 12h\r\n\r\n"
-        "\033[1;31mroot@prod-cluster\033[0m:\033[1;34m~#\033[0m ";
-    push_to_rx(&s_sessions[1], sess2_banner, strlen(sess2_banner));
+#ifndef ESP_PLATFORM
+    /* Automatically launch Session 1: Real SSH to Workstation (root@100.77.11.92) */
+    ssh_port_create_session("workstation", "100.77.11.92", 22, "root", SSH_AUTH_KEY,
+                            "./sim_sdcard/.ssh/id_ed25519",
+                            DEVOS_TERM_COLS_COLLAPSED, DEVOS_TERM_ROWS);
+#endif
 
     return 0;
 }
@@ -233,8 +71,7 @@ int ssh_port_create_session(const char *alias, const char *host, int port, const
                            uint16_t cols, uint16_t rows)
 {
     (void)auth_type;
-    (void)credential;
-    if (!host) return -1;
+    if (!host || strlen(host) == 0) return -1;
 
     /* Find free slot */
     int slot = -1;
@@ -252,25 +89,95 @@ int ssh_port_create_session(const char *alias, const char *host, int port, const
     ssh_session_t *sess = &s_sessions[slot];
     memset(sess, 0, sizeof(ssh_session_t));
     sess->id = slot + 1;
-    sess->state = SSH_SESSION_CONNECTED;
+    sess->sock_fd = -1;
     strncpy(sess->alias, alias && strlen(alias) > 0 ? alias : host, sizeof(sess->alias) - 1);
     strncpy(sess->host, host, sizeof(sess->host) - 1);
     sess->port = port > 0 ? port : 22;
     strncpy(sess->user, user && strlen(user) > 0 ? user : "root", sizeof(sess->user) - 1);
-    strncpy(sess->command, "bash", sizeof(sess->command) - 1);
+    strncpy(sess->command, "ssh", sizeof(sess->command) - 1);
     sess->cols = cols > 0 ? cols : DEVOS_TERM_COLS_COLLAPSED;
     sess->rows = rows > 0 ? rows : DEVOS_TERM_ROWS;
-    sess->ping_ms = 8;
+    sess->ping_ms = 1;
 
-    s_input_line_len[slot] = 0;
+#ifndef ESP_PLATFORM
+    struct winsize ws;
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_col = sess->cols;
+    ws.ws_row = sess->rows;
 
-    char banner[256];
-    snprintf(banner, sizeof(banner),
-             "\033[1;36mConnected to %s (%s:%d) via devOS Virtual Net\033[0m\r\n"
-             "PTY initialized: %dx%d cols, VT100 ANSI mode active.\r\n\r\n",
-             sess->alias, sess->host, sess->port, sess->cols, sess->rows);
-    push_to_rx(sess, banner, strlen(banner));
-    send_prompt(sess);
+    int master_fd = -1;
+    pid_t pid = forkpty(&master_fd, NULL, NULL, &ws);
+    if (pid < 0) {
+        sess->state = SSH_SESSION_ERROR;
+        char err_msg[128];
+        snprintf(err_msg, sizeof(err_msg), "\r\n[forkpty error: %s]\r\n", strerror(errno));
+        push_to_rx(sess, err_msg, strlen(err_msg));
+        return -1;
+    }
+
+    if (pid == 0) {
+        /* Child process: execute ssh client */
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", sess->port);
+
+        char user_host[128];
+        snprintf(user_host, sizeof(user_host), "%s@%s", sess->user, sess->host);
+
+        /* Resolve SSH private key */
+        char key_path[256] = {0};
+        if (credential && strlen(credential) > 0) {
+            if (strncmp(credential, "/sdcard/", 8) == 0) {
+                snprintf(key_path, sizeof(key_path), "./sim_sdcard/%s", credential + 8);
+            } else {
+                strncpy(key_path, credential, sizeof(key_path) - 1);
+            }
+        }
+        if (key_path[0] == '\0' || access(key_path, R_OK) != 0) {
+            if (access("./sim_sdcard/.ssh/id_ed25519", R_OK) == 0) {
+                strncpy(key_path, "./sim_sdcard/.ssh/id_ed25519", sizeof(key_path) - 1);
+            } else if (access("/home/dom/.ssh/id_ed25519", R_OK) == 0) {
+                strncpy(key_path, "/home/dom/.ssh/id_ed25519", sizeof(key_path) - 1);
+            }
+        }
+
+        char *argv[32];
+        int argc = 0;
+        argv[argc++] = "ssh";
+        argv[argc++] = "-tt";
+        argv[argc++] = "-p";
+        argv[argc++] = port_str;
+        argv[argc++] = "-o";
+        argv[argc++] = "StrictHostKeyChecking=no";
+        argv[argc++] = "-o";
+        argv[argc++] = "UserKnownHostsFile=/dev/null";
+        argv[argc++] = "-o";
+        argv[argc++] = "LogLevel=ERROR";
+        argv[argc++] = "-o";
+        argv[argc++] = "ConnectTimeout=8";
+
+        if (key_path[0] && access(key_path, R_OK) == 0) {
+            argv[argc++] = "-i";
+            argv[argc++] = key_path;
+        }
+
+        argv[argc++] = user_host;
+        argv[argc] = NULL;
+
+        execvp("ssh", argv);
+        fprintf(stderr, "Failed to exec ssh: %s\n", strerror(errno));
+        _exit(127);
+    }
+
+    /* Parent process */
+    int flags = fcntl(master_fd, F_GETFL, 0);
+    fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+
+    sess->sock_fd = master_fd;
+    sess->session_ctx = (void *)(intptr_t)pid;
+    sess->state = SSH_SESSION_CONNECTED;
+#else
+    sess->state = SSH_SESSION_CONNECTED;
+#endif
 
     return sess->id;
 }
@@ -279,8 +186,22 @@ int ssh_port_close_session(int session_id)
 {
     if (session_id < 1 || session_id > SSH_MAX_SESSIONS) return -1;
     int idx = session_id - 1;
-    s_sessions[idx].state = SSH_SESSION_CLOSED;
-    s_input_line_len[idx] = 0;
+    ssh_session_t *sess = &s_sessions[idx];
+
+#ifndef ESP_PLATFORM
+    if (sess->sock_fd >= 0) {
+        close(sess->sock_fd);
+        sess->sock_fd = -1;
+    }
+    if (sess->session_ctx) {
+        pid_t pid = (pid_t)(intptr_t)sess->session_ctx;
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, WNOHANG);
+        sess->session_ctx = NULL;
+    }
+#endif
+
+    sess->state = SSH_SESSION_CLOSED;
     return 0;
 }
 
@@ -309,6 +230,16 @@ int ssh_port_resize_pty(int session_id, uint16_t cols, uint16_t rows)
     s_sessions[idx].cols = cols;
     s_sessions[idx].rows = rows;
 
+#ifndef ESP_PLATFORM
+    if (s_sessions[idx].sock_fd >= 0) {
+        struct winsize ws;
+        memset(&ws, 0, sizeof(ws));
+        ws.ws_col = cols;
+        ws.ws_row = rows;
+        ioctl(s_sessions[idx].sock_fd, TIOCSWINSZ, &ws);
+    }
+#endif
+
 #ifdef ESP_PLATFORM
     ESP_LOGI(TAG, "Session %d TIOCSWINSZ: cols=%d, rows=%d", session_id, cols, rows);
 #endif
@@ -323,35 +254,16 @@ int ssh_port_send(int session_id, const char *data, size_t len)
 
     if (sess->state != SSH_SESSION_CONNECTED) return -1;
 
-    sess->tx_bytes += len;
-
-    for (size_t i = 0; i < len; i++) {
-        char ch = data[i];
-
-        if (ch == '\r' || ch == '\n') {
-            s_input_line_buf[idx][s_input_line_len[idx]] = '\0';
-            simulate_command_response(sess, s_input_line_buf[idx]);
-            s_input_line_len[idx] = 0;
-        } else if (ch == '\b' || ch == 0x7F) {
-            if (s_input_line_len[idx] > 0) {
-                s_input_line_len[idx]--;
-                push_to_rx(sess, "\b \b", 3);
-            }
-        } else if (ch == 0x03) { /* Ctrl+C */
-            push_to_rx(sess, "^C\r\n", 4);
-            s_input_line_len[idx] = 0;
-            send_prompt(sess);
-        } else if (ch == 0x0C) { /* Ctrl+L */
-            push_to_rx(sess, "\033[2J\033[H", 7);
-            s_input_line_len[idx] = 0;
-            send_prompt(sess);
-        } else if (ch >= 0x20 && ch <= 0x7E) {
-            if (s_input_line_len[idx] < sizeof(s_input_line_buf[idx]) - 1) {
-                s_input_line_buf[idx][s_input_line_len[idx]++] = ch;
-                push_to_rx(sess, &ch, 1); /* Echo */
-            }
+#ifndef ESP_PLATFORM
+    if (sess->sock_fd >= 0) {
+        ssize_t w = write(sess->sock_fd, data, len);
+        if (w > 0) {
+            sess->tx_bytes += (uint32_t)w;
+            return (int)w;
         }
+        return -1;
     }
+#endif
 
     return (int)len;
 }
@@ -361,6 +273,22 @@ int ssh_port_recv(int session_id, char *buf, size_t max_len)
     if (session_id < 1 || session_id > SSH_MAX_SESSIONS || !buf || max_len == 0) return 0;
     int idx = session_id - 1;
     ssh_session_t *sess = &s_sessions[idx];
+
+#ifndef ESP_PLATFORM
+    if (sess->sock_fd >= 0) {
+        char temp[2048];
+        ssize_t n = read(sess->sock_fd, temp, sizeof(temp));
+        if (n > 0) {
+            push_to_rx(sess, temp, (size_t)n);
+        } else if (n == 0 || (n < 0 && (errno == EIO || errno == EBADF))) {
+            /* Child shell closed */
+            push_to_rx(sess, "\r\n[Session disconnected]\r\n", 25);
+            close(sess->sock_fd);
+            sess->sock_fd = -1;
+            sess->state = SSH_SESSION_CLOSED;
+        }
+    }
+#endif
 
     size_t count = 0;
     while (sess->rx_count > 0 && count < max_len) {
