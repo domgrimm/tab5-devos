@@ -297,6 +297,21 @@ static void refresh_file_list(void)
     }
 }
 
+static void update_tree_button(void)
+{
+    if (!btn_tree || !lbl_btn_tree) return;
+    const devos_palette_t *p = devos_theme_get();
+    if (s_sidebar_visible) {
+        lv_obj_set_style_bg_color(btn_tree, p->surface_active, 0);
+        lv_obj_set_style_border_color(btn_tree, p->accent_primary, 0);
+        lv_obj_set_style_text_color(lbl_btn_tree, p->accent_primary, 0);
+    } else {
+        lv_obj_set_style_bg_color(btn_tree, p->surface, 0);
+        lv_obj_set_style_border_color(btn_tree, p->surface_border, 0);
+        lv_obj_set_style_text_color(lbl_btn_tree, p->text_secondary, 0);
+    }
+}
+
 static void apply_layout(void)
 {
     int main_x = 0;
@@ -318,10 +333,11 @@ static void apply_layout(void)
         lv_obj_align_to(btn_new, btn_save, LV_ALIGN_OUT_LEFT_MID, -6, 0);
         lv_obj_align_to(btn_tree, btn_new, LV_ALIGN_OUT_LEFT_MID, -6, 0);
         if (lbl_fn) {
-            int lbl_w = main_w - 320;
+            int lbl_w = main_w - 330;
             if (lbl_w < 120) lbl_w = 120;
             lv_obj_set_width(lbl_fn, lbl_w);
         }
+        update_tree_button();
     }
     if (!ta_editor || !preview_scroll) return;
     int edit_h = DEVOS_CONTENT_HEIGHT - 34;
@@ -1259,6 +1275,7 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
             lv_obj_set_style_text_color(action_lbls[i], (i == 3) ? p->accent_primary : p->text_primary, 0);
         }
     }
+    update_tree_button();
 
     if (ta_editor) {
         lv_obj_set_style_bg_color(ta_editor, p->code_bg, 0);
@@ -1539,7 +1556,7 @@ static void editor_init(void)
 
     /* Action bar buttons: Tree, New, Save, Mode */
     btn_tree = lv_button_create(top_bar);
-    lv_obj_set_size(btn_tree, 68, 26);
+    lv_obj_set_size(btn_tree, 72, 26);
     lv_obj_set_style_bg_color(btn_tree, p->surface, 0);
     lv_obj_set_style_border_color(btn_tree, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_tree, 1, 0);
@@ -1547,13 +1564,13 @@ static void editor_init(void)
     lv_obj_set_style_pad_all(btn_tree, 0, 0);
     lv_obj_add_event_cb(btn_tree, btn_tree_cb, LV_EVENT_CLICKED, NULL);
     lbl_btn_tree = lv_label_create(btn_tree);
-    lv_label_set_text(lbl_btn_tree, "[⇋ Tree]");
+    lv_label_set_text(lbl_btn_tree, LV_SYMBOL_DIRECTORY " Tree");
     lv_obj_center(lbl_btn_tree);
     lv_obj_set_style_text_font(lbl_btn_tree, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_btn_tree, p->text_primary, 0);
 
     btn_new = lv_button_create(top_bar);
-    lv_obj_set_size(btn_new, 60, 26);
+    lv_obj_set_size(btn_new, 66, 26);
     lv_obj_set_style_bg_color(btn_new, p->surface, 0);
     lv_obj_set_style_border_color(btn_new, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_new, 1, 0);
@@ -1561,13 +1578,13 @@ static void editor_init(void)
     lv_obj_set_style_pad_all(btn_new, 0, 0);
     lv_obj_add_event_cb(btn_new, btn_new_cb, LV_EVENT_CLICKED, NULL);
     lbl_btn_new = lv_label_create(btn_new);
-    lv_label_set_text(lbl_btn_new, "[+ New]");
+    lv_label_set_text(lbl_btn_new, LV_SYMBOL_PLUS " New");
     lv_obj_center(lbl_btn_new);
     lv_obj_set_style_text_font(lbl_btn_new, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_btn_new, p->text_primary, 0);
 
     btn_save = lv_button_create(top_bar);
-    lv_obj_set_size(btn_save, 62, 26);
+    lv_obj_set_size(btn_save, 68, 26);
     lv_obj_set_style_bg_color(btn_save, p->surface, 0);
     lv_obj_set_style_border_color(btn_save, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_save, 1, 0);
@@ -1575,13 +1592,13 @@ static void editor_init(void)
     lv_obj_set_style_pad_all(btn_save, 0, 0);
     lv_obj_add_event_cb(btn_save, btn_save_cb, LV_EVENT_CLICKED, NULL);
     lbl_btn_save = lv_label_create(btn_save);
-    lv_label_set_text(lbl_btn_save, "[Save]");
+    lv_label_set_text(lbl_btn_save, LV_SYMBOL_SAVE " Save");
     lv_obj_center(lbl_btn_save);
     lv_obj_set_style_text_font(lbl_btn_save, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_btn_save, p->text_primary, 0);
 
     btn_mode = lv_button_create(top_bar);
-    lv_obj_set_size(btn_mode, 88, 26);
+    lv_obj_set_size(btn_mode, 92, 26);
     lv_obj_set_style_bg_color(btn_mode, p->surface, 0);
     lv_obj_set_style_border_color(btn_mode, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_mode, 1, 0);
