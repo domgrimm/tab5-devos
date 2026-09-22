@@ -49,6 +49,7 @@ static const char *TAG = "bsp_tab5";
 
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_disp = NULL;
+static uint16_t *s_rot_buf = NULL;
 
 /* -------------------------------------------------------------------------
  * ST7123 Vendor Specific Initialization Commands (from M5Stack Tab5 BSP)
@@ -114,8 +115,30 @@ static const st7123_lcd_init_cmd_t s_st7123_init_cmds[] = {
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
-    esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1, px_map);
+    int32_t w = area->x2 - area->x1 + 1;
+    int32_t h = area->y2 - area->y1 + 1;
+
+    // Rotate 90° clockwise:
+    // Landscape [0..1279, 0..719] -> Portrait [0..719, 0..1279]
+    // panel_x = y
+    // panel_y = 1279 - x
+    int32_t rot_x1 = area->y1;
+    int32_t rot_x2 = rot_x1 + h - 1;
+    int32_t rot_y2 = 1279 - area->x1;
+    int32_t rot_y1 = rot_y2 - w + 1;
+
+    const uint16_t *src = (const uint16_t *)px_map;
+    uint16_t *dst = s_rot_buf;
+
+    // Fast pixel rotation
+    for (int y = 0; y < h; y++) {
+        const uint16_t *src_row = &src[y * w];
+        for (int x = 0; x < w; x++) {
+            dst[(w - 1 - x) * h + y] = src_row[x];
+        }
+    }
+
+    esp_lcd_panel_draw_bitmap(panel, rot_x1, rot_y1, rot_x2 + 1, rot_y2 + 1, dst);
 }
 
 static bool notify_flush_ready(esp_lcd_panel_handle_t panel,
@@ -296,18 +319,18 @@ static void bsp_display_init(void)
     ESP_LOGI(TAG, "Enabling ST7123 display output...");
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    /* 6. Create LVGL display: native 720x1280 rotated 90° to 1280x720 landscape */
-    ESP_LOGI(TAG, "Creating LVGL display (%dx%d, rotated 90° to %dx%d)...",
-             TAB5_PANEL_H_RES, TAB5_PANEL_V_RES, DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
-    s_disp = lv_display_create(TAB5_PANEL_H_RES, TAB5_PANEL_V_RES);
+    /* 6. Create LVGL display: native 1280x720 landscape (rotation handled in flush_cb) */
+    ESP_LOGI(TAG, "Creating LVGL display (%dx%d)...",
+             DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
+    s_disp = lv_display_create(DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
     lv_display_set_user_data(s_disp, s_panel);
     lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
-    lv_display_set_rotation(s_disp, LV_DISPLAY_ROTATION_90);
 
-    size_t draw_buf_sz = TAB5_PANEL_H_RES * TAB5_LVGL_DRAW_BUF_LINES * sizeof(lv_color_t);
+    size_t draw_buf_sz = DEVOS_SCREEN_WIDTH * TAB5_LVGL_DRAW_BUF_LINES * sizeof(lv_color_t);
     void *buf1 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
     void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
-    if (!buf1 || !buf2) {
+    s_rot_buf = (uint16_t *)heap_caps_aligned_alloc(64, draw_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
+    if (!buf1 || !buf2 || !s_rot_buf) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers from PSRAM!");
         return;
     }
