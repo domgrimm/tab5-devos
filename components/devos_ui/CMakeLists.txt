@@ -1,0 +1,5 @@
+idf_component_register(
+    SRCS "devos_theme.c" "devos_top_bar.c" "devos_agent_viewport.c" "lv_font_nimbus_mono_14.c"
+    INCLUDE_DIRS "."
+    REQUIRES devos_core devos_config lvgl
+)

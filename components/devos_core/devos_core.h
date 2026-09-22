@@ -108,6 +108,8 @@ void devos_telemetry_update(const devos_telemetry_t *new_telemetry);
 void devos_telemetry_tick_sim(void);
 
 /* Input & Hotkey Dispatcher */
+typedef void (*devos_theme_toggle_fn)(void);
+void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb);
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers);
 void devos_core_toggle_focus_mode(void);
 void devos_core_toggle_left_panel(void);

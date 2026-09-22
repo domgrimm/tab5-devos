@@ -38,15 +38,15 @@ static agy_config_t s_cfg = {
 
 static agy_agent_t s_agents[AGY_MAX_AGENTS];
 static int s_agent_count = 0;
-static agy_artifact_t s_artifacts[AGY_MAX_ARTIFACTS];
+static EXT_RAM_BSS_ATTR agy_artifact_t s_artifacts[AGY_MAX_ARTIFACTS];
 static int s_artifact_count = 0;
-static agy_block_t s_blocks[AGY_MAX_BLOCKS];
+static EXT_RAM_BSS_ATTR agy_block_t s_blocks[AGY_MAX_BLOCKS];
 static int s_block_count = 0;
 static agy_permission_t s_perm;
 static agy_question_t s_q;
 static char s_conv[AGY_NAME_MAX] = "";
 static char s_model[AGY_NAME_MAX] = "";
-static char s_diff[AGY_ARTIFACT_MAX] = "";
+static EXT_RAM_BSS_ATTR char s_diff[AGY_ARTIFACT_MAX] = "";
 static bool s_busy = false;
 static agy_status_t s_status = AGY_DOWN;
 static char s_status_text[128] = "Offline";
@@ -59,12 +59,12 @@ static int s_retry = 0;
 static bool s_want = false;
 static bool s_sent_upgrade = false;
 static bool s_handshook = false;
-static char s_rx[WS_RX_MAX];
+static EXT_RAM_BSS_ATTR char s_rx[WS_RX_MAX];
 static size_t s_rx_len = 0;
 static char s_hdr[WS_HDR_MAX];
 static size_t s_hdr_len = 0;
 /* fragmented text accumulation */
-static char s_frag[WS_RX_MAX];
+static EXT_RAM_BSS_ATTR char s_frag[WS_RX_MAX];
 static size_t s_frag_len = 0;
 static int s_frag_op = -1;
 
@@ -774,7 +774,7 @@ int agy_client_set_token(const char *token)
 static int send_prompt_obj(const char *text, const char *command)
 {
     if (s_status != AGY_UP) return -1;
-    static char body[WS_TX_MAX];
+    static EXT_RAM_BSS_ATTR char body[WS_TX_MAX];
     char esc[WS_TX_MAX - 128];
     devos_json_escape(text ? text : "", esc, sizeof(esc));
     /* ponytail: command fragment carries its own leading comma */

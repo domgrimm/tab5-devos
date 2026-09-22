@@ -1,4 +1,5 @@
 #include "devos_theme.h"
+#include "devos_core.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -115,6 +116,7 @@ void devos_theme_init(void)
 {
     /* Dark Cyberdeck mode by default */
     current_theme = DEVOS_THEME_DARK;
+    devos_core_set_theme_toggle_cb(devos_theme_toggle);
 }
 
 devos_theme_type_t devos_theme_get_type(void)

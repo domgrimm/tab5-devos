@@ -89,7 +89,7 @@ static uint16_t current_cols = DEVOS_TERM_COLS_COLLAPSED; /* 128 */
 static uint16_t current_rows = DEVOS_TERM_ROWS;           /* 45 */
 
 /* Screen text buffer per session */
-static char s_term_buffers[SSH_MAX_SESSIONS][TERM_BUFFER_MAX];
+static EXT_RAM_BSS_ATTR char s_term_buffers[SSH_MAX_SESSIONS][TERM_BUFFER_MAX];
 static size_t s_term_lens[SSH_MAX_SESSIONS];
 
 /* Forward declarations */

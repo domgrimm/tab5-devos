@@ -29,10 +29,10 @@ static const char *TAG = "libssh2_port";
 #define SSH_BOOKMARKS_FILE TAB5_SD_MOUNT_POINT "/.ssh/bookmarks.json"
 #define SSH_KEYS_DIR       TAB5_SD_MOUNT_POINT "/.ssh"
 
-static ssh_session_t s_sessions[SSH_MAX_SESSIONS];
+static EXT_RAM_BSS_ATTR ssh_session_t s_sessions[SSH_MAX_SESSIONS];
 
 /* Push data to session ring buffer */
-static void push_to_rx(ssh_session_t *sess, const char *data, size_t len)
+static void __attribute__((unused)) push_to_rx(ssh_session_t *sess, const char *data, size_t len)
 {
     if (!sess || !data || len == 0) return;
 
@@ -442,7 +442,7 @@ int ssh_port_scan_keys(char out_keys[][SSH_MAX_PATH_LEN], int max_keys, int *out
     int count = 0;
     while ((ent = readdir(dir)) != NULL && count < max_keys) {
         if (strncmp(ent->d_name, "id_", 3) == 0 && strstr(ent->d_name, ".pub") == NULL) {
-            snprintf(out_keys[count], SSH_MAX_PATH_LEN, "%s/%s", SSH_KEYS_DIR, ent->d_name);
+            snprintf(out_keys[count], SSH_MAX_PATH_LEN, "%.32s/%.64s", SSH_KEYS_DIR, ent->d_name);
             count++;
         }
     }

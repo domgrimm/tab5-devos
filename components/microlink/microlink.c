@@ -9,7 +9,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
-static const char *TAG = "microlink";
+static const char *TAG __attribute__((unused)) = "microlink";
 #else
 #define TAG "microlink"
 #endif

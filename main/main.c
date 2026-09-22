@@ -24,6 +24,11 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#endif
+
 #ifndef ESP_PLATFORM
 #include <SDL2/SDL.h>
 #include "src/drivers/sdl/lv_sdl_window.h"
