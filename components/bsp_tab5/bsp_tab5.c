@@ -388,6 +388,7 @@ static void bsp_tab5_touch_init(void)
         gpio_set_level(TAB5_PIN_TOUCH_INT, 0);
 
         esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+        io_cfg.scl_speed_hz = 0;  /* legacy v1 i2c-lcd IO rejects a nonzero value */
         io_cfg.dev_addr = tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_GT911_BACKUP)
                           ? TAB5_TOUCH_ADDR_GT911_BACKUP : TAB5_TOUCH_ADDR_GT911;
         ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
@@ -395,6 +396,7 @@ static void bsp_tab5_touch_init(void)
         if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_tp);
     } else {
         esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
+        io_cfg.scl_speed_hz = 0;  /* legacy v1 i2c-lcd IO rejects a nonzero value */
         ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
                                           &io_cfg, &tp_io);
         if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_st7123(tp_io, &tp_cfg, &s_tp);

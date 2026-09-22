@@ -107,6 +107,16 @@ int devos_net_init(void)
 {
     memset(&s_wifi_status, 0, sizeof(s_wifi_status));
 
+#if !CONFIG_DEVOS_ENABLE_WIFI
+    /* Wi-Fi bring-up (esp_wifi_init) starts the ESP-Hosted SDIO transport to
+     * the C6. If the C6 has no ESP-Hosted slave firmware, that transport's
+     * task aborts -> boot loop, which we cannot catch here. So Wi-Fi is
+     * opt-in: flash the C6 (tools/flash_c6_slave.sh), then set
+     * CONFIG_DEVOS_ENABLE_WIFI=y. Until then, boot without a radio. */
+    ESP_LOGW(TAG, "Wi-Fi disabled (CONFIG_DEVOS_ENABLE_WIFI=n); "
+                  "enable it after flashing the ESP32-C6 ESP-Hosted slave");
+    return 0;
+#else
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
@@ -154,6 +164,7 @@ int devos_net_init(void)
         devos_net_wifi_connect(ssid, pass);
     }
     return 0;
+#endif /* CONFIG_DEVOS_ENABLE_WIFI */
 }
 
 int devos_net_wifi_connect(const char *ssid, const char *password)
