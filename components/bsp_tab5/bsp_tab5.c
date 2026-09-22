@@ -153,7 +153,7 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 /* -------------------------------------------------------------------------
  * Internal I2C Expander Bringup (PI4IOE5V6408)
  * ----------------------------------------------------------------------- */
-static void i2c_write_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t val)
+static esp_err_t i2c_write_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = {reg, val};
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
@@ -161,8 +161,24 @@ static void i2c_write_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t va
     i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
     i2c_master_write(cmd, buf, 2, true);
     i2c_master_stop(cmd);
-    i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static esp_err_t i2c_read_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t *val)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
+    i2c_master_read_byte(cmd, val, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
 }
 
 static void bsp_io_expanders_init(void)
@@ -199,8 +215,20 @@ static void bsp_io_expanders_init(void)
     i2c_write_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_PULL_SEL,  0b10111001);
     i2c_write_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_PULL_EN,   0b11111001);
     /* Enable WLAN_PWR_EN (P0), USB5V_EN (P3), CHG_EN (P7) */
-    i2c_write_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_OUT_SET,   0b10001001);
-    ESP_LOGI(TAG, "Expander 2 initialized: WLAN/USB power enabled.");
+    esp_err_t wlan_ret = i2c_write_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_OUT_SET, 0b10001001);
+
+    /* Diagnostic: confirm the WLAN-power expander (0x44) actually responds and
+     * that WIFI_EN (P0) is configured to drive high. A C6 that is silent on
+     * SDIO (send_scr 0xffffffff) is usually unpowered or held in reset. */
+    uint8_t io_dir = 0xFF, out_set = 0xFF, out_him = 0xFF;
+    bool present = (i2c_read_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_IO_DIR, &io_dir) == ESP_OK);
+    i2c_read_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_OUT_SET, &out_set);
+    i2c_read_reg(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_OUT_H_IM, &out_him);
+    ESP_LOGI(TAG, "Expander 2 (0x44): ack=%s wlan_write=%s | IO_DIR=0x%02X OUT_SET=0x%02X OUT_H_IM=0x%02X "
+                  "(WIFI_EN P0 -> dir_out=%d level_hi=%d driven=%d)",
+             present ? "yes" : "NO", esp_err_to_name(wlan_ret),
+             io_dir, out_set, out_him,
+             (io_dir & 1), (out_set & 1), !(out_him & 1));
 }
 
 /* -------------------------------------------------------------------------
