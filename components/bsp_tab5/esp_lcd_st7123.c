@@ -207,9 +207,17 @@
      //     return ESP_ERR_INVALID_ARG;
      // }
  
-     uint8_t ID[3];
-     ESP_RETURN_ON_ERROR(esp_lcd_panel_io_rx_param(io, 0x04, ID, 3), TAG, "read ID failed");
-     ESP_LOGI(TAG, "LCD ID: %02X %02X %02X", ID[0], ID[1], ID[2]);
+     // Reading the panel ID over DSI is best-effort: a marginal DSI link (or a
+     // panel that does not implement DCS 0x04) must NOT abort the whole bring-up.
+     // A failure here previously propagated through ESP_ERROR_CHECK() in the BSP
+     // and turned into a boot loop, so keep it non-fatal.
+     uint8_t ID[3] = {0};
+     esp_err_t id_ret = esp_lcd_panel_io_rx_param(io, 0x04, ID, 3);
+     if (id_ret == ESP_OK) {
+         ESP_LOGI(TAG, "LCD ID: %02X %02X %02X", ID[0], ID[1], ID[2]);
+     } else {
+         ESP_LOGW(TAG, "read ID failed (%s); continuing with init sequence", esp_err_to_name(id_ret));
+     }
  
      // // For modifying MIPI-DSI lane settings
      // ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, ST7123_PAD_CONTROL, (uint8_t[]) {

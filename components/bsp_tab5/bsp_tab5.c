@@ -12,9 +12,24 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_ldo_regulator.h"
 #include "esp_cache.h"
+#include "esp_check.h"
 #include "esp_lcd_st7123.h"
+#include "esp_lcd_ili9881c.h"
+#include "tab5_panel_init_data.h"
 
 static const char *TAG = "bsp_tab5";
+
+/* Log an esp_err_t failure and return it (graceful degrade instead of abort).
+ * Replaces ESP_ERROR_CHECK() in the display path so a bring-up failure prints a
+ * diagnostic and lets the rest of the system (and the serial console) come up. */
+#define TAB5_TRY(expr, what)                                                   \
+    do {                                                                       \
+        esp_err_t _err = (expr);                                               \
+        if (_err != ESP_OK) {                                                  \
+            ESP_LOGE(TAG, "%s failed: %s", (what), esp_err_to_name(_err));     \
+            return _err;                                                       \
+        }                                                                      \
+    } while (0)
 
 /* -------------------------------------------------------------------------
  * Internal I2C Bus Pins & IO Expander Addresses
@@ -48,9 +63,35 @@ static const char *TAG = "bsp_tab5";
 #define TAB5_PANEL_V_RES             1280
 #define TAB5_LVGL_DRAW_BUF_LINES     80
 
+/* -------------------------------------------------------------------------
+ * Display controller auto-detection (ported from espressif/esp-bsp
+ * bsp/m5stack_tab5 bsp_get_board_version()).
+ *
+ * The Tab5 shipped with three display revisions, each needing a different
+ * controller/init sequence. We identify the board by probing the touch
+ * controller on the internal I2C bus (the touch chip is the reliable tell,
+ * since the two newer panels use integrated TDDI touch):
+ *   - ST712x TDDI touch @ 0x55 present -> read firmware version reg 0x0000:
+ *         fw == 1 -> ST7121 (newest),  fw == 3 -> ST7123
+ *   - GT911 touch @ 0x14/0x5D present  -> ILI9881C (original, pre Oct-2025)
+ *
+ * Override with -DTAB5_FORCE_PANEL=TAB5_PANEL_xxx if detection misfires.
+ * ----------------------------------------------------------------------- */
+typedef enum {
+    TAB5_PANEL_UNKNOWN = 0,
+    TAB5_PANEL_ILI9881C,   /* + GT911 touch */
+    TAB5_PANEL_ST7123,     /* TDDI */
+    TAB5_PANEL_ST7121,     /* TDDI */
+} tab5_panel_t;
+
+#define TAB5_TOUCH_ADDR_ST712X        0x55
+#define TAB5_TOUCH_ADDR_GT911         0x5D
+#define TAB5_TOUCH_ADDR_GT911_BACKUP  0x14
+
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_disp = NULL;
 static void *s_fb0 = NULL;
+static tab5_panel_t s_panel_type = TAB5_PANEL_UNKNOWN;
 
 /* -------------------------------------------------------------------------
  * LVGL Flush Callback & Direct Framebuffer Rotation
@@ -184,10 +225,113 @@ static void bsp_backlight_init(void)
 }
 
 /* -------------------------------------------------------------------------
- * MIPI-DSI Display Initialization (ST7123 / 720x1280 @ 70MHz)
+ * Internal I2C helpers (legacy driver) for touch-controller probing
  * ----------------------------------------------------------------------- */
-static void bsp_display_init(void)
+static bool tab5_i2c_probe(i2c_port_t port, uint8_t addr7)
 {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    return ret == ESP_OK;
+}
+
+static esp_err_t tab5_i2c_read_reg16(i2c_port_t port, uint8_t addr7, uint16_t reg,
+                                     uint8_t *buf, size_t len)
+{
+    uint8_t reg_addr[2] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF) };
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write(cmd, reg_addr, sizeof(reg_addr), true);
+    i2c_master_start(cmd); /* repeated start */
+    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_READ, true);
+    if (len > 1) {
+        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
+    }
+    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+/* Identify the display controller by probing the touch chip (see enum above). */
+static tab5_panel_t tab5_detect_panel(void)
+{
+#ifdef TAB5_FORCE_PANEL
+    tab5_panel_t forced = (TAB5_FORCE_PANEL);
+    ESP_LOGW(TAG, "TAB5_FORCE_PANEL set: skipping auto-detect (panel=%d)", (int)forced);
+    return forced;
+#else
+    /* Touch shares the display power/reset released by the IO expanders; give
+     * it a moment to boot before probing. */
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    if (tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_ST712X)) {
+        uint8_t fw = 0xFF;
+        esp_err_t ret = tab5_i2c_read_reg16(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_ST712X,
+                                            0x0000, &fw, 1);
+        if (ret == ESP_OK && fw == 1) {
+            ESP_LOGI(TAG, "Detected board rev 3: LCD ST7121, TDDI touch (fw=%u)", fw);
+            return TAB5_PANEL_ST7121;
+        }
+        if (ret == ESP_OK && fw == 3) {
+            ESP_LOGI(TAG, "Detected board rev 2: LCD ST7123, TDDI touch (fw=%u)", fw);
+            return TAB5_PANEL_ST7123;
+        }
+        ESP_LOGW(TAG, "ST712x touch present but fw=%u (read %s); assuming ST7123",
+                 fw, esp_err_to_name(ret));
+        return TAB5_PANEL_ST7123;
+    }
+
+    if (tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_GT911_BACKUP) ||
+        tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_GT911)) {
+        ESP_LOGI(TAG, "Detected board rev 1: LCD ILI9881C, GT911 touch");
+        return TAB5_PANEL_ILI9881C;
+    }
+
+    ESP_LOGW(TAG, "Display auto-detect failed (no known touch controller on I2C_1); "
+                  "defaulting to ST7123. Override with -DTAB5_FORCE_PANEL=TAB5_PANEL_xxx");
+    return TAB5_PANEL_ST7123;
+#endif
+}
+
+/* Per-controller MIPI timing (from esp-bsp bsp/m5stack_tab5/src/bsp_display.c). */
+typedef struct {
+    const char *name;
+    uint32_t    lane_bit_rate_mbps;
+    uint32_t    dpi_clock_freq_mhz;
+    uint16_t    hsync_pulse_width, hsync_back_porch, hsync_front_porch;
+    uint16_t    vsync_pulse_width, vsync_back_porch, vsync_front_porch;
+} tab5_panel_timing_t;
+
+static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
+{
+    switch (panel) {
+    case TAB5_PANEL_ILI9881C:
+        return (tab5_panel_timing_t){ "ILI9881C", 1000, 60, 40, 140, 40, 4, 20, 20 };
+    case TAB5_PANEL_ST7121:
+        return (tab5_panel_timing_t){ "ST7121", 965, 70, 2, 40, 40, 20, 24, 200 };
+    case TAB5_PANEL_ST7123:
+    default:
+        return (tab5_panel_timing_t){ "ST7123", 1000, 70, 2, 40, 40, 2, 8, 220 };
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * MIPI-DSI Display Initialization (auto-detected ILI9881C / ST7123 / ST7121)
+ * ----------------------------------------------------------------------- */
+static esp_err_t bsp_display_init(void)
+{
+    /* 0. Detect which display controller this board revision uses */
+    s_panel_type = tab5_detect_panel();
+    tab5_panel_timing_t t = tab5_timing_for(s_panel_type);
+    ESP_LOGI(TAG, "Display controller: %s (DSI %lu Mbps, DPI %lu MHz)",
+             t.name, (unsigned long)t.lane_bit_rate_mbps, (unsigned long)t.dpi_clock_freq_mhz);
+
     /* 1. Power on MIPI DSI PHY LDO (channel 3, 2.5V) */
     ESP_LOGI(TAG, "Powering MIPI DSI PHY LDO (2.5V)...");
     esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
@@ -195,18 +339,19 @@ static void bsp_display_init(void)
         .chan_id = 3,
         .voltage_mv = 2500,
     };
-    ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi_phy));
+    TAB5_TRY(esp_ldo_acquire_channel(&ldo_cfg, &ldo_mipi_phy), "acquire MIPI DSI PHY LDO");
 
-    /* 2. Create MIPI DSI bus (2 lanes @ 965 Mbps) */
-    ESP_LOGI(TAG, "Creating MIPI DSI bus (2 lanes @ 965 Mbps)...");
+    /* 2. Create MIPI DSI bus (2 data lanes) */
+    ESP_LOGI(TAG, "Creating MIPI DSI bus (2 lanes @ %lu Mbps)...",
+             (unsigned long)t.lane_bit_rate_mbps);
     esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
     esp_lcd_dsi_bus_config_t bus_cfg = {
         .bus_id = 0,
         .num_data_lanes = 2,
         .phy_clk_src = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
-        .lane_bit_rate_mbps = 965,
+        .lane_bit_rate_mbps = t.lane_bit_rate_mbps,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_cfg, &mipi_dsi_bus));
+    TAB5_TRY(esp_lcd_new_dsi_bus(&bus_cfg, &mipi_dsi_bus), "create MIPI DSI bus");
 
     /* 3. Create DBI command IO */
     ESP_LOGI(TAG, "Creating MIPI DSI DBI command IO...");
@@ -216,71 +361,93 @@ static void bsp_display_init(void)
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_cfg, &dbi_io));
+    TAB5_TRY(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_cfg, &dbi_io), "create DBI IO");
 
-    /* 4. Configure DPI video timing (720x1280 native portrait @ 70 MHz) */
-    ESP_LOGI(TAG, "Creating DPI panel config (%dx%d @ 70 MHz)...",
-             TAB5_PANEL_H_RES, TAB5_PANEL_V_RES);
+    /* 4. Configure DPI video timing (720x1280 native portrait) */
+    ESP_LOGI(TAG, "Creating DPI panel config (%dx%d @ %lu MHz)...",
+             TAB5_PANEL_H_RES, TAB5_PANEL_V_RES, (unsigned long)t.dpi_clock_freq_mhz);
     esp_lcd_dpi_panel_config_t dpi_cfg = {
         .virtual_channel = 0,
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
-        .dpi_clock_freq_mhz = 70,
+        .dpi_clock_freq_mhz = t.dpi_clock_freq_mhz,
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
         .num_fbs = 1,
         .video_timing = {
             .h_size = TAB5_PANEL_H_RES,
             .v_size = TAB5_PANEL_V_RES,
-            .hsync_pulse_width = 2,
-            .hsync_back_porch = 40,
-            .hsync_front_porch = 40,
-            .vsync_pulse_width = 2,
-            .vsync_back_porch = 8,
-            .vsync_front_porch = 220,
+            .hsync_pulse_width = t.hsync_pulse_width,
+            .hsync_back_porch = t.hsync_back_porch,
+            .hsync_front_porch = t.hsync_front_porch,
+            .vsync_pulse_width = t.vsync_pulse_width,
+            .vsync_back_porch = t.vsync_back_porch,
+            .vsync_front_porch = t.vsync_front_porch,
         },
         .flags.use_dma2d = false,
     };
 
-    /* 5. Initialize ST7123 panel with vendor command sequence */
-    st7123_vendor_config_t vendor_cfg = {
-        .init_cmds = NULL, /* uses official default vendor init commands in esp_lcd_st7123.c */
-        .init_cmds_size = 0,
-        .mipi_config = {
-            .dsi_bus = mipi_dsi_bus,
-            .dpi_config = &dpi_cfg,
-            .lane_num = 2,
-        },
-    };
-
-    const esp_lcd_panel_dev_config_t panel_dev_cfg = {
-        .reset_gpio_num = -1,
+    /* 5. Instantiate the detected panel driver with its vendor init sequence.
+     *    ST7123 and ST7121 share the ST7123 DCS driver (different init table);
+     *    ILI9881C uses its own driver (it emits SLPOUT/MADCTL/COLMOD itself). */
+    const esp_lcd_panel_dev_config_t panel_dev_base = {
+        .reset_gpio_num = -1,  /* LCD_RST handled via the PI4IOE expander */
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
-        .bits_per_pixel = 24,
-        .vendor_config = &vendor_cfg,
+        .bits_per_pixel = 16,  /* RGB565 */
     };
 
-    ESP_LOGI(TAG, "Creating ST7123 panel...");
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7123(dbi_io, &panel_dev_cfg, &s_panel));
+    if (s_panel_type == TAB5_PANEL_ILI9881C) {
+        ili9881c_vendor_config_t vendor_cfg = {
+            .init_cmds = disp_init_data_ili9881c,
+            .init_cmds_size = sizeof(disp_init_data_ili9881c) / sizeof(disp_init_data_ili9881c[0]),
+            .mipi_config = {
+                .dsi_bus = mipi_dsi_bus,
+                .dpi_config = &dpi_cfg,
+                .lane_num = 2,
+            },
+        };
+        esp_lcd_panel_dev_config_t cfg = panel_dev_base;
+        cfg.vendor_config = &vendor_cfg;
+        ESP_LOGI(TAG, "Creating ILI9881C panel...");
+        TAB5_TRY(esp_lcd_new_panel_ili9881c(dbi_io, &cfg, &s_panel), "create ILI9881C panel");
+    } else {
+        st7123_vendor_config_t vendor_cfg = {
+            /* ST7123 uses the driver's built-in default table (init_cmds=NULL);
+             * ST7121 needs its own table. */
+            .init_cmds = (s_panel_type == TAB5_PANEL_ST7121) ? disp_init_data_st7121 : NULL,
+            .init_cmds_size = (s_panel_type == TAB5_PANEL_ST7121)
+                                  ? (sizeof(disp_init_data_st7121) / sizeof(disp_init_data_st7121[0]))
+                                  : 0,
+            .mipi_config = {
+                .dsi_bus = mipi_dsi_bus,
+                .dpi_config = &dpi_cfg,
+                .lane_num = 2,
+            },
+        };
+        esp_lcd_panel_dev_config_t cfg = panel_dev_base;
+        cfg.vendor_config = &vendor_cfg;
+        ESP_LOGI(TAG, "Creating %s panel...", t.name);
+        TAB5_TRY(esp_lcd_new_panel_st7123(dbi_io, &cfg, &s_panel), "create ST7123/ST7121 panel");
+    }
 
-    ESP_LOGI(TAG, "Resetting ST7123 panel...");
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_LOGI(TAG, "Resetting panel...");
+    TAB5_TRY(esp_lcd_panel_reset(s_panel), "panel reset");
 
-    ESP_LOGI(TAG, "Initializing ST7123 panel (sending vendor init commands)...");
-    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    ESP_LOGI(TAG, "Initializing panel (sending vendor init commands)...");
+    TAB5_TRY(esp_lcd_panel_init(s_panel), "panel init");
 
-    ESP_LOGI(TAG, "Enabling ST7123 display output...");
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+    ESP_LOGI(TAG, "Enabling display output...");
+    TAB5_TRY(esp_lcd_panel_disp_on_off(s_panel, true), "display on");
 
     /* 6. Retrieve continuous hardware scanout framebuffer */
-    ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &s_fb0));
+    TAB5_TRY(esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &s_fb0), "get frame buffer");
     ESP_LOGI(TAG, "Hardware scanout framebuffer @%p (clearing to test pattern)...", s_fb0);
     uint16_t *fb = (uint16_t *)s_fb0;
     for (int i = 0; i < TAB5_PANEL_H_RES * TAB5_PANEL_V_RES; i++) {
-        fb[i] = 0x001F; /* Test blue fill so hardware scanout is immediately verified */
+        fb[i] = 0x001F; /* Blue fill: if you see solid blue, panel + backlight work */
     }
     esp_cache_msync(s_fb0, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
-    /* 7. Create LVGL display: native 1280x720 landscape */
+    /* 7. Create LVGL display: native 1280x720 landscape (rotated in flush_cb) */
     ESP_LOGI(TAG, "Creating LVGL display (%dx%d)...",
              DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
     s_disp = lv_display_create(DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
@@ -292,7 +459,7 @@ static void bsp_display_init(void)
     void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
     if (!buf1 || !buf2) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers from PSRAM!");
-        return;
+        return ESP_ERR_NO_MEM;
     }
     lv_display_set_buffers(s_disp, buf1, buf2, draw_buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(s_disp, disp_flush_cb);
@@ -300,7 +467,8 @@ static void bsp_display_init(void)
     /* 8. Enable Backlight */
     bsp_backlight_init();
 
-    ESP_LOGI(TAG, "Tab5 MIPI-DSI Display Bringup Complete!");
+    ESP_LOGI(TAG, "Tab5 MIPI-DSI Display Bringup Complete! (%s)", t.name);
+    return ESP_OK;
 }
 #endif /* ESP_PLATFORM */
 
@@ -335,7 +503,11 @@ bool bsp_tab5_init(void)
     bsp_io_expanders_init();
 
     /* 4. Initialize Display Pipeline & Backlight */
-    bsp_display_init();
+    esp_err_t disp_err = bsp_display_init();
+    if (disp_err != ESP_OK) {
+        ESP_LOGE(TAG, "Display bring-up failed (%s); continuing so the console stays alive",
+                 esp_err_to_name(disp_err));
+    }
 #endif
     return true;
 }
