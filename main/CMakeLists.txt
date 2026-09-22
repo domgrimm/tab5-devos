@@ -39,6 +39,7 @@ idf_component_register(
         agy_client
         devos_mdview
         lvgl
+        nvs_flash
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)
