@@ -30,6 +30,8 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "nvs_flash.h"
+#include "esp_err.h"
 
 #if LV_USE_LOG
 static void lvgl_log_cb(lv_log_level_t level, const char *buf)
@@ -311,6 +313,23 @@ static void devos_system_bringup(void)
 void app_main(void)
 {
     printf("[devOS] Booting app_main on Core %d...\n", xPortGetCoreID());
+
+    /* Initialize NVS early: persistent config (OTA feed, Tailscale auth key,
+     * opendev/agy tokens) opens the "nvs" partition, and nvs_open() fails with
+     * ESP_ERR_NVS_NOT_INITIALIZED until this runs. Kept non-fatal so a corrupt
+     * or version-bumped partition can't block boot. */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        printf("[devOS] NVS needs erase (%s); reformatting nvs partition...\n",
+               esp_err_to_name(nvs_ret));
+        if (nvs_flash_erase() == ESP_OK) {
+            nvs_ret = nvs_flash_init();
+        }
+    }
+    if (nvs_ret != ESP_OK) {
+        printf("[devOS] Warning: nvs_flash_init failed (%s); config will not persist\n",
+               esp_err_to_name(nvs_ret));
+    }
 
     /* Initialize LVGL */
     lv_init();
