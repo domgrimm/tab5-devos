@@ -20,7 +20,7 @@ static const char *TAG = "bsp_tab5";
  * ----------------------------------------------------------------------- */
 #define TAB5_MIPI_DSI_LANE_NUM           2
 #define TAB5_MIPI_DSI_LANE_BITRATE_MBPS  1000
-#define TAB5_MIPI_DSI_DPI_CLK_MHZ       80
+#define TAB5_MIPI_DSI_DPI_CLK_MHZ       60
 #define TAB5_MIPI_DSI_PHY_LDO_CHAN       3      /* Internal LDO_VO3 → VDD_MIPI_DPHY */
 #define TAB5_MIPI_DSI_PHY_LDO_MV        2500
 
@@ -102,7 +102,7 @@ static void bsp_display_init(void)
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = TAB5_MIPI_DSI_DPI_CLK_MHZ,
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 1,
+        .num_fbs = 2,
         .video_timing = {
             .h_size = DEVOS_SCREEN_WIDTH,
             .v_size = DEVOS_SCREEN_HEIGHT,
