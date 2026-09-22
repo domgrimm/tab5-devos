@@ -11,6 +11,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_ldo_regulator.h"
+#include "esp_cache.h"
 #include "esp_lcd_st7123.h"
 
 static const char *TAG = "bsp_tab5";
@@ -49,105 +50,56 @@ static const char *TAG = "bsp_tab5";
 
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_disp = NULL;
-static uint16_t *s_rot_buf = NULL;
+static void *s_fb0 = NULL;
 
 /* -------------------------------------------------------------------------
- * ST7123 Vendor Specific Initialization Commands (from M5Stack Tab5 BSP)
- * ----------------------------------------------------------------------- */
-static const st7123_lcd_init_cmd_t s_st7123_init_cmds[] = {
-    {0x60, (uint8_t[]){0x71, 0x23, 0xa2}, 3, 0},
-    {0x60, (uint8_t[]){0x71, 0x23, 0xa3}, 3, 0},
-    {0x60, (uint8_t[]){0x71, 0x23, 0xa4}, 3, 0},
-    {0xA4, (uint8_t[]){0x31}, 1, 0},
-    {0xD7, (uint8_t[]){0x10, 0x0A, 0x10, 0x2A, 0x80, 0x80}, 6, 0},
-    {0x90, (uint8_t[]){0x71, 0x23, 0x5A, 0x20, 0x24, 0x09, 0x09}, 7, 0},
-    {0xA3, (uint8_t[]){0x80, 0x01, 0x88, 0x30, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00, 0x00,
-                       0x1E, 0x5C, 0x1E, 0x80, 0x00, 0x4F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
-                       0x00, 0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x00, 0x6F, 0x58, 0x00, 0x00, 0x00, 0xFF},
-     40, 0},
-    {0xA6, (uint8_t[]){0x03, 0x00, 0x24, 0x55, 0x36, 0x00, 0x39, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0x24,
-                       0x55, 0x38, 0x00, 0x37, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0x24, 0x11, 0x00, 0x00,
-                       0x00, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0xEC, 0x11, 0x00, 0x03, 0x00, 0x03, 0x6E,
-                       0x6E, 0xFF, 0xFF, 0x00, 0x08, 0x80, 0x08, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00},
-     55, 0},
-    {0xA7, (uint8_t[]){0x19, 0x19, 0x80, 0x64, 0x40, 0x07, 0x16, 0x40, 0x00, 0x44, 0x03, 0x6E, 0x6E, 0x91, 0xFF,
-                       0x08, 0x80, 0x64, 0x40, 0x25, 0x34, 0x40, 0x00, 0x02, 0x01, 0x6E, 0x6E, 0x91, 0xFF, 0x08,
-                       0x80, 0x64, 0x40, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x08, 0x80,
-                       0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x6E, 0x6E, 0x84, 0xFF, 0x08, 0x80, 0x44},
-     60, 0},
-    {0xAC, (uint8_t[]){0x03, 0x19, 0x19, 0x18, 0x18, 0x06, 0x13, 0x13, 0x11, 0x11, 0x08, 0x08, 0x0A, 0x0A, 0x1C,
-                       0x1C, 0x07, 0x07, 0x00, 0x00, 0x02, 0x02, 0x01, 0x19, 0x19, 0x18, 0x18, 0x06, 0x12, 0x12,
-                       0x10, 0x10, 0x09, 0x09, 0x0B, 0x0B, 0x1C, 0x1C, 0x07, 0x07, 0x03, 0x03, 0x01, 0x01},
-     44, 0},
-    {0xAD, (uint8_t[]){0xF0, 0x00, 0x46, 0x00, 0x03, 0x50, 0x50, 0xFF, 0xFF, 0xF0, 0x40, 0x06, 0x01,
-                       0x07, 0x42, 0x42, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF},
-     25, 0},
-    {0xAE, (uint8_t[]){0xFE, 0x3F, 0x3F, 0xFE, 0x3F, 0x3F, 0x00}, 7, 0},
-    {0xB2, (uint8_t[]){0x15, 0x19, 0x05, 0x23, 0x49, 0xAF, 0x03, 0x2E, 0x5C, 0xD2, 0xFF, 0x10, 0x20, 0xFD, 0x20, 0xC0, 0x00}, 17, 0},
-    {0xE8, (uint8_t[]){0x20, 0x6F, 0x04, 0x97, 0x97, 0x3E, 0x04, 0xDC, 0xDC, 0x3E, 0x06, 0xFA, 0x26, 0x3E}, 15, 0},
-    {0x75, (uint8_t[]){0x03, 0x04}, 2, 0},
-    {0xE7, (uint8_t[]){0x3B, 0x00, 0x00, 0x7C, 0xA1, 0x8C, 0x20, 0x1A, 0xF0, 0xB1, 0x50, 0x00,
-                       0x50, 0xB1, 0x50, 0xB1, 0x50, 0xD8, 0x00, 0x55, 0x00, 0xB1, 0x00, 0x45,
-                       0xC9, 0x6A, 0xFF, 0x5A, 0xD8, 0x18, 0x88, 0x15, 0xB1, 0x01, 0x01, 0x77},
-     36, 0},
-    {0xEA, (uint8_t[]){0x13, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x2C}, 8, 0},
-    {0xB0, (uint8_t[]){0x22, 0x43, 0x11, 0x61, 0x25, 0x43, 0x43}, 7, 0},
-    {0xB7, (uint8_t[]){0x00, 0x00, 0x73, 0x73}, 4, 0},
-    {0xBF, (uint8_t[]){0xA6, 0xAA}, 2, 0},
-    {0xA9, (uint8_t[]){0x00, 0x00, 0x73, 0xFF, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03}, 10, 0},
-    {0xC8, (uint8_t[]){0x00, 0x00, 0x10, 0x1F, 0x36, 0x00, 0x5D, 0x04, 0x9D, 0x05, 0x10, 0xF2, 0x06,
-                       0x60, 0x03, 0x11, 0xAD, 0x00, 0xEF, 0x01, 0x22, 0x2E, 0x0E, 0x74, 0x08, 0x32,
-                       0xDC, 0x09, 0x33, 0x0F, 0xF3, 0x77, 0x0D, 0xB0, 0xDC, 0x03, 0xFF},
-     37, 0},
-    {0xC9, (uint8_t[]){0x00, 0x00, 0x10, 0x1F, 0x36, 0x00, 0x5D, 0x04, 0x9D, 0x05, 0x10, 0xF2, 0x06,
-                       0x60, 0x03, 0x11, 0xAD, 0x00, 0xEF, 0x01, 0x22, 0x2E, 0x0E, 0x74, 0x08, 0x32,
-                       0xDC, 0x09, 0x33, 0x0F, 0xF3, 0x77, 0x0D, 0xB0, 0xDC, 0x03, 0xFF},
-     37, 0},
-    {0x36, (uint8_t[]){0x00}, 1, 0},
-    {0x11, (uint8_t[]){0x00}, 1, 100},
-    {0x29, (uint8_t[]){0x00}, 1, 0},
-    {0x35, (uint8_t[]){0x00}, 1, 100},
-};
-
-/* -------------------------------------------------------------------------
- * LVGL Flush Callback & DPI Event
+ * LVGL Flush Callback & Direct Framebuffer Rotation
  * ----------------------------------------------------------------------- */
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
+    if (!s_fb0) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
     int32_t w = area->x2 - area->x1 + 1;
     int32_t h = area->y2 - area->y1 + 1;
 
-    // Rotate 90° clockwise:
-    // Landscape [0..1279, 0..719] -> Portrait [0..719, 0..1279]
+    static uint32_t s_flush_count = 0;
+    if (++s_flush_count <= 5 || (s_flush_count % 300 == 0)) {
+        ESP_LOGI(TAG, "disp_flush_cb #%lu: area [%ld,%ld - %ld,%ld] (%ldx%ld)",
+                 (unsigned long)s_flush_count,
+                 (long)area->x1, (long)area->y1, (long)area->x2, (long)area->y2,
+                 (long)w, (long)h);
+    }
+
+    // Rotate 90° clockwise directly into hardware scanout framebuffer:
+    // Landscape [x: 0..1279, y: 0..719] -> Portrait [px: 0..719, py: 0..1279]
     // panel_x = y
     // panel_y = 1279 - x
-    int32_t rot_x1 = area->y1;
-    int32_t rot_x2 = rot_x1 + h - 1;
-    int32_t rot_y2 = 1279 - area->x1;
-    int32_t rot_y1 = rot_y2 - w + 1;
-
+    uint16_t *dst_fb = (uint16_t *)s_fb0;
     const uint16_t *src = (const uint16_t *)px_map;
-    uint16_t *dst = s_rot_buf;
 
-    // Fast pixel rotation
     for (int y = 0; y < h; y++) {
+        int panel_x = area->y1 + y;
         const uint16_t *src_row = &src[y * w];
         for (int x = 0; x < w; x++) {
-            dst[(w - 1 - x) * h + y] = src_row[x];
+            int panel_y = 1279 - (area->x1 + x);
+            dst_fb[panel_y * TAB5_PANEL_H_RES + panel_x] = src_row[x];
         }
     }
 
-    esp_lcd_panel_draw_bitmap(panel, rot_x1, rot_y1, rot_x2 + 1, rot_y2 + 1, dst);
-}
+    // Write back dirty lines from CPU cache to PSRAM so DSI DMA sees updated pixels
+    int rot_y1 = 1279 - area->x2;
+    int rot_y2 = 1279 - area->x1;
+    if (rot_y1 < 0) rot_y1 = 0;
+    if (rot_y2 > 1279) rot_y2 = 1279;
 
-static bool notify_flush_ready(esp_lcd_panel_handle_t panel,
-                               esp_lcd_dpi_panel_event_data_t *edata,
-                               void *user_ctx)
-{
-    lv_display_t *disp = (lv_display_t *)user_ctx;
+    uint8_t *cache_sync_start = (uint8_t *)s_fb0 + (rot_y1 * TAB5_PANEL_H_RES) * 2;
+    size_t cache_sync_size = (rot_y2 - rot_y1 + 1) * TAB5_PANEL_H_RES * 2;
+    esp_cache_msync(cache_sync_start, cache_sync_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+
     lv_display_flush_ready(disp);
-    return false;
 }
 
 /* -------------------------------------------------------------------------
@@ -274,7 +226,7 @@ static void bsp_display_init(void)
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 70,
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 2,
+        .num_fbs = 1,
         .video_timing = {
             .h_size = TAB5_PANEL_H_RES,
             .v_size = TAB5_PANEL_V_RES,
@@ -285,13 +237,13 @@ static void bsp_display_init(void)
             .vsync_back_porch = 8,
             .vsync_front_porch = 220,
         },
-        .flags.use_dma2d = true,
+        .flags.use_dma2d = false,
     };
 
     /* 5. Initialize ST7123 panel with vendor command sequence */
     st7123_vendor_config_t vendor_cfg = {
-        .init_cmds = s_st7123_init_cmds,
-        .init_cmds_size = sizeof(s_st7123_init_cmds) / sizeof(s_st7123_init_cmds[0]),
+        .init_cmds = NULL, /* uses official default vendor init commands in esp_lcd_st7123.c */
+        .init_cmds_size = 0,
         .mipi_config = {
             .dsi_bus = mipi_dsi_bus,
             .dpi_config = &dpi_cfg,
@@ -319,7 +271,16 @@ static void bsp_display_init(void)
     ESP_LOGI(TAG, "Enabling ST7123 display output...");
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    /* 6. Create LVGL display: native 1280x720 landscape (rotation handled in flush_cb) */
+    /* 6. Retrieve continuous hardware scanout framebuffer */
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &s_fb0));
+    ESP_LOGI(TAG, "Hardware scanout framebuffer @%p (clearing to test pattern)...", s_fb0);
+    uint16_t *fb = (uint16_t *)s_fb0;
+    for (int i = 0; i < TAB5_PANEL_H_RES * TAB5_PANEL_V_RES; i++) {
+        fb[i] = 0x001F; /* Test blue fill so hardware scanout is immediately verified */
+    }
+    esp_cache_msync(s_fb0, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+
+    /* 7. Create LVGL display: native 1280x720 landscape */
     ESP_LOGI(TAG, "Creating LVGL display (%dx%d)...",
              DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
     s_disp = lv_display_create(DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
@@ -329,19 +290,12 @@ static void bsp_display_init(void)
     size_t draw_buf_sz = DEVOS_SCREEN_WIDTH * TAB5_LVGL_DRAW_BUF_LINES * sizeof(lv_color_t);
     void *buf1 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
     void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
-    s_rot_buf = (uint16_t *)heap_caps_aligned_alloc(64, draw_buf_sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA);
-    if (!buf1 || !buf2 || !s_rot_buf) {
+    if (!buf1 || !buf2) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers from PSRAM!");
         return;
     }
     lv_display_set_buffers(s_disp, buf1, buf2, draw_buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(s_disp, disp_flush_cb);
-
-    /* 7. Register DPI event callback for async buffer recycle */
-    esp_lcd_dpi_panel_event_callbacks_t cbs = {
-        .on_color_trans_done = notify_flush_ready,
-    };
-    ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(s_panel, &cbs, s_disp));
 
     /* 8. Enable Backlight */
     bsp_backlight_init();

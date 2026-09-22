@@ -51,6 +51,8 @@ static void gui_task(void *arg)
     uint32_t last_telemetry_tick = 0;
     uint32_t sim_seconds = 0;
 
+    lv_obj_invalidate(lv_screen_active());
+
     while (1) {
         uint32_t step = lv_timer_handler();
         if (step == LV_NO_TIMER_READY || step > 30) step = 30;
@@ -62,6 +64,10 @@ static void gui_task(void *arg)
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
+            if (sim_seconds % 3 == 0) {
+                printf("[devOS] GUI loop running, uptime: %lu s, free heap: %lu B\n",
+                       (unsigned long)sim_seconds, (unsigned long)esp_get_free_heap_size());
+            }
             last_telemetry_tick = now;
         }
 
