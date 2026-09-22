@@ -11,6 +11,7 @@
 #ifdef ESP_PLATFORM
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_log.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -30,6 +31,17 @@ static devos_wifi_status_t s_wifi_status;
 
 int devos_net_init(void)
 {
+#ifdef ESP_PLATFORM
+    esp_err_t err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
+    }
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
+    }
+#endif
+
     memset(&s_wifi_status, 0, sizeof(s_wifi_status));
     s_wifi_status.connected = true;
     strncpy(s_wifi_status.ssid, "DevNet", sizeof(s_wifi_status.ssid));
