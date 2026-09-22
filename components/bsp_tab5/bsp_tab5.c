@@ -4,6 +4,17 @@
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c.h"
+#include "esp_heap_caps.h"
+
+static uint8_t *s_draw_buf = NULL;
+static lv_display_t *s_disp = NULL;
+
+static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
+{
+    LV_UNUSED(area);
+    LV_UNUSED(px_map);
+    lv_display_flush_ready(disp);
+}
 #endif
 
 bool bsp_tab5_init(void)
@@ -21,8 +32,18 @@ bool bsp_tab5_init(void)
     i2c_param_config(TAB5_I2C_PORT, &i2c_conf);
     i2c_driver_install(TAB5_I2C_PORT, i2c_conf.mode, 0, 0, 0);
 
-    /* 2. Initialize MIPI-DSI ST7123 1280x720 panel & LVGL buffers in PSRAM */
-    /* Handled in target bringup */
+    /* 2. Initialize LVGL display structure and PSRAM buffers */
+    size_t buf_size = DEVOS_SCREEN_WIDTH * 40 * sizeof(lv_color_t);
+    s_draw_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    if (!s_draw_buf) {
+        s_draw_buf = (uint8_t *)malloc(buf_size);
+    }
+
+    s_disp = lv_display_create(DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
+    if (s_disp) {
+        lv_display_set_buffers(s_disp, s_draw_buf, NULL, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+        lv_display_set_flush_cb(s_disp, disp_flush_cb);
+    }
 #endif
     return true;
 }
