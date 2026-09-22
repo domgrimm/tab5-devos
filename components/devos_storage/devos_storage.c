@@ -159,7 +159,20 @@ bool devos_storage_init(void)
     };
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    /* The on-board ESP32-C6 (Wi-Fi, via ESP-Hosted) sits on SDMMC *slot 1*; the
+     * microSD card is wired to *slot 0*. SDMMC_HOST_DEFAULT() defaults to slot 1,
+     * so mounting the card here reconfigures slot 1 and knocks the C6 off the
+     * SDIO bus (sdmmc send_scr -> 0xffffffff, C6 boot loop once Wi-Fi is on).
+     * Pin the card to slot 0 with its actual GPIOs so the two coexist. */
+    host.slot = SDMMC_HOST_SLOT_0;
+
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.clk = TAB5_PIN_SD_CLK;
+    slot_config.cmd = TAB5_PIN_SD_CMD;
+    slot_config.d0  = TAB5_PIN_SD_D0;
+    slot_config.d1  = TAB5_PIN_SD_D1;
+    slot_config.d2  = TAB5_PIN_SD_D2;
+    slot_config.d3  = TAB5_PIN_SD_D3;
     slot_config.width = 4;
 
     sdmmc_card_t *card;
