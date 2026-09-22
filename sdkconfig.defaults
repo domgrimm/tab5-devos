@@ -88,3 +88,8 @@ CONFIG_ESP_HOSTED_SDIO_PIN_D1=10
 CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
 CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
+
+# Wi-Fi on by default now that the C6 SDIO link is fixed (slot 0 for the SD
+# card + esp32c6 slave target). If the C6 ever fails to enumerate and you get
+# a boot loop, set this to n to boot without a radio.
+CONFIG_DEVOS_ENABLE_WIFI=y
