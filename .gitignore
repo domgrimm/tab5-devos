@@ -5,6 +5,9 @@ sim_sdcard/
 *.log
 .cache/
 compile_commands.json
+sdkconfig
+sdkconfig.old
+dependencies.lock
 
 # IDE
 .vscode/

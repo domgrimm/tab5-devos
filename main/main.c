@@ -1,3 +1,4 @@
+#include "lvgl.h"
 #include "devos_config.h"
 #include "devos_theme.h"
 #include "devos_core.h"
@@ -27,6 +28,46 @@
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+
+#if LV_USE_LOG
+static void lvgl_log_cb(lv_log_level_t level, const char *buf)
+{
+    (void)level;
+    printf("[LVGL] %s\n", buf);
+}
+#endif
+
+static uint32_t esp_tick_get_cb(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
+
+static void gui_task(void *arg)
+{
+    LV_UNUSED(arg);
+    printf("[devOS] GUI presentation loop active on Core %d\n", xPortGetCoreID());
+    uint32_t last_telemetry_tick = 0;
+    uint32_t sim_seconds = 0;
+
+    while (1) {
+        uint32_t step = lv_timer_handler();
+        if (step == LV_NO_TIMER_READY || step > 30) step = 30;
+        if (step < 5) step = 5;
+
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        if (now != last_telemetry_tick) {
+            devos_telemetry_tick_sim();
+            devos_power_poll(++sim_seconds);
+            devos_top_bar_update();
+            app_launcher_update_telemetry();
+            last_telemetry_tick = now;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(step));
+    }
+}
 #endif
 
 #ifndef ESP_PLATFORM
@@ -170,18 +211,23 @@ static void devos_system_bringup(void)
     printf("==================================================\n\n");
 
     /* 1. Hardware Board Support Package bring-up */
+    printf("[devOS] 1/8 Initializing BSP (I2C, Display buffers)...\n");
     bsp_tab5_init();
 
     /* 2. MicroSD auto-scaffolding & VFS mount */
+    printf("[devOS] 2/8 Initializing Storage...\n");
     devos_storage_init();
 
     /* 3. A164 Keyboard bring-up */
+    printf("[devOS] 3/8 Initializing A164 Keyboard...\n");
     tab5_keyboard_init();
 
     /* 4. devOS Theme Engine initialization */
+    printf("[devOS] 4/8 Initializing Theme Engine...\n");
     devos_theme_init();
 
     /* 5. devOS Core engine initialization */
+    printf("[devOS] 5/8 Initializing Core Event Bus...\n");
     devos_core_init();
 
     /* 5b. Power-mode state machine */
@@ -191,25 +237,65 @@ static void devos_system_bringup(void)
     devos_ota_init();
 
     /* 6. Network & Transparent Socket Routing bring-up */
+    printf("[devOS] 6/8 Initializing Network Stack...\n");
     devos_net_init();
 
     /* 7. SSH & PTY Engine bring-up */
+    printf("[devOS] 7/8 Initializing SSH Subsystem...\n");
     ssh_port_init();
 
     /* 8. Register all applications */
+    printf("[devOS] 8/8 Registering Applications...\n");
+    printf("[devOS]   - Registering OpenDev...\n");
     devos_core_register_app(app_opendev_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Terminal...\n");
     devos_core_register_app(app_terminal_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Editor...\n");
     devos_core_register_app(app_editor_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Tailscale...\n");
     devos_core_register_app(app_tailscale_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Antigravity...\n");
     devos_core_register_app(app_antigravity_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Settings...\n");
     devos_core_register_app(app_settings_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Demo Apps...\n");
     app_template_register_demo_apps();
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Launcher...\n");
     devos_core_register_app(app_launcher_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
 
-    /* 7. Create persistent Top Status Bar */
+    /* Create persistent Top Status Bar */
+    printf("[devOS] Creating Top Bar...\n");
     devos_top_bar_create(lv_layer_top());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
 
-    /* 8. Launch Home Screen / Dashboard */
+    /* Launch Home Screen / Dashboard */
+    printf("[devOS] Switching to Launcher...\n");
     devos_core_switch_app(DEVOS_APP_LAUNCHER);
 
     printf("[devOS] System bring-up complete. Home Screen active.\n");
@@ -218,16 +304,39 @@ static void devos_system_bringup(void)
 #ifdef ESP_PLATFORM
 void app_main(void)
 {
+    printf("[devOS] Booting app_main on Core %d...\n", xPortGetCoreID());
+
     /* Initialize LVGL */
     lv_init();
+#if LV_USE_LOG
+    lv_log_register_print_cb(lvgl_log_cb);
+#endif
+
+    /* Allocate 8 MB from external PSRAM to expand LVGL memory pool (Rule 2) */
+    size_t lv_pool_size = 8 * 1024 * 1024;
+    void *lv_psram_pool = heap_caps_malloc(lv_pool_size, MALLOC_CAP_SPIRAM);
+    if (lv_psram_pool) {
+        lv_mem_pool_t pool = lv_mem_add_pool(lv_psram_pool, lv_pool_size);
+        if (pool) {
+            printf("[devOS] Added 8MB PSRAM pool to LVGL memory\n");
+        } else {
+            printf("[devOS] Warning: lv_mem_add_pool failed\n");
+        }
+    } else {
+        printf("[devOS] Warning: Failed to allocate 8MB PSRAM pool for LVGL\n");
+    }
+
+    lv_tick_set_cb(esp_tick_get_cb);
 
     /* Target board bringup */
     devos_system_bringup();
 
-    /* Main presentation loop pinned to Core 1 */
+    /* Pin GUI presentation loop to Core 1 (Rule 1) */
+    xTaskCreatePinnedToCore(gui_task, "gui_task", 16384, NULL, 5, NULL, DEVOS_CORE_UI_INPUT);
+
+    /* Core 0 background supervisor loop */
     while (1) {
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 #else
