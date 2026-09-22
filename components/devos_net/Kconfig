@@ -1,0 +1,19 @@
+menu "devOS Network"
+
+config DEVOS_ENABLE_WIFI
+    bool "Enable Wi-Fi station at boot (needs ESP32-C6 ESP-Hosted slave)"
+    default n
+    help
+        Bring up the Wi-Fi station (esp_wifi proxied to the ESP32-C6 over
+        ESP-Hosted/SDIO) during boot.
+
+        The C6 must first be flashed with the ESP-Hosted slave firmware
+        (tools/flash_c6_slave.sh). Otherwise esp_wifi_init starts the SDIO
+        transport, which aborts when the slave does not respond and puts the
+        ESP32-P4 into a boot loop.
+
+        Leave this disabled until the C6 is provisioned, then set it to y
+        (here in menuconfig, or by adding CONFIG_DEVOS_ENABLE_WIFI=y to
+        sdkconfig.defaults).
+
+endmenu
