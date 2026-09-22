@@ -4,10 +4,6 @@
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c.h"
-#include "esp_lcd_mipi_dsi.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_touch_gt911.h"
-#include "esp_ppa.h"
 #endif
 
 bool bsp_tab5_init(void)

@@ -372,7 +372,7 @@ static void refresh_all(void)
 {
     if (!screen) return;
     const devos_palette_t *p = devos_theme_get();
-    char buf[256];
+    char buf[600];
 
     /* Left: conversation card */
     const char *conv = agy_client_conversation_id();

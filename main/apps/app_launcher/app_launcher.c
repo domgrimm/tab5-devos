@@ -290,9 +290,12 @@ void app_launcher_swap_slots(int slot_a, int slot_b)
     }
 
     char tmp[DEVOS_MAX_UID];
-    snprintf(tmp, sizeof(tmp), "%s", slot_uids[slot_a]);
-    snprintf(slot_uids[slot_a], sizeof(slot_uids[slot_a]), "%s", slot_uids[slot_b]);
-    snprintf(slot_uids[slot_b], sizeof(slot_uids[slot_b]), "%s", tmp);
+    strncpy(tmp, slot_uids[slot_a], sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
+    strncpy(slot_uids[slot_a], slot_uids[slot_b], sizeof(slot_uids[slot_a]) - 1);
+    slot_uids[slot_a][sizeof(slot_uids[slot_a]) - 1] = '\0';
+    strncpy(slot_uids[slot_b], tmp, sizeof(slot_uids[slot_b]) - 1);
+    slot_uids[slot_b][sizeof(slot_uids[slot_b]) - 1] = '\0';
 
     selected_slot = -1;
     save_layout();
@@ -651,9 +654,9 @@ void app_launcher_update_telemetry(void)
     }
     if (lbl_net_power) lv_label_set_text(lbl_net_power, buf);
 
-    snprintf(buf, sizeof(buf), "Memory: %.1f MB Free PSRAM, %d KB SRAM  |  CPU: Core 0: %d%% | Core 1: %d%%",
+    snprintf(buf, sizeof(buf), "Memory: %.1f MB Free PSRAM, %u KB SRAM  |  CPU: Core 0: %d%% | Core 1: %d%%",
              t->free_psram_kb / 1024.0f,
-             t->free_sram_kb,
+             (unsigned int)t->free_sram_kb,
              t->cpu_load_core0,
              t->cpu_load_core1);
     if (lbl_mem_cpu) lv_label_set_text(lbl_mem_cpu, buf);

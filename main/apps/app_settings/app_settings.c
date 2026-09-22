@@ -32,7 +32,7 @@ static void refresh_dynamic(void)
     if (lbl_pwr_mode) {
         char buf[96];
         snprintf(buf, sizeof(buf), "Mode: %s  |  Idle: %us  |  Bright: %d%%",
-                 devos_power_mode_text(), devos_power_idle_s(),
+                 devos_power_mode_text(), (unsigned int)devos_power_idle_s(),
                  devos_power_brightness());
         lv_label_set_text(lbl_pwr_mode, buf);
     }

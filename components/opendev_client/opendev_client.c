@@ -55,19 +55,19 @@ static opendev_config_t s_cfg = {
 static opendev_session_t s_sessions[OPENDEV_MAX_SESSIONS];
 static int s_session_count = 0;
 static int s_active = -1;
-static opendev_block_t s_blocks[OPENDEV_MAX_BLOCKS];
+static EXT_RAM_BSS_ATTR opendev_block_t s_blocks[OPENDEV_MAX_BLOCKS];
 static int s_block_count = 0;
 static opendev_permission_t s_perm;
 static opendev_status_t s_status = OPENDEV_DOWN;
 static char s_status_text[128] = "Offline";
 static uint32_t s_gen = 0;
-static char s_diff[OPENDEV_DIFF_MAX] = "";
+static EXT_RAM_BSS_ATTR char s_diff[OPENDEV_DIFF_MAX] = "";
 
 /* SSE link */
 static int s_sse_fd = -1;
 static int s_connect_ticks = 0;
 static int s_retry_ticks = 0;
-static char s_sse_buf[SSE_BUF_MAX];
+static EXT_RAM_BSS_ATTR char s_sse_buf[SSE_BUF_MAX];
 static size_t s_sse_len = 0;
 static char s_hdr_buf[1024];
 static size_t s_hdr_len = 0;
@@ -233,7 +233,7 @@ static int http_do(const char *method, const char *path, const char *body,
                    strstr(resp, "transfer-encoding: chunked") != NULL;
     if (chunked) {
         /* ponytail: in-place de-chunker; malformed chunks end the body */
-        static char flat[HTTP_RESP_MAX];
+        static EXT_RAM_BSS_ATTR char flat[HTTP_RESP_MAX];
         size_t fo = 0;
         char *p = body_start;
         char *resp_end = resp + total;
@@ -452,7 +452,8 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     memset(s, 0, sizeof(*s));
     if (devos_json_get_str(obj, len, "id", s->id, sizeof(s->id)) != 0) return;
     if (devos_json_get_str(obj, len, "title", s->title, sizeof(s->title)) != 0) {
-        snprintf(s->title, sizeof(s->title), "%.8s", s->id);
+        strncpy(s->title, s->id, 8);
+        s->title[8] = '\0';
     }
     devos_json_get_str(obj, len, "modelID", s->model, sizeof(s->model));
     if (!s->model[0]) devos_json_get_str(obj, len, "model", s->model, sizeof(s->model));
@@ -461,7 +462,7 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
 
 int opendev_client_refresh_sessions(void)
 {
-    static char resp[HTTP_RESP_MAX];
+    static EXT_RAM_BSS_ATTR char resp[HTTP_RESP_MAX];
     int status = 0;
     if (http_do("GET", "/session", NULL, resp, sizeof(resp), &status) != 0 ||
         status != 200) {
@@ -572,7 +573,7 @@ static void parts_each_cb(const char *obj, size_t len, opendev_block_t *tmp)
 static int fetch_messages(void)
 {
     if (s_active < 0 || s_active >= s_session_count) return -1;
-    static char resp[HTTP_RESP_MAX];
+    static EXT_RAM_BSS_ATTR char resp[HTTP_RESP_MAX];
     char path[160];
     snprintf(path, sizeof(path), "/session/%s/message?limit=50",
              s_sessions[s_active].id);

@@ -1,5 +1,6 @@
 #include "bsp_tab5_camera.h"
 #include "quirc.h"
+#include "devos_config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +24,7 @@ static bsp_camera_qr_cb_t s_qr_cb = NULL;
 static void *s_qr_user_data = NULL;
 
 static struct quirc *s_quirc = NULL;
-static uint8_t s_frame_buf[TAB5_CAM_WIDTH * TAB5_CAM_HEIGHT];
+static EXT_RAM_BSS_ATTR uint8_t s_frame_buf[TAB5_CAM_WIDTH * TAB5_CAM_HEIGHT];
 
 #ifdef ESP_PLATFORM
 static TaskHandle_t s_scanner_task_handle = NULL;

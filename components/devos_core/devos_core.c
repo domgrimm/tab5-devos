@@ -1,8 +1,9 @@
 #include "devos_core.h"
-#include "devos_theme.h"
 #include "devos_power.h"
 #include <stdio.h>
 #include <string.h>
+
+static devos_theme_toggle_fn s_theme_toggle_cb = NULL;
 
 static devos_app_descriptor_t *registered_apps[DEVOS_MAX_APPS] = {NULL};
 static int registered_count = 0;
@@ -223,6 +224,11 @@ void devos_telemetry_tick_sim(void)
     }
 }
 
+void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb)
+{
+    s_theme_toggle_cb = cb;
+}
+
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 {
     /* Any keypress is activity: wakes from dim/sleep, resets idle. */
@@ -236,7 +242,9 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 
     /* 2. Global Hotkey: Theme Toggle (Fn + T) */
     if ((modifiers & DEVOS_MOD_FN) && (key == 't' || key == 'T')) {
-        devos_theme_toggle();
+        if (s_theme_toggle_cb) {
+            s_theme_toggle_cb();
+        }
         return true;
     }
 

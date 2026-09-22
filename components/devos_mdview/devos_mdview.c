@@ -93,7 +93,7 @@ static const char *md_find_marker(const char *s, size_t n, const char *m,
     return NULL;
 }
 
-/* Link destination after "](": sets *url/*ulen, returns closing ')', or NULL.
+/* Link destination after "](": sets *url and *ulen, returns closing ')', or NULL.
  * Handles <dest> (spaces allowed), balanced parens, and "title" tails. */
 static const char *md_link_end(const char *s, size_t n, const char **url,
                                size_t *ulen)
