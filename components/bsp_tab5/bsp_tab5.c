@@ -117,9 +117,8 @@ static void bsp_display_init(void)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_dpi(mipi_dsi_bus, &dpi_config, &s_panel));
 
-    /* 5. Reset and initialize the panel */
-    ESP_LOGI(TAG, "Resetting and initializing panel...");
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    /* 5. Initialize DPI panel video stream and DMA */
+    ESP_LOGI(TAG, "Initializing DPI panel video mode and DMA...");
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
 
     /* 6. Create LVGL display with double-buffered PSRAM draw buffers */
