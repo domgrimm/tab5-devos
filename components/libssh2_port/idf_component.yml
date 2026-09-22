@@ -1,0 +1,7 @@
+## libssh2 1.11 (mbedTLS backend) for the on-device SSH client.
+## The component manager adds this to libssh2_port's REQUIRES automatically,
+## so libssh2_port.c can #include "libssh2.h" directly.
+## Same port jsdvjx/tab5-ssh-terminal uses on this board.
+dependencies:
+  idf: ">=5.4"
+  skuodi/libssh2_esp: "^1.1.0"
