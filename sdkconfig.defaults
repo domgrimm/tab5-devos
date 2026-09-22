@@ -71,7 +71,11 @@ CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_ESP_HOSTED_ENABLED=y
 CONFIG_ESP_HOSTED_PRIV_SDIO_OPTION=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
-CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+# Select the paired co-processor. This esp_wifi_remote choice is the real knob:
+# esp_hosted derives its expected slave (ESP_HOSTED_CP_TARGET / IDF_SLAVE_TARGET)
+# from it. Leaving it at the default (esp32) makes esp_hosted expect an "esp32"
+# slave and abort with "Identified slave [esp32c6] != Expected [esp32]".
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW=y
 CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
 CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
