@@ -314,14 +314,17 @@ void app_main(void)
 
     /* Allocate 8 MB from external PSRAM to expand LVGL memory pool (Rule 2) */
     size_t lv_pool_size = 8 * 1024 * 1024;
-    void *lv_psram_pool = heap_caps_malloc(lv_pool_size, MALLOC_CAP_SPIRAM);
+    uint8_t *lv_psram_pool = (uint8_t *)heap_caps_malloc(lv_pool_size, MALLOC_CAP_SPIRAM);
     if (lv_psram_pool) {
-        lv_mem_pool_t pool = lv_mem_add_pool(lv_psram_pool, lv_pool_size);
-        if (pool) {
-            printf("[devOS] Added 8MB PSRAM pool to LVGL memory\n");
-        } else {
-            printf("[devOS] Warning: lv_mem_add_pool failed\n");
+        size_t chunk_size = 250 * 1024;
+        int pools_added = 0;
+        for (size_t offset = 0; offset + chunk_size <= lv_pool_size; offset += chunk_size) {
+            if (lv_mem_add_pool(lv_psram_pool + offset, chunk_size)) {
+                pools_added++;
+            }
         }
+        printf("[devOS] Added %d PSRAM memory pools (%zu KB total) to LVGL\n",
+               pools_added, (pools_added * chunk_size) / 1024);
     } else {
         printf("[devOS] Warning: Failed to allocate 8MB PSRAM pool for LVGL\n");
     }
