@@ -13,8 +13,12 @@
 #include "esp_ldo_regulator.h"
 #include "esp_cache.h"
 #include "esp_check.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_lcd_st7123.h"
 #include "esp_lcd_ili9881c.h"
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_gt911.h"
+#include "esp_lcd_touch_st7123.h"
 #include "tab5_panel_init_data.h"
 
 static const char *TAG = "bsp_tab5";
@@ -87,11 +91,14 @@ typedef enum {
 #define TAB5_TOUCH_ADDR_ST712X        0x55
 #define TAB5_TOUCH_ADDR_GT911         0x5D
 #define TAB5_TOUCH_ADDR_GT911_BACKUP  0x14
+#define TAB5_PIN_TOUCH_INT            23    /* shared INT (BSP_LCD_TOUCH_INT) */
 
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_disp = NULL;
 static void *s_fb0 = NULL;
 static tab5_panel_t s_panel_type = TAB5_PANEL_UNKNOWN;
+static esp_lcd_touch_handle_t s_tp = NULL;
+static lv_indev_t *s_indev = NULL;
 
 /* -------------------------------------------------------------------------
  * LVGL Flush Callback & Direct Framebuffer Rotation
@@ -322,6 +329,92 @@ static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
 }
 
 /* -------------------------------------------------------------------------
+ * Touch input -> LVGL indev (GT911 for the ILI9881C rev, ST7123 TDDI otherwise)
+ * ----------------------------------------------------------------------- */
+static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    (void)indev;
+    if (!s_tp) { data->state = LV_INDEV_STATE_RELEASED; return; }
+
+    uint16_t tx = 0, ty = 0, strength = 0;
+    uint8_t cnt = 0;
+    esp_lcd_touch_read_data(s_tp);
+    bool pressed = esp_lcd_touch_get_coordinates(s_tp, &tx, &ty, &strength, &cnt, 1);
+
+    if (pressed && cnt > 0) {
+        /* The controller reports in the panel's native portrait frame
+         * (tx: 0..H_RES-1, ty: 0..V_RES-1). Apply the inverse of the 90deg CW
+         * rotation used in disp_flush_cb (panel_x=ly, panel_y=V_RES-1-lx):
+         *   lx = (V_RES-1) - ty,  ly = tx
+         * If touch is flipped/rotated on your unit, flip the signs here. */
+        int32_t lx = (int32_t)(TAB5_PANEL_V_RES - 1) - (int32_t)ty;
+        int32_t ly = (int32_t)tx;
+        if (lx < 0) lx = 0;
+        if (lx > DEVOS_SCREEN_WIDTH - 1)  lx = DEVOS_SCREEN_WIDTH - 1;
+        if (ly < 0) ly = 0;
+        if (ly > DEVOS_SCREEN_HEIGHT - 1) ly = DEVOS_SCREEN_HEIGHT - 1;
+        data->point.x = lx;
+        data->point.y = ly;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+static void bsp_tab5_touch_init(void)
+{
+    if (!s_disp) return;
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max = TAB5_PANEL_H_RES,   /* native portrait; rotation done in read cb */
+        .y_max = TAB5_PANEL_V_RES,
+        .rst_gpio_num = -1,          /* reset shared with the panel via PI4IOE */
+        .int_gpio_num = -1,          /* polled from the LVGL read callback */
+        .levels = { .reset = 0, .interrupt = 0 },
+        .flags = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+    };
+
+    esp_lcd_panel_io_handle_t tp_io = NULL;
+    esp_err_t ret;
+
+    if (s_panel_type == TAB5_PANEL_ILI9881C) {
+        /* ver-1 fix: the GT911 INT line has a pull-up to 3V3 that blocks it;
+         * hold it low (matches esp-bsp). */
+        gpio_config_t int_cfg = {
+            .mode = GPIO_MODE_OUTPUT,
+            .pin_bit_mask = 1ULL << TAB5_PIN_TOUCH_INT,
+        };
+        gpio_config(&int_cfg);
+        gpio_set_level(TAB5_PIN_TOUCH_INT, 0);
+
+        esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+        io_cfg.dev_addr = tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_GT911_BACKUP)
+                          ? TAB5_TOUCH_ADDR_GT911_BACKUP : TAB5_TOUCH_ADDR_GT911;
+        ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
+                                          &io_cfg, &tp_io);
+        if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_tp);
+    } else {
+        esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
+        ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
+                                          &io_cfg, &tp_io);
+        if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_st7123(tp_io, &tp_cfg, &s_tp);
+    }
+
+    if (ret != ESP_OK || !s_tp) {
+        ESP_LOGE(TAG, "Touch init failed: %s", esp_err_to_name(ret));
+        s_tp = NULL;
+        return;
+    }
+
+    s_indev = lv_indev_create();
+    lv_indev_set_type(s_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(s_indev, touch_read_cb);
+    lv_indev_set_display(s_indev, s_disp);
+    ESP_LOGI(TAG, "Touch input ready (%s)",
+             s_panel_type == TAB5_PANEL_ILI9881C ? "GT911" : "ST7123 TDDI");
+}
+
+/* -------------------------------------------------------------------------
  * MIPI-DSI Display Initialization (auto-detected ILI9881C / ST7123 / ST7121)
  * ----------------------------------------------------------------------- */
 static esp_err_t bsp_display_init(void)
@@ -466,6 +559,9 @@ static esp_err_t bsp_display_init(void)
 
     /* 8. Enable Backlight */
     bsp_backlight_init();
+
+    /* 9. Touch input (LVGL pointer indev) */
+    bsp_tab5_touch_init();
 
     ESP_LOGI(TAG, "Tab5 MIPI-DSI Display Bringup Complete! (%s)", t.name);
     return ESP_OK;
