@@ -8,6 +8,7 @@ compile_commands.json
 sdkconfig
 sdkconfig.old
 dependencies.lock
+managed_components/
 
 # IDE
 .vscode/

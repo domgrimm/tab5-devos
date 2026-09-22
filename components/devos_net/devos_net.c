@@ -10,9 +10,13 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 static const char *TAG = "devos_net";
@@ -29,19 +33,217 @@ static const char *TAG = "devos_net";
 
 static devos_wifi_status_t s_wifi_status;
 
+#ifdef ESP_PLATFORM
+/* =========================================================================
+ * Real Wi-Fi station. The ESP32-P4 has no radio: esp_wifi_remote transparently
+ * proxies these standard esp_wifi_* calls to the ESP32-C6 over ESP-Hosted
+ * (SDIO). Credentials are persisted in NVS so the device auto-reconnects.
+ * ========================================================================= */
+#define DEVOS_WIFI_CONNECTED_BIT  BIT0
+#define DEVOS_WIFI_FAIL_BIT       BIT1
+#define DEVOS_WIFI_MAX_RETRY      5
+#define DEVOS_WIFI_NVS_NS         "wifi"
+
+static esp_netif_t       *s_sta_netif = NULL;
+static EventGroupHandle_t s_wifi_events = NULL;
+static int                s_retry_num = 0;
+static bool               s_wifi_started = false;
+
+static void devos_wifi_save_creds(const char *ssid, const char *password)
+{
+    nvs_handle_t h;
+    if (nvs_open(DEVOS_WIFI_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "ssid", ssid ? ssid : "");
+    nvs_set_str(h, "pass", password ? password : "");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool devos_wifi_load_creds(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+{
+    nvs_handle_t h;
+    if (nvs_open(DEVOS_WIFI_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    bool ok = (nvs_get_str(h, "ssid", ssid, &ssid_len) == ESP_OK) && ssid[0] != '\0';
+    if (ok && nvs_get_str(h, "pass", pass, &pass_len) != ESP_OK) {
+        pass[0] = '\0';
+    }
+    nvs_close(h);
+    return ok;
+}
+
+static void devos_wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_wifi_status.connected = false;
+        s_wifi_status.ip[0] = '\0';
+        if (s_retry_num < DEVOS_WIFI_MAX_RETRY) {
+            s_retry_num++;
+            esp_wifi_connect();
+            ESP_LOGW(TAG, "Wi-Fi disconnected; retry %d/%d", s_retry_num, DEVOS_WIFI_MAX_RETRY);
+        } else {
+            xEventGroupSetBits(s_wifi_events, DEVOS_WIFI_FAIL_BIT);
+            ESP_LOGE(TAG, "Wi-Fi connect failed after %d retries", DEVOS_WIFI_MAX_RETRY);
+        }
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
+        esp_ip4addr_ntoa(&e->ip_info.ip, s_wifi_status.ip, sizeof(s_wifi_status.ip));
+        esp_ip4addr_ntoa(&e->ip_info.gw, s_wifi_status.gateway, sizeof(s_wifi_status.gateway));
+        esp_ip4addr_ntoa(&e->ip_info.netmask, s_wifi_status.netmask, sizeof(s_wifi_status.netmask));
+        esp_netif_dns_info_t dns;
+        if (esp_netif_get_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
+            esp_ip4addr_ntoa(&dns.ip.u_addr.ip4, s_wifi_status.dns, sizeof(s_wifi_status.dns));
+        }
+        s_wifi_status.connected = true;
+        s_retry_num = 0;
+        xEventGroupSetBits(s_wifi_events, DEVOS_WIFI_CONNECTED_BIT);
+        ESP_LOGI(TAG, "Wi-Fi got IP: %s", s_wifi_status.ip);
+    }
+}
+
 int devos_net_init(void)
 {
-#ifdef ESP_PLATFORM
+    memset(&s_wifi_status, 0, sizeof(s_wifi_status));
+
     esp_err_t err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
+        return -1;
     }
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s", esp_err_to_name(err));
+        return -1;
     }
-#endif
 
+    if (!s_wifi_events) s_wifi_events = xEventGroupCreate();
+    if (!s_sta_netif)   s_sta_netif = esp_netif_create_default_wifi_sta();
+
+    /* esp_wifi_init brings up the ESP-Hosted transport to the C6. If the C6 is
+     * not yet flashed with the ESP-Hosted slave firmware this will fail; we log
+     * and continue (non-fatal) so the rest of the system still boots. */
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_init failed: %s (is the ESP32-C6 ESP-Hosted slave flashed?)",
+                 esp_err_to_name(err));
+        return -1;
+    }
+
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                        devos_wifi_event_handler, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                        devos_wifi_event_handler, NULL, NULL);
+
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return -1;
+    }
+    s_wifi_started = true;
+    ESP_LOGI(TAG, "Wi-Fi station started (radio on ESP32-C6 via ESP-Hosted)");
+
+    /* Auto-connect to saved credentials, if any. */
+    char ssid[33] = {0}, pass[65] = {0};
+    if (devos_wifi_load_creds(ssid, sizeof(ssid), pass, sizeof(pass))) {
+        ESP_LOGI(TAG, "Connecting to saved SSID '%s'", ssid);
+        devos_net_wifi_connect(ssid, pass);
+    }
+    return 0;
+}
+
+int devos_net_wifi_connect(const char *ssid, const char *password)
+{
+    if (!ssid || !s_wifi_started) return -1;
+
+    wifi_config_t wc;
+    memset(&wc, 0, sizeof(wc));
+    strncpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid) - 1);
+    if (password) strncpy((char *)wc.sta.password, password, sizeof(wc.sta.password) - 1);
+    wc.sta.threshold.authmode = (password && password[0]) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+
+    if (esp_wifi_set_config(WIFI_IF_STA, &wc) != ESP_OK) return -1;
+
+    s_retry_num = 0;
+    xEventGroupClearBits(s_wifi_events, DEVOS_WIFI_CONNECTED_BIT | DEVOS_WIFI_FAIL_BIT);
+    esp_wifi_disconnect();
+    if (esp_wifi_connect() != ESP_OK) return -1;
+
+    strncpy(s_wifi_status.ssid, ssid, sizeof(s_wifi_status.ssid) - 1);
+
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
+                                           DEVOS_WIFI_CONNECTED_BIT | DEVOS_WIFI_FAIL_BIT,
+                                           pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+    if (bits & DEVOS_WIFI_CONNECTED_BIT) {
+        devos_wifi_save_creds(ssid, password);
+        return 0;
+    }
+    return -1;
+}
+
+int devos_net_wifi_disconnect(void)
+{
+    if (s_wifi_started) {
+        s_retry_num = DEVOS_WIFI_MAX_RETRY; /* stop auto-retry loop */
+        esp_wifi_disconnect();
+    }
+    s_wifi_status.connected = false;
+    s_wifi_status.ssid[0] = '\0';
+    s_wifi_status.ip[0] = '\0';
+    return 0;
+}
+
+int devos_net_wifi_get_status(devos_wifi_status_t *out_status)
+{
+    if (!out_status) return -1;
+    if (s_wifi_status.connected) {
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            s_wifi_status.rssi = ap.rssi;
+            strncpy(s_wifi_status.ssid, (const char *)ap.ssid, sizeof(s_wifi_status.ssid) - 1);
+        }
+    }
+    memcpy(out_status, &s_wifi_status, sizeof(devos_wifi_status_t));
+    return 0;
+}
+
+int devos_net_wifi_scan(devos_wifi_ap_t *out_aps, int max_aps, int *out_count)
+{
+    if (!out_aps || max_aps <= 0 || !out_count) return -1;
+    *out_count = 0;
+    if (!s_wifi_started) return -1;
+
+    if (esp_wifi_scan_start(NULL, true) != ESP_OK) return -1;
+
+    uint16_t num = (uint16_t)max_aps;
+    wifi_ap_record_t *recs = calloc(num, sizeof(wifi_ap_record_t));
+    if (!recs) { esp_wifi_scan_stop(); return -1; }
+
+    if (esp_wifi_scan_get_ap_records(&num, recs) != ESP_OK) {
+        free(recs);
+        return -1;
+    }
+
+    int count = (num > (uint16_t)max_aps) ? max_aps : (int)num;
+    for (int i = 0; i < count; i++) {
+        memset(&out_aps[i], 0, sizeof(out_aps[i]));
+        strncpy(out_aps[i].ssid, (const char *)recs[i].ssid, sizeof(out_aps[i].ssid) - 1);
+        out_aps[i].rssi = recs[i].rssi;
+        out_aps[i].authmode = (uint8_t)recs[i].authmode;
+    }
+    free(recs);
+    *out_count = count;
+    return 0;
+}
+
+#else  /* !ESP_PLATFORM — simulator keeps a canned Wi-Fi so the UI is testable */
+
+int devos_net_init(void)
+{
     memset(&s_wifi_status, 0, sizeof(s_wifi_status));
     s_wifi_status.connected = true;
     strncpy(s_wifi_status.ssid, "DevNet", sizeof(s_wifi_status.ssid));
@@ -50,7 +252,6 @@ int devos_net_init(void)
     strncpy(s_wifi_status.gateway, "192.168.1.1", sizeof(s_wifi_status.gateway));
     strncpy(s_wifi_status.netmask, "255.255.255.0", sizeof(s_wifi_status.netmask));
     strncpy(s_wifi_status.dns, "192.168.1.1", sizeof(s_wifi_status.dns));
-
     return 0;
 }
 
@@ -58,7 +259,6 @@ int devos_net_wifi_connect(const char *ssid, const char *password)
 {
     (void)password;
     if (!ssid) return -1;
-
     strncpy(s_wifi_status.ssid, ssid, sizeof(s_wifi_status.ssid) - 1);
     s_wifi_status.connected = true;
     s_wifi_status.rssi = -60;
@@ -85,7 +285,6 @@ int devos_net_wifi_scan(devos_wifi_ap_t *out_aps, int max_aps, int *out_count)
 {
     if (!out_aps || max_aps <= 0 || !out_count) return -1;
 
-    /* Simulated AP scan list */
     const devos_wifi_ap_t default_aps[] = {
         {"DevNet", -58, 3},
         {"Workplace-5G", -64, 4},
@@ -100,6 +299,8 @@ int devos_net_wifi_scan(devos_wifi_ap_t *out_aps, int max_aps, int *out_count)
     *out_count = count;
     return 0;
 }
+
+#endif /* ESP_PLATFORM */
 
 bool devos_net_is_tailnet_target(const char *host_or_ip)
 {
