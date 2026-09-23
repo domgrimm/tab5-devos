@@ -47,7 +47,7 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=n
 # whether the flicker is DPI-from-PSRAM underrun: with the SDIO link quiet AND
 # the larger cache, the DPI has maximum PSRAM headroom. If the screen is clean,
 # the flicker was bandwidth contention (revisit the Wi-Fi trade-off next).
-CONFIG_CACHE_L2_CACHE_256KB=y
+# CONFIG_CACHE_L2_CACHE_256KB=y
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
