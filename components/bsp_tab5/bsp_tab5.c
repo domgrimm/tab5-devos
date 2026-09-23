@@ -1,8 +1,11 @@
 #include "bsp_tab5.h"
 #include "devos_config.h"
 #include <stdio.h>
+#include <string.h>
 
 #ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "driver/i2c.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
@@ -65,7 +68,6 @@ static const char *TAG = "bsp_tab5";
  * ----------------------------------------------------------------------- */
 #define TAB5_PANEL_H_RES             720
 #define TAB5_PANEL_V_RES             1280
-#define TAB5_LVGL_DRAW_BUF_LINES     80
 
 /* -------------------------------------------------------------------------
  * Display controller auto-detection (ported from espressif/esp-bsp
@@ -93,59 +95,126 @@ typedef enum {
 #define TAB5_TOUCH_ADDR_GT911_BACKUP  0x14
 #define TAB5_PIN_TOUCH_INT            23    /* shared INT (BSP_LCD_TOUCH_INT) */
 
+/* Double-buffered scanout for tear-free updates (see disp_flush_cb). */
+#define TAB5_NUM_FBS 2
+
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t *s_disp = NULL;
-static void *s_fb0 = NULL;
+static void *s_fb[TAB5_NUM_FBS] = { NULL, NULL };
+static int s_draw_fb_index = 1;         /* back buffer we render into (fb[0] shown at boot) */
+static void *s_lv_buf = NULL;           /* full-screen landscape LVGL draw buffer (DIRECT mode) */
+static int s_lv_stride_px = 0;          /* LVGL buffer row stride, in pixels */
+static SemaphoreHandle_t s_vsync_sem = NULL;
 static tab5_panel_t s_panel_type = TAB5_PANEL_UNKNOWN;
 static esp_lcd_touch_handle_t s_tp = NULL;
 static lv_indev_t *s_indev = NULL;
 
 /* -------------------------------------------------------------------------
- * LVGL Flush Callback & Direct Framebuffer Rotation
+ * LVGL flush + tear-free frame-buffer swap
+ *
+ * Anti-tearing (mirrors espressif/esp_lvgl_port + esp-bsp): the DPI panel owns
+ * TAB5_NUM_FBS scanout framebuffers and only ever displays one at a time. LVGL
+ * renders the whole landscape frame into a persistent off-screen buffer
+ * (DIRECT mode, single buffer). On the last flush of a refresh we rotate that
+ * complete frame 90 deg CW into the *back* framebuffer -- never the one being
+ * scanned out, so there is no tearing -- then hand that framebuffer to
+ * esp_lcd_panel_draw_bitmap(), which the DPI driver switches to at the next
+ * VSYNC (zero-copy). We wait for on_refresh_done before reusing the old
+ * framebuffer, so the switch has taken effect first.
+ *
+ * The previous approach (single scanout FB, CPU rotating dirty pixels straight
+ * into it while the DSI DMA was reading it) is what caused the flicker.
  * ----------------------------------------------------------------------- */
+
+/* Fires from ISR after each full frame has been scanned out of the DPI panel. */
+static bool dpi_refresh_done_cb(esp_lcd_panel_handle_t panel,
+                                esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
+{
+    (void)panel;
+    (void)edata;
+    (void)user_ctx;
+    BaseType_t hp_task_woken = pdFALSE;
+    if (s_vsync_sem) {
+        xSemaphoreGiveFromISR(s_vsync_sem, &hp_task_woken);
+    }
+    return hp_task_woken == pdTRUE;
+}
+
+/* Rotate the full landscape frame (DEVOS_SCREEN_WIDTH x DEVOS_SCREEN_HEIGHT,
+ * RGB565, row stride src_stride_px pixels) 90 deg CW into the portrait scanout
+ * framebuffer (TAB5_PANEL_H_RES x TAB5_PANEL_V_RES). Tiled so both source reads
+ * and destination writes stay cache-local -- a naive transpose thrashes the
+ * PSRAM cache and makes the full-frame rotation far too slow.
+ *   panel_x = ly,  panel_y = (V_RES-1) - lx
+ */
+#define TAB5_ROT_TILE 32
+_Static_assert(DEVOS_SCREEN_WIDTH == TAB5_PANEL_V_RES && DEVOS_SCREEN_HEIGHT == TAB5_PANEL_H_RES,
+               "rotate_landscape_to_fb assumes a 90-degree map between the landscape UI "
+               "and the portrait panel; update the rotation if the geometry changes");
+static void rotate_landscape_to_fb(const uint16_t *src, int src_stride_px, uint16_t *dst)
+{
+    for (int by = 0; by < DEVOS_SCREEN_HEIGHT; by += TAB5_ROT_TILE) {
+        int y_end = by + TAB5_ROT_TILE;
+        if (y_end > DEVOS_SCREEN_HEIGHT) y_end = DEVOS_SCREEN_HEIGHT;
+        for (int bx = 0; bx < DEVOS_SCREEN_WIDTH; bx += TAB5_ROT_TILE) {
+            int x_end = bx + TAB5_ROT_TILE;
+            if (x_end > DEVOS_SCREEN_WIDTH) x_end = DEVOS_SCREEN_WIDTH;
+            for (int ly = by; ly < y_end; ly++) {
+                const uint16_t *src_row = &src[ly * src_stride_px];
+                for (int lx = bx; lx < x_end; lx++) {
+                    int panel_y = (TAB5_PANEL_V_RES - 1) - lx;
+                    dst[panel_y * TAB5_PANEL_H_RES + ly] = src_row[lx];
+                }
+            }
+        }
+    }
+}
+
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    if (!s_fb0) {
+    (void)area;
+    (void)px_map;
+
+    /* LVGL keeps the complete frame in s_lv_buf (DIRECT mode); accumulate
+     * partial renders and only push a full frame on the last flush. */
+    if (!lv_display_flush_is_last(disp) || !s_lv_buf || !s_fb[s_draw_fb_index]) {
         lv_display_flush_ready(disp);
         return;
     }
 
-    int32_t w = area->x2 - area->x1 + 1;
-    int32_t h = area->y2 - area->y1 + 1;
+    uint16_t *back_fb = (uint16_t *)s_fb[s_draw_fb_index];
+    rotate_landscape_to_fb((const uint16_t *)s_lv_buf, s_lv_stride_px, back_fb);
 
-    static uint32_t s_flush_count = 0;
-    if (++s_flush_count <= 5 || (s_flush_count % 300 == 0)) {
-        ESP_LOGI(TAG, "disp_flush_cb #%lu: area [%ld,%ld - %ld,%ld] (%ldx%ld)",
-                 (unsigned long)s_flush_count,
-                 (long)area->x1, (long)area->y1, (long)area->x2, (long)area->y2,
-                 (long)w, (long)h);
-    }
+    /* Flush the rotated frame from CPU cache to PSRAM so the DSI DMA sees it. */
+    esp_cache_msync(back_fb, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
-    // Rotate 90° clockwise directly into hardware scanout framebuffer:
-    // Landscape [x: 0..1279, y: 0..719] -> Portrait [px: 0..719, py: 0..1279]
-    // panel_x = y
-    // panel_y = 1279 - x
-    uint16_t *dst_fb = (uint16_t *)s_fb0;
-    const uint16_t *src = (const uint16_t *)px_map;
+    /* Switch scanout to this framebuffer at the next VSYNC (zero-copy: the DPI
+     * driver just repoints its DMA because back_fb is one of its own FBs). */
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, TAB5_PANEL_H_RES, TAB5_PANEL_V_RES, back_fb);
 
-    for (int y = 0; y < h; y++) {
-        int panel_x = area->y1 + y;
-        const uint16_t *src_row = &src[y * w];
-        for (int x = 0; x < w; x++) {
-            int panel_y = 1279 - (area->x1 + x);
-            dst_fb[panel_y * TAB5_PANEL_H_RES + panel_x] = src_row[x];
+    /* Wait until the switch has actually taken effect before we reuse the FB we
+     * were displaying. Bounded so a missed VSYNC IRQ degrades to (at worst)
+     * tearing instead of hanging the GUI task. */
+    if (s_vsync_sem) {
+        xSemaphoreTake(s_vsync_sem, 0);
+        if (xSemaphoreTake(s_vsync_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+            static uint32_t s_vsync_timeouts = 0;
+            if ((++s_vsync_timeouts % 60) == 1) {
+                ESP_LOGW(TAG, "VSYNC wait timed out (%lu); refresh_done not firing?",
+                         (unsigned long)s_vsync_timeouts);
+            }
         }
     }
 
-    // Write back dirty lines from CPU cache to PSRAM so DSI DMA sees updated pixels
-    int rot_y1 = 1279 - area->x2;
-    int rot_y2 = 1279 - area->x1;
-    if (rot_y1 < 0) rot_y1 = 0;
-    if (rot_y2 > 1279) rot_y2 = 1279;
+    /* The framebuffer we just displayed becomes the next back buffer. */
+    s_draw_fb_index ^= 1;
 
-    uint8_t *cache_sync_start = (uint8_t *)s_fb0 + (rot_y1 * TAB5_PANEL_H_RES) * 2;
-    size_t cache_sync_size = (rot_y2 - rot_y1 + 1) * TAB5_PANEL_H_RES * 2;
-    esp_cache_msync(cache_sync_start, cache_sync_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    static uint32_t s_flush_count = 0;
+    if (++s_flush_count <= 3 || (s_flush_count % 600 == 0)) {
+        ESP_LOGI(TAG, "frame #%lu pushed (back fb now index %d)",
+                 (unsigned long)s_flush_count, s_draw_fb_index);
+    }
 
     lv_display_flush_ready(disp);
 }
@@ -508,7 +577,7 @@ static esp_err_t bsp_display_init(void)
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = t.dpi_clock_freq_mhz,
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 1,
+        .num_fbs = TAB5_NUM_FBS,   /* double-buffered for tear-free swaps */
         .video_timing = {
             .h_size = TAB5_PANEL_H_RES,
             .v_size = TAB5_PANEL_V_RES,
@@ -572,33 +641,55 @@ static esp_err_t bsp_display_init(void)
     ESP_LOGI(TAG, "Initializing panel (sending vendor init commands)...");
     TAB5_TRY(esp_lcd_panel_init(s_panel), "panel init");
 
+    /* 6. Retrieve both hardware scanout framebuffers and clear them before
+     *    enabling output, so nothing garbage flashes on screen. */
+    TAB5_TRY(esp_lcd_dpi_panel_get_frame_buffer(s_panel, TAB5_NUM_FBS, &s_fb[0], &s_fb[1]),
+             "get frame buffers");
+    ESP_LOGI(TAG, "Scanout framebuffers @%p, @%p (clearing both)...", s_fb[0], s_fb[1]);
+    for (int i = 0; i < TAB5_NUM_FBS; i++) {
+        memset(s_fb[i], 0, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2);
+        esp_cache_msync(s_fb[i], TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    }
+    s_draw_fb_index = 1;  /* fb[0] is scanned out first; render into fb[1] */
+
     ESP_LOGI(TAG, "Enabling display output...");
     TAB5_TRY(esp_lcd_panel_disp_on_off(s_panel, true), "display on");
 
-    /* 6. Retrieve continuous hardware scanout framebuffer */
-    TAB5_TRY(esp_lcd_dpi_panel_get_frame_buffer(s_panel, 1, &s_fb0), "get frame buffer");
-    ESP_LOGI(TAG, "Hardware scanout framebuffer @%p (clearing to test pattern)...", s_fb0);
-    uint16_t *fb = (uint16_t *)s_fb0;
-    for (int i = 0; i < TAB5_PANEL_H_RES * TAB5_PANEL_V_RES; i++) {
-        fb[i] = 0x001F; /* Blue fill: if you see solid blue, panel + backlight work */
+    /* VSYNC signalling for tear-free framebuffer switching (see disp_flush_cb). */
+    s_vsync_sem = xSemaphoreCreateCounting(1, 0);
+    if (s_vsync_sem) {
+        esp_lcd_dpi_panel_event_callbacks_t cbs = {
+            .on_refresh_done = dpi_refresh_done_cb,
+        };
+        esp_err_t cb_ret = esp_lcd_dpi_panel_register_event_callbacks(s_panel, &cbs, NULL);
+        if (cb_ret != ESP_OK) {
+            ESP_LOGW(TAG, "register DPI event callbacks failed: %s "
+                          "(frames will not wait for VSYNC)", esp_err_to_name(cb_ret));
+        }
+    } else {
+        ESP_LOGW(TAG, "failed to create VSYNC semaphore; frames will not wait for VSYNC");
     }
-    esp_cache_msync(s_fb0, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
-    /* 7. Create LVGL display: native 1280x720 landscape (rotated in flush_cb) */
+    /* 7. Create LVGL display: native 1280x720 landscape (rotated in flush_cb).
+     *    DIRECT mode with one persistent full-screen buffer: LVGL keeps the whole
+     *    landscape frame here and only redraws changed areas; disp_flush_cb
+     *    rotates the complete frame into the back framebuffer. */
     ESP_LOGI(TAG, "Creating LVGL display (%dx%d)...",
              DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
     s_disp = lv_display_create(DEVOS_SCREEN_WIDTH, DEVOS_SCREEN_HEIGHT);
     lv_display_set_user_data(s_disp, s_panel);
     lv_display_set_color_format(s_disp, LV_COLOR_FORMAT_RGB565);
 
-    size_t draw_buf_sz = DEVOS_SCREEN_WIDTH * TAB5_LVGL_DRAW_BUF_LINES * sizeof(lv_color_t);
-    void *buf1 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
-    void *buf2 = heap_caps_malloc(draw_buf_sz, MALLOC_CAP_SPIRAM);
-    if (!buf1 || !buf2) {
-        ESP_LOGE(TAG, "Failed to allocate draw buffers from PSRAM!");
+    uint32_t lv_stride = lv_draw_buf_width_to_stride(DEVOS_SCREEN_WIDTH, LV_COLOR_FORMAT_RGB565);
+    s_lv_stride_px = (int)(lv_stride / 2);   /* RGB565: 2 bytes per pixel */
+    size_t lv_buf_sz = (size_t)lv_stride * DEVOS_SCREEN_HEIGHT;
+    s_lv_buf = heap_caps_aligned_alloc(64, lv_buf_sz, MALLOC_CAP_SPIRAM);
+    if (!s_lv_buf) {
+        ESP_LOGE(TAG, "Failed to allocate %zu-byte LVGL frame buffer from PSRAM!", lv_buf_sz);
         return ESP_ERR_NO_MEM;
     }
-    lv_display_set_buffers(s_disp, buf1, buf2, draw_buf_sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(s_disp, s_lv_buf, NULL, lv_buf_sz, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(s_disp, disp_flush_cb);
 
     /* 8. Enable Backlight */
