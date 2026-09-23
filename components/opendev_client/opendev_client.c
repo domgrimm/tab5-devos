@@ -87,7 +87,7 @@ static void set_status(opendev_status_t st, const char *text)
         bump();
     }
     if (text && strcmp(s_status_text, text) != 0) {
-        strncpy(s_status_text, text, sizeof(s_status_text) - 1);
+        snprintf(s_status_text, sizeof(s_status_text), "%s", text);
         s_status_text[sizeof(s_status_text) - 1] = '\0';
         bump();
     }
@@ -144,7 +144,7 @@ static void config_load(void)
             char val[128];
             int ival = 0;
             if (sscanf(buf, " \"host\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_cfg.host, val, sizeof(s_cfg.host) - 1);
+                snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", val);
             } else if (sscanf(buf, " \"port\": %d", &ival) == 1 && ival > 0 &&
                        ival < 65536) {
                 s_cfg.port = ival;
@@ -152,7 +152,7 @@ static void config_load(void)
                        (ival == 0 || ival == 1)) {
                 s_cfg.mode = (opendev_mode_t)ival;
             } else if (sscanf(buf, " \"token\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_cfg.token, val, sizeof(s_cfg.token) - 1);
+                snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", val);
             }
         }
         fclose(f);
@@ -290,7 +290,7 @@ static void push_block(uint8_t role, uint8_t kind, const char *text)
     opendev_block_t *b = &s_blocks[s_block_count++];
     b->role = role;
     b->kind = kind;
-    strncpy(b->text, text, sizeof(b->text) - 1);
+    snprintf(b->text, sizeof(b->text), "%s", text);
     b->text[sizeof(b->text) - 1] = '\0';
     bump();
 }
@@ -366,9 +366,9 @@ static void on_sse_event(const char *name, const char *data, size_t dlen)
         }
         if (pid[0]) {
             s_perm.active = true;
-            strncpy(s_perm.id, pid, sizeof(s_perm.id) - 1);
-            strncpy(s_perm.session_id, sid, sizeof(s_perm.session_id) - 1);
-            strncpy(s_perm.text, title[0] ? title : pid, sizeof(s_perm.text) - 1);
+            snprintf(s_perm.id, sizeof(s_perm.id), "%s", pid);
+            snprintf(s_perm.session_id, sizeof(s_perm.session_id), "%s", sid);
+            snprintf(s_perm.text, sizeof(s_perm.text), "%s", title[0] ? title : pid);
             bump();
         }
         return;
@@ -452,8 +452,7 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     memset(s, 0, sizeof(*s));
     if (devos_json_get_str(obj, len, "id", s->id, sizeof(s->id)) != 0) return;
     if (devos_json_get_str(obj, len, "title", s->title, sizeof(s->title)) != 0) {
-        strncpy(s->title, s->id, 8);
-        s->title[8] = '\0';
+        snprintf(s->title, sizeof(s->title), "%.8s", s->id);
     }
     devos_json_get_str(obj, len, "modelID", s->model, sizeof(s->model));
     if (!s->model[0]) devos_json_get_str(obj, len, "model", s->model, sizeof(s->model));
@@ -768,13 +767,13 @@ void opendev_client_get_config(char *host, size_t host_len, int *port,
                                size_t token_len)
 {
     if (host && host_len) {
-        strncpy(host, s_cfg.host, host_len - 1);
+        snprintf(host, host_len, "%s", s_cfg.host);
         host[host_len - 1] = '\0';
     }
     if (port) *port = s_cfg.port;
     if (mode) *mode = s_cfg.mode;
     if (token && token_len) {
-        strncpy(token, s_cfg.token, token_len - 1);
+        snprintf(token, token_len, "%s", s_cfg.token);
         token[token_len - 1] = '\0';
     }
 }
@@ -782,7 +781,7 @@ void opendev_client_get_config(char *host, size_t host_len, int *port,
 int opendev_client_set_server(const char *host, int port)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
-    strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
+    snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
     s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
     s_cfg.port = port;
     s_cfg.mode = OPENDEV_MODE_CODE;
@@ -801,12 +800,12 @@ int opendev_client_set_server(const char *host, int port)
 int opendev_client_set_chamber(const char *host, int port, const char *token)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
-    strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
+    snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
     s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
     s_cfg.port = port;
     s_cfg.mode = OPENDEV_MODE_CHAMBER;
     if (token) {
-        strncpy(s_cfg.token, token, sizeof(s_cfg.token) - 1);
+        snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
         s_cfg.token[sizeof(s_cfg.token) - 1] = '\0';
     } else {
         s_cfg.token[0] = '\0';
@@ -864,24 +863,24 @@ int opendev_client_pair(const char *uri)
     size_t auth_len = q ? (size_t)(q - rest) : strlen(rest);
     if (auth_len > 0 && auth_len < 128) {
         char auth[128];
-        strncpy(auth, rest, auth_len);
+        memcpy(auth, rest, auth_len);   /* fixed-length substring, not a C-string copy */
         auth[auth_len] = '\0';
         if (auth[auth_len - 1] == '/') auth[auth_len - 1] = '\0';
         if (strcmp(auth, "connect") != 0 && auth[0] != '\0') {
             char *colon = strchr(auth, ':');
             if (colon) {
                 *colon = '\0';
-                strncpy(host, auth, sizeof(host) - 1);
+                snprintf(host, sizeof(host), "%s", auth);
                 port = atoi(colon + 1);
             } else {
-                strncpy(host, auth, sizeof(host) - 1);
+                snprintf(host, sizeof(host), "%s", auth);
             }
         }
     }
 
     if (q) {
         char query[256];
-        strncpy(query, q + 1, sizeof(query) - 1);
+        snprintf(query, sizeof(query), "%s", q + 1);
         query[sizeof(query) - 1] = '\0';
         for (char *pair = strtok(query, "&"); pair; pair = strtok(NULL, "&")) {
             char *eq = strchr(pair, '=');
@@ -890,17 +889,17 @@ int opendev_client_pair(const char *uri)
             url_decode(pair);
             url_decode(eq + 1);
             if (strcmp(pair, "host") == 0) {
-                strncpy(host, eq + 1, sizeof(host) - 1);
+                snprintf(host, sizeof(host), "%s", eq + 1);
             } else if (strcmp(pair, "port") == 0) {
                 port = atoi(eq + 1);
             } else if (strcmp(pair, "token") == 0 || strcmp(pair, "p") == 0) {
-                strncpy(token, eq + 1, sizeof(token) - 1);
+                snprintf(token, sizeof(token), "%s", eq + 1);
             }
         }
     }
     if (!token[0]) return -1;
-    strncpy(s_cfg.token, token, sizeof(s_cfg.token) - 1);
-    if (host[0]) strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
+    snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
+    if (host[0]) snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
     if (port > 0 && port < 65536) s_cfg.port = port;
     s_cfg.mode = OPENDEV_MODE_CHAMBER;
     config_save();
@@ -965,7 +964,7 @@ int opendev_client_send(const char *text)
     }
     /* optimistic user block */
     char clipped[OPENDEV_BLOCK_MAX];
-    strncpy(clipped, text, sizeof(clipped) - 1);
+    snprintf(clipped, sizeof(clipped), "%s", text);
     clipped[sizeof(clipped) - 1] = '\0';
     push_block(OPENDEV_ROLE_USER, OPENDEV_KIND_TEXT, clipped);
 

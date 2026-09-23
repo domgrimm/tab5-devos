@@ -349,7 +349,7 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
     /* 1. If already an IP address, copy directly */
     struct in_addr addr;
     if (inet_aton(hostname, &addr) != 0) {
-        strncpy(out_ip, hostname, out_len - 1);
+        snprintf(out_ip, out_len, "%s", hostname);
         out_ip[out_len - 1] = '\0';
         return 0;
     }
@@ -361,7 +361,7 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
         if (strcasecmp(hostname, "devos") == 0 ||
             strcasecmp(hostname, ml_status.node_name) == 0 ||
             strcasecmp(hostname, "devos.tailnet") == 0) {
-            strncpy(out_ip, ml_status.assigned_ip, out_len - 1);
+            snprintf(out_ip, out_len, "%s", ml_status.assigned_ip);
             out_ip[out_len - 1] = '\0';
             return 0;
         }
@@ -370,7 +370,7 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
         for (int i = 0; i < ml_status.peer_count; i++) {
             if (strcasecmp(hostname, ml_status.peers[i].name) == 0 ||
                 strcasecmp(hostname, ml_status.peers[i].fqdn) == 0) {
-                strncpy(out_ip, ml_status.peers[i].ip, out_len - 1);
+                snprintf(out_ip, out_len, "%s", ml_status.peers[i].ip);
                 out_ip[out_len - 1] = '\0';
                 return 0;
             }

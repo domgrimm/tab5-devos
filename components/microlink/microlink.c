@@ -66,11 +66,11 @@ static void init_default_peers(void)
     s_status.peer_count = 6;
 
     /* Peer 0: Workstation */
-    strncpy(s_status.peers[0].name, "workstation", sizeof(s_status.peers[0].name));
-    strncpy(s_status.peers[0].fqdn, "workstation.tailnet", sizeof(s_status.peers[0].fqdn));
-    strncpy(s_status.peers[0].ip, "100.64.1.2", sizeof(s_status.peers[0].ip));
+    snprintf(s_status.peers[0].name, sizeof(s_status.peers[0].name), "%s", "workstation");
+    snprintf(s_status.peers[0].fqdn, sizeof(s_status.peers[0].fqdn), "%s", "workstation.tailnet");
+    snprintf(s_status.peers[0].ip, sizeof(s_status.peers[0].ip), "%s", "100.64.1.2");
     s_status.peers[0].os_type = MICROLINK_PEER_OS_LINUX;
-    strncpy(s_status.peers[0].os_desc, "Linux x86_64", sizeof(s_status.peers[0].os_desc));
+    snprintf(s_status.peers[0].os_desc, sizeof(s_status.peers[0].os_desc), "%s", "Linux x86_64");
     s_status.peers[0].is_direct = true;
     s_status.peers[0].ping_ms = 2;
     s_status.peers[0].is_online = true;
@@ -79,11 +79,11 @@ static void init_default_peers(void)
     s_status.peers[0].tx_bytes = 824100;
 
     /* Peer 1: MacBook Pro */
-    strncpy(s_status.peers[1].name, "macbook-pro", sizeof(s_status.peers[1].name));
-    strncpy(s_status.peers[1].fqdn, "macbook-pro.tailnet", sizeof(s_status.peers[1].fqdn));
-    strncpy(s_status.peers[1].ip, "100.77.11.90", sizeof(s_status.peers[1].ip));
+    snprintf(s_status.peers[1].name, sizeof(s_status.peers[1].name), "%s", "macbook-pro");
+    snprintf(s_status.peers[1].fqdn, sizeof(s_status.peers[1].fqdn), "%s", "macbook-pro.tailnet");
+    snprintf(s_status.peers[1].ip, sizeof(s_status.peers[1].ip), "%s", "100.77.11.90");
     s_status.peers[1].os_type = MICROLINK_PEER_OS_MACOS;
-    strncpy(s_status.peers[1].os_desc, "macOS Sonoma", sizeof(s_status.peers[1].os_desc));
+    snprintf(s_status.peers[1].os_desc, sizeof(s_status.peers[1].os_desc), "%s", "macOS Sonoma");
     s_status.peers[1].is_direct = true;
     s_status.peers[1].ping_ms = 4;
     s_status.peers[1].is_online = true;
@@ -92,11 +92,11 @@ static void init_default_peers(void)
     s_status.peers[1].tx_bytes = 530100;
 
     /* Peer 2: Home NAS */
-    strncpy(s_status.peers[2].name, "home-nas", sizeof(s_status.peers[2].name));
-    strncpy(s_status.peers[2].fqdn, "home-nas.tailnet", sizeof(s_status.peers[2].fqdn));
-    strncpy(s_status.peers[2].ip, "100.80.3.15", sizeof(s_status.peers[2].ip));
+    snprintf(s_status.peers[2].name, sizeof(s_status.peers[2].name), "%s", "home-nas");
+    snprintf(s_status.peers[2].fqdn, sizeof(s_status.peers[2].fqdn), "%s", "home-nas.tailnet");
+    snprintf(s_status.peers[2].ip, sizeof(s_status.peers[2].ip), "%s", "100.80.3.15");
     s_status.peers[2].os_type = MICROLINK_PEER_OS_BSD;
-    strncpy(s_status.peers[2].os_desc, "TrueNAS Core", sizeof(s_status.peers[2].os_desc));
+    snprintf(s_status.peers[2].os_desc, sizeof(s_status.peers[2].os_desc), "%s", "TrueNAS Core");
     s_status.peers[2].is_direct = false;
     s_status.peers[2].ping_ms = 18;
     s_status.peers[2].is_online = true;
@@ -105,11 +105,11 @@ static void init_default_peers(void)
     s_status.peers[2].tx_bytes = 2048000;
 
     /* Peer 3: Production Cluster */
-    strncpy(s_status.peers[3].name, "prod-cluster", sizeof(s_status.peers[3].name));
-    strncpy(s_status.peers[3].fqdn, "prod-cluster.tailnet", sizeof(s_status.peers[3].fqdn));
-    strncpy(s_status.peers[3].ip, "100.99.20.1", sizeof(s_status.peers[3].ip));
+    snprintf(s_status.peers[3].name, sizeof(s_status.peers[3].name), "%s", "prod-cluster");
+    snprintf(s_status.peers[3].fqdn, sizeof(s_status.peers[3].fqdn), "%s", "prod-cluster.tailnet");
+    snprintf(s_status.peers[3].ip, sizeof(s_status.peers[3].ip), "%s", "100.99.20.1");
     s_status.peers[3].os_type = MICROLINK_PEER_OS_LINUX;
-    strncpy(s_status.peers[3].os_desc, "Ubuntu 24.04", sizeof(s_status.peers[3].os_desc));
+    snprintf(s_status.peers[3].os_desc, sizeof(s_status.peers[3].os_desc), "%s", "Ubuntu 24.04");
     s_status.peers[3].is_direct = true;
     s_status.peers[3].ping_ms = 12;
     s_status.peers[3].is_online = true;
@@ -118,11 +118,11 @@ static void init_default_peers(void)
     s_status.peers[3].tx_bytes = 1430000;
 
     /* Peer 4: Backup Server */
-    strncpy(s_status.peers[4].name, "backup-box", sizeof(s_status.peers[4].name));
-    strncpy(s_status.peers[4].fqdn, "backup-box.tailnet", sizeof(s_status.peers[4].fqdn));
-    strncpy(s_status.peers[4].ip, "100.100.4.5", sizeof(s_status.peers[4].ip));
+    snprintf(s_status.peers[4].name, sizeof(s_status.peers[4].name), "%s", "backup-box");
+    snprintf(s_status.peers[4].fqdn, sizeof(s_status.peers[4].fqdn), "%s", "backup-box.tailnet");
+    snprintf(s_status.peers[4].ip, sizeof(s_status.peers[4].ip), "%s", "100.100.4.5");
     s_status.peers[4].os_type = MICROLINK_PEER_OS_LINUX;
-    strncpy(s_status.peers[4].os_desc, "Debian 12", sizeof(s_status.peers[4].os_desc));
+    snprintf(s_status.peers[4].os_desc, sizeof(s_status.peers[4].os_desc), "%s", "Debian 12");
     s_status.peers[4].is_direct = false;
     s_status.peers[4].ping_ms = 42;
     s_status.peers[4].is_online = false;
@@ -131,11 +131,11 @@ static void init_default_peers(void)
     s_status.peers[4].tx_bytes = 0;
 
     /* Peer 5: Mobile Dev */
-    strncpy(s_status.peers[5].name, "iphone-dev", sizeof(s_status.peers[5].name));
-    strncpy(s_status.peers[5].fqdn, "iphone-dev.tailnet", sizeof(s_status.peers[5].fqdn));
-    strncpy(s_status.peers[5].ip, "100.115.8.20", sizeof(s_status.peers[5].ip));
+    snprintf(s_status.peers[5].name, sizeof(s_status.peers[5].name), "%s", "iphone-dev");
+    snprintf(s_status.peers[5].fqdn, sizeof(s_status.peers[5].fqdn), "%s", "iphone-dev.tailnet");
+    snprintf(s_status.peers[5].ip, sizeof(s_status.peers[5].ip), "%s", "100.115.8.20");
     s_status.peers[5].os_type = MICROLINK_PEER_OS_MOBILE;
-    strncpy(s_status.peers[5].os_desc, "iOS 18", sizeof(s_status.peers[5].os_desc));
+    snprintf(s_status.peers[5].os_desc, sizeof(s_status.peers[5].os_desc), "%s", "iOS 18");
     s_status.peers[5].is_direct = true;
     s_status.peers[5].ping_ms = 14;
     s_status.peers[5].is_online = true;
@@ -167,25 +167,25 @@ static void load_live_tailscale_status(void)
             char name[64] = {0}, domain[64] = {0}, ip[46] = {0}, relay[32] = {0};
             uint64_t rx = 0, tx = 0;
             char *tok = strtok(line + 5, "|");
-            if (tok) strncpy(name, tok, sizeof(name) - 1);
+            if (tok) snprintf(name, sizeof(name), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(domain, tok, sizeof(domain) - 1);
+            if (tok) snprintf(domain, sizeof(domain), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(ip, tok, sizeof(ip) - 1);
+            if (tok) snprintf(ip, sizeof(ip), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(relay, tok, sizeof(relay) - 1);
+            if (tok) snprintf(relay, sizeof(relay), "%s", tok);
             tok = strtok(NULL, "|");
             if (tok) rx = strtoull(tok, NULL, 10);
             tok = strtok(NULL, "|");
             if (tok) tx = strtoull(tok, NULL, 10);
 
-            strncpy(s_status.node_name, name, sizeof(s_status.node_name) - 1);
-            strncpy(s_status.tailnet_domain, domain, sizeof(s_status.tailnet_domain) - 1);
-            strncpy(s_status.assigned_ip, ip, sizeof(s_status.assigned_ip) - 1);
+            snprintf(s_status.node_name, sizeof(s_status.node_name), "%s", name);
+            snprintf(s_status.tailnet_domain, sizeof(s_status.tailnet_domain), "%s", domain);
+            snprintf(s_status.assigned_ip, sizeof(s_status.assigned_ip), "%s", ip);
             if (relay[0]) {
                 snprintf(s_status.derp_relay_name, sizeof(s_status.derp_relay_name), "DERP (%s)", relay);
             } else {
-                strncpy(s_status.derp_relay_name, "DERP (syd)", sizeof(s_status.derp_relay_name) - 1);
+                snprintf(s_status.derp_relay_name, sizeof(s_status.derp_relay_name), "%s", "DERP (syd)");
             }
             s_status.derp_ping_ms = 2;
             s_status.total_rx_bytes = rx;
@@ -199,13 +199,13 @@ static void load_live_tailscale_status(void)
             uint64_t rx = 0, tx = 0;
 
             char *tok = strtok(line + 5, "|");
-            if (tok) strncpy(name, tok, sizeof(name) - 1);
+            if (tok) snprintf(name, sizeof(name), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(fqdn, tok, sizeof(fqdn) - 1);
+            if (tok) snprintf(fqdn, sizeof(fqdn), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(ip, tok, sizeof(ip) - 1);
+            if (tok) snprintf(ip, sizeof(ip), "%s", tok);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(os_str, tok, sizeof(os_str) - 1);
+            if (tok) snprintf(os_str, sizeof(os_str), "%s", tok);
             tok = strtok(NULL, "|");
             if (tok) is_dir = atoi(tok);
             tok = strtok(NULL, "|");
@@ -215,16 +215,16 @@ static void load_live_tailscale_status(void)
             tok = strtok(NULL, "|");
             if (tok) tx = strtoull(tok, NULL, 10);
             tok = strtok(NULL, "|");
-            if (tok) strncpy(relay, tok, sizeof(relay) - 1);
+            if (tok) snprintf(relay, sizeof(relay), "%s", tok);
             tok = strtok(NULL, "|");
             if (tok) last_seen = atoi(tok);
 
             microlink_peer_t *p = &s_status.peers[peer_idx];
             memset(p, 0, sizeof(microlink_peer_t));
-            strncpy(p->name, name, sizeof(p->name) - 1);
-            strncpy(p->fqdn, fqdn, sizeof(p->fqdn) - 1);
-            strncpy(p->ip, ip, sizeof(p->ip) - 1);
-            strncpy(p->os_desc, os_str, sizeof(p->os_desc) - 1);
+            snprintf(p->name, sizeof(p->name), "%s", name);
+            snprintf(p->fqdn, sizeof(p->fqdn), "%s", fqdn);
+            snprintf(p->ip, sizeof(p->ip), "%s", ip);
+            snprintf(p->os_desc, sizeof(p->os_desc), "%s", os_str);
             p->is_direct = (is_dir != 0);
             p->is_online = (online != 0);
             p->rx_bytes = rx;
@@ -260,7 +260,7 @@ int microlink_init(const microlink_config_t *config)
     if (config) {
         memcpy(&s_config, config, sizeof(microlink_config_t));
     } else {
-        strncpy(s_config.hostname, "devos-tab5", sizeof(s_config.hostname));
+        snprintf(s_config.hostname, sizeof(s_config.hostname), "%s", "devos-tab5");
         s_config.auto_connect = true;
         s_config.derp_region_pref = 19; /* Sydney */
     }
@@ -307,10 +307,10 @@ int microlink_init(const microlink_config_t *config)
     load_live_tailscale_status();
 #else
     /* Populate initial node status */
-    strncpy(s_status.node_name, s_config.hostname, sizeof(s_status.node_name));
-    strncpy(s_status.tailnet_domain, "devos.tailnet", sizeof(s_status.tailnet_domain));
-    strncpy(s_status.assigned_ip, "100.77.11.92", sizeof(s_status.assigned_ip));
-    strncpy(s_status.derp_relay_name, "DERP-19 (Sydney)", sizeof(s_status.derp_relay_name));
+    snprintf(s_status.node_name, sizeof(s_status.node_name), "%s", s_config.hostname);
+    snprintf(s_status.tailnet_domain, sizeof(s_status.tailnet_domain), "%s", "devos.tailnet");
+    snprintf(s_status.assigned_ip, sizeof(s_status.assigned_ip), "%s", "100.77.11.92");
+    snprintf(s_status.derp_relay_name, sizeof(s_status.derp_relay_name), "%s", "DERP-19 (Sydney)");
     s_status.derp_ping_ms = 18;
     s_status.mtu = 1280;
     s_status.is_wireguard_hw = true;
@@ -449,7 +449,7 @@ int microlink_refresh_peers(void)
 int microlink_set_auth_key(const char *auth_key)
 {
     if (!auth_key) return -1;
-    strncpy(s_config.auth_key, auth_key, sizeof(s_config.auth_key) - 1);
+    snprintf(s_config.auth_key, sizeof(s_config.auth_key), "%s", auth_key);
     microlink_nvs_save();
     return 0;
 }
@@ -457,7 +457,7 @@ int microlink_set_auth_key(const char *auth_key)
 int microlink_get_auth_key(char *out_buf, size_t buf_len)
 {
     if (!out_buf || buf_len == 0) return -1;
-    strncpy(out_buf, s_config.auth_key, buf_len - 1);
+    snprintf(out_buf, buf_len, "%s", s_config.auth_key);
     out_buf[buf_len - 1] = '\0';
     return 0;
 }
@@ -512,9 +512,9 @@ int microlink_nvs_load(void)
         while (fgets(buf, sizeof(buf), f)) {
             char val[128];
             if (sscanf(buf, " \"auth_key\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_config.auth_key, val, sizeof(s_config.auth_key) - 1);
+                snprintf(s_config.auth_key, sizeof(s_config.auth_key), "%s", val);
             } else if (sscanf(buf, " \"hostname\": \"%31[^\"]\"", val) == 1) {
-                strncpy(s_config.hostname, val, sizeof(s_config.hostname) - 1);
+                snprintf(s_config.hostname, sizeof(s_config.hostname), "%s", val);
             }
         }
         fclose(f);

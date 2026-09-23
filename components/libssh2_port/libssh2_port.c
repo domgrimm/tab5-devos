@@ -232,11 +232,11 @@ int ssh_port_create_session(const char *alias, const char *host, int port, const
     memset(sess, 0, sizeof(ssh_session_t));
     sess->id = slot + 1;
     sess->sock_fd = -1;
-    strncpy(sess->alias, alias && strlen(alias) > 0 ? alias : host, sizeof(sess->alias) - 1);
-    strncpy(sess->host, host, sizeof(sess->host) - 1);
+    snprintf(sess->alias, sizeof(sess->alias), "%s", alias && strlen(alias) > 0 ? alias : host);
+    snprintf(sess->host, sizeof(sess->host), "%s", host);
     sess->port = port > 0 ? port : 22;
-    strncpy(sess->user, user && strlen(user) > 0 ? user : "root", sizeof(sess->user) - 1);
-    strncpy(sess->command, "ssh", sizeof(sess->command) - 1);
+    snprintf(sess->user, sizeof(sess->user), "%s", user && strlen(user) > 0 ? user : "root");
+    snprintf(sess->command, sizeof(sess->command), "%s", "ssh");
     sess->cols = cols > 0 ? cols : DEVOS_TERM_COLS_COLLAPSED;
     sess->rows = rows > 0 ? rows : DEVOS_TERM_ROWS;
     sess->ping_ms = 1;
@@ -271,14 +271,14 @@ int ssh_port_create_session(const char *alias, const char *host, int port, const
             if (strncmp(credential, "/sdcard/", 8) == 0) {
                 snprintf(key_path, sizeof(key_path), "./sim_sdcard/%s", credential + 8);
             } else {
-                strncpy(key_path, credential, sizeof(key_path) - 1);
+                snprintf(key_path, sizeof(key_path), "%s", credential);
             }
         }
         if (key_path[0] == '\0' || access(key_path, R_OK) != 0) {
             if (access("./sim_sdcard/.ssh/id_ed25519", R_OK) == 0) {
-                strncpy(key_path, "./sim_sdcard/.ssh/id_ed25519", sizeof(key_path) - 1);
+                snprintf(key_path, sizeof(key_path), "%s", "./sim_sdcard/.ssh/id_ed25519");
             } else if (access("/home/dom/.ssh/id_ed25519", R_OK) == 0) {
-                strncpy(key_path, "/home/dom/.ssh/id_ed25519", sizeof(key_path) - 1);
+                snprintf(key_path, sizeof(key_path), "%s", "/home/dom/.ssh/id_ed25519");
             }
         }
 
@@ -322,7 +322,7 @@ int ssh_port_create_session(const char *alias, const char *host, int port, const
     ssh_aux_t *a = &s_aux[slot];
     memset(a, 0, sizeof(*a));
     a->auth = auth_type;
-    if (credential) strncpy(a->cred, credential, sizeof(a->cred) - 1);
+    if (credential) snprintf(a->cred, sizeof(a->cred), "%s", credential);
 
     a->rx_store = heap_caps_malloc(SSH_RX_BUFFER_SIZE + 1, MALLOC_CAP_SPIRAM);
     a->tx_store = heap_caps_malloc(SSH_TX_BUFFER_SIZE + 1, MALLOC_CAP_SPIRAM);
@@ -508,18 +508,18 @@ int ssh_port_load_bookmarks(ssh_bookmark_t *out_bookmarks, int max_count, int *o
         int num = 0;
 
         if (sscanf(line, " \"alias\": \"%127[^\"]\"", val) == 1) {
-            strncpy(current.alias, val, sizeof(current.alias) - 1);
+            snprintf(current.alias, sizeof(current.alias), "%s", val);
         } else if (sscanf(line, " \"host\": \"%127[^\"]\"", val) == 1) {
-            strncpy(current.host, val, sizeof(current.host) - 1);
+            snprintf(current.host, sizeof(current.host), "%s", val);
         } else if (sscanf(line, " \"port\": %d", &num) == 1) {
             current.port = num;
         } else if (sscanf(line, " \"user\": \"%127[^\"]\"", val) == 1) {
-            strncpy(current.user, val, sizeof(current.user) - 1);
+            snprintf(current.user, sizeof(current.user), "%s", val);
         } else if (sscanf(line, " \"auth\": \"%127[^\"]\"", val) == 1) {
             if (strcasecmp(val, "key") == 0) current.auth_type = SSH_AUTH_KEY;
             else current.auth_type = SSH_AUTH_PASSWORD;
         } else if (sscanf(line, " \"key_path\": \"%127[^\"]\"", val) == 1) {
-            strncpy(current.key_path, val, sizeof(current.key_path) - 1);
+            snprintf(current.key_path, sizeof(current.key_path), "%s", val);
         } else if (strstr(line, "}") != NULL) {
             if (current.host[0] != '\0') {
                 memcpy(&out_bookmarks[count++], &current, sizeof(ssh_bookmark_t));

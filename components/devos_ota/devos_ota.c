@@ -62,14 +62,14 @@ static void load(void)
         while (fgets(buf, sizeof(buf), f)) {
             char val[128];
             if (sscanf(buf, " \"feed\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_feed, val, sizeof(s_feed) - 1);
+                snprintf(s_feed, sizeof(s_feed), "%s", val);
             }
         }
         fclose(f);
     }
 #endif
     if (!s_feed[0]) {
-        strncpy(s_feed, DEVOS_OTA_DEFAULT_FEED, sizeof(s_feed) - 1);
+        snprintf(s_feed, sizeof(s_feed), "%s", DEVOS_OTA_DEFAULT_FEED);
     }
 }
 
@@ -193,7 +193,7 @@ int devos_ota_apply(void)
 void devos_ota_get_feed(char *out, size_t len)
 {
     if (out && len) {
-        strncpy(out, s_feed, len - 1);
+        snprintf(out, len, "%s", s_feed);
         out[len - 1] = '\0';
     }
 }
@@ -202,7 +202,7 @@ int devos_ota_set_feed(const char *url)
 {
     if (!url || !*url || strlen(url) >= sizeof(s_feed)) return -1;
     if (!strstr(url, "://")) return -1;
-    strncpy(s_feed, url, sizeof(s_feed) - 1);
+    snprintf(s_feed, sizeof(s_feed), "%s", url);
     persist();
     return 0;
 }

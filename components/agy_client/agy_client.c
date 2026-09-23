@@ -77,7 +77,7 @@ static void set_status(agy_status_t st, const char *text)
         bump();
     }
     if (text && strcmp(s_status_text, text) != 0) {
-        strncpy(s_status_text, text, sizeof(s_status_text) - 1);
+        snprintf(s_status_text, sizeof(s_status_text), "%s", text);
         s_status_text[sizeof(s_status_text) - 1] = '\0';
         bump();
     }
@@ -128,12 +128,12 @@ static void config_load(void)
             char val[128];
             int ival = 0;
             if (sscanf(buf, " \"host\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_cfg.host, val, sizeof(s_cfg.host) - 1);
+                snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", val);
             } else if (sscanf(buf, " \"port\": %d", &ival) == 1 && ival > 0 &&
                        ival < 65536) {
                 s_cfg.port = ival;
             } else if (sscanf(buf, " \"token\": \"%127[^\"]\"", val) == 1) {
-                strncpy(s_cfg.token, val, sizeof(s_cfg.token) - 1);
+                snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", val);
             }
         }
         fclose(f);
@@ -228,7 +228,7 @@ static void push_block(uint8_t role, uint8_t kind, const char *text)
     agy_block_t *b = &s_blocks[s_block_count++];
     b->role = role;
     b->kind = kind;
-    strncpy(b->text, text, sizeof(b->text) - 1);
+    snprintf(b->text, sizeof(b->text), "%s", text);
     b->text[sizeof(b->text) - 1] = '\0';
     bump();
 }
@@ -243,7 +243,7 @@ static void agents_each_cb(const char *obj, size_t len, void *ud)
         return;
     }
     if (devos_json_get_str(obj, len, "state", a->state, sizeof(a->state)) != 0) {
-        strncpy(a->state, "idle", sizeof(a->state) - 1);
+        snprintf(a->state, sizeof(a->state), "%s", "idle");
     }
     s_agent_count++;
 }
@@ -362,12 +362,9 @@ static void on_message(const char *js, size_t len)
             }
             slot = s_artifact_count++;
         }
-        strncpy(s_artifacts[slot].name, name,
-                sizeof(s_artifacts[slot].name) - 1);
-        strncpy(s_artifacts[slot].kind, kind,
-                sizeof(s_artifacts[slot].kind) - 1);
-        strncpy(s_artifacts[slot].text, text,
-                sizeof(s_artifacts[slot].text) - 1);
+        snprintf(s_artifacts[slot].name, sizeof(s_artifacts[slot].name), "%s", name);
+        snprintf(s_artifacts[slot].kind, sizeof(s_artifacts[slot].kind), "%s", kind);
+        snprintf(s_artifacts[slot].text, sizeof(s_artifacts[slot].text), "%s", text);
         bump();
         return;
     }
@@ -377,8 +374,8 @@ static void on_message(const char *js, size_t len)
         if (devos_json_get_str(js, len, "id", pid, sizeof(pid)) != 0) return;
         devos_json_get_str(js, len, "text", text, sizeof(text));
         s_perm.active = true;
-        strncpy(s_perm.id, pid, sizeof(s_perm.id) - 1);
-        strncpy(s_perm.text, text[0] ? text : pid, sizeof(s_perm.text) - 1);
+        snprintf(s_perm.id, sizeof(s_perm.id), "%s", pid);
+        snprintf(s_perm.text, sizeof(s_perm.text), "%s", text[0] ? text : pid);
         bump();
         return;
     }
@@ -388,8 +385,8 @@ static void on_message(const char *js, size_t len)
         if (devos_json_get_str(js, len, "id", qid, sizeof(qid)) != 0) return;
         devos_json_get_str(js, len, "prompt", prompt, sizeof(prompt));
         s_q.active = true;
-        strncpy(s_q.id, qid, sizeof(s_q.id) - 1);
-        strncpy(s_q.prompt, prompt[0] ? prompt : qid, sizeof(s_q.prompt) - 1);
+        snprintf(s_q.id, sizeof(s_q.id), "%s", qid);
+        snprintf(s_q.prompt, sizeof(s_q.prompt), "%s", prompt[0] ? prompt : qid);
         s_q.choice_count = 0;
         const char *v = devos_json_find_key(js, end, "choices");
         if (v && v < end && *v == '[') {
@@ -408,8 +405,7 @@ static void on_message(const char *js, size_t len)
                     const char *np =
                         devos_json_parse_str(p, stop, tmp, sizeof(tmp));
                     if (!np) break;
-                    strncpy(s_q.choices[s_q.choice_count], tmp,
-                            sizeof(s_q.choices[0]) - 1);
+                    snprintf(s_q.choices[s_q.choice_count], sizeof(s_q.choices[0]), "%s", tmp);
                     s_q.choice_count++;
                     p = np;
                 }
@@ -736,12 +732,12 @@ void agy_client_get_config(char *host, size_t host_len, int *port,
                            char *token, size_t token_len)
 {
     if (host && host_len) {
-        strncpy(host, s_cfg.host, host_len - 1);
+        snprintf(host, host_len, "%s", s_cfg.host);
         host[host_len - 1] = '\0';
     }
     if (port) *port = s_cfg.port;
     if (token && token_len) {
-        strncpy(token, s_cfg.token, token_len - 1);
+        snprintf(token, token_len, "%s", s_cfg.token);
         token[token_len - 1] = '\0';
     }
 }
@@ -749,7 +745,7 @@ void agy_client_get_config(char *host, size_t host_len, int *port,
 int agy_client_set_server(const char *host, int port)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
-    strncpy(s_cfg.host, host, sizeof(s_cfg.host) - 1);
+    snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
     s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
     s_cfg.port = port;
     config_save();
@@ -762,7 +758,7 @@ int agy_client_set_server(const char *host, int port)
 int agy_client_set_token(const char *token)
 {
     if (!token) return -1;
-    strncpy(s_cfg.token, token, sizeof(s_cfg.token) - 1);
+    snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
     s_cfg.token[sizeof(s_cfg.token) - 1] = '\0';
     config_save();
     link_down("Reconnecting...");
@@ -793,7 +789,7 @@ int agy_client_send(const char *text, const char *command)
 {
     if (!text || !*text) return -1;
     char clipped[AGY_BLOCK_MAX];
-    strncpy(clipped, text, sizeof(clipped) - 1);
+    snprintf(clipped, sizeof(clipped), "%s", text);
     clipped[sizeof(clipped) - 1] = '\0';
     push_block(AGY_ROLE_USER, AGY_KIND_TEXT, clipped);
     if (send_prompt_obj(text, command) != 0) {
