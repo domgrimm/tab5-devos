@@ -20,6 +20,11 @@ bool tab5_keyboard_init(void);
 /* Process a raw key input event */
 void tab5_keyboard_inject_key(uint32_t key, uint8_t modifiers, bool pressed);
 
+/* Non-blocking: pull one queued key for the GUI task to dispatch. Returns true
+ * if a key was dequeued. Keys are dispatched on the GUI task (not the keyboard
+ * task) so app/LVGL code runs on the right stack and single-threaded. */
+bool tab5_keyboard_get_key(uint32_t *key, uint8_t *modifiers);
+
 /* Get current modifier state */
 uint8_t tab5_keyboard_get_modifiers(void);
 
