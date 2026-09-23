@@ -22,32 +22,17 @@ CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 # Memory Reserve (Keep >120KB internal SRAM free for mbedTLS / Wi-Fi)
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
-# MIPI-DSI DPI-from-PSRAM bandwidth (fixes the display flicker/underrun).
-# The DPI panel scans its framebuffer straight out of PSRAM with no bounce
-# buffer, so anything else that reads PSRAM steals bandwidth from the pixel FIFO
-# and causes underrun -> flicker (visible even on a static screen).
-#
-#   - 128-byte L2 cache lines: doubles the framebuffer DMA burst size so the
-#     scanout reads far fewer, larger bursts. Key underrun fix, no internal-RAM
-#     cost.
-#   - PERF optimisation (-O2): faster code / shorter bus occupancy.
-#
-# Do NOT enable CONFIG_SPIRAM_XIP_FROM_PSRAM here: it relocates .text/.rodata
-# into PSRAM, so every code/rodata fetch that misses L2 competes with the
-# framebuffer scanout on the same bus -> constant underrun. M5 only gets away
-# with it because it pairs XIP with a 256 KB L2 cache (keeps hot code cached);
-# we can't afford that 256 KB (it would take 128 KB from this build's ~157 KB of
-# free internal RAM and starve Wi-Fi/mbedTLS). With code left in flash (separate
-# bus) the DPI keeps the PSRAM bandwidth it needs.
+# MIPI-DSI cache config -- MATCH M5GFX EXACTLY. We have matched M5GFX on every
+# display value (init table, lane rate 900, DPI 70 MHz, porches, LDO, driver) and
+# a static framebuffer still flickers, while M5GFX is flicker-free on this exact
+# panel. The one remaining difference is M5's cache config, which uses XIP AND the
+# 256 KB L2 cache *together*: XIP relocates .text/.rodata into (cached) PSRAM,
+# freeing the internal RAM that the larger cache carve needs -- which is why the
+# earlier 256 KB-alone attempt overflowed the linker. Test the full M5 combo.
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
-CONFIG_SPIRAM_XIP_FROM_PSRAM=n
-# NOT viable here: the 256 KB L2 cache steals 128 KB of internal RAM, and the
-# linker overflows because esp_hosted/esp_wifi_remote/mbedTLS static .bss is
-# always linked. It also would not help the flicker: the DPI DMA reads the
-# framebuffer straight from PSRAM (we writeback via esp_cache_msync), bypassing
-# the L2 cache, so cache *size* is irrelevant to the scanout.
-# CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
