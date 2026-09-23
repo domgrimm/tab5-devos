@@ -75,48 +75,58 @@ uint8_t tab5_keyboard_get_modifiers(void)
 #ifdef ESP_PLATFORM
 static void keyboard_task(void *pvParameters)
 {
-    /* I2C Read loop for STM32F030 HID reports */
+    /* Poll the A164 (STM32F030) over I2C. The previous code only read when
+     * GPIO50 (INT) was low, but the line is never seen low here, so no report
+     * was ever read. Poll unconditionally; the controller returns an all-zero
+     * report when idle. `diag` logs the first several reads (with the I2C
+     * status and INT level) so the A164's actual protocol/codes are visible. */
+    int diag = 15;
     while (1) {
-        /* Wait for INT pin (GPIO 50) low signal */
-        if (gpio_get_level(TAB5_PIN_KBD_INT) == 0) {
-            uint8_t report[8];
-            i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-            i2c_master_start(cmd);
-            i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_READ, true);
-            i2c_master_read(cmd, report, sizeof(report), I2C_MASTER_LAST_NACK);
-            i2c_master_stop(cmd);
-            esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-            i2c_cmd_link_delete(cmd);
+        uint8_t report[8] = {0};
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_READ, true);
+        i2c_master_read(cmd, report, sizeof(report), I2C_MASTER_LAST_NACK);
+        i2c_master_stop(cmd);
+        esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
+        i2c_cmd_link_delete(cmd);
 
-            uint8_t any = report[0];
-            for (int i = 2; i < 8; i++) any |= report[i];
+        uint8_t any = 0;
+        for (int i = 0; i < 8; i++) any |= report[i];
 
-            if (ret == ESP_OK && any) {
-                /* report[0] = modifiers, report[2..7] = HID key usages */
-                uint8_t mods = 0;
-                if (report[0] & 0x01) mods |= DEVOS_MOD_CTRL;
-                if (report[0] & 0x02) mods |= DEVOS_MOD_SHIFT;
-                if (report[0] & 0x04) mods |= DEVOS_MOD_ALT;
-                if (report[0] & 0x08) mods |= DEVOS_MOD_FN;
+        if (diag > 0) {
+            printf("[kbd] read ret=%s int=%d raw: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   esp_err_to_name(ret), gpio_get_level(TAB5_PIN_KBD_INT),
+                   report[0], report[1], report[2], report[3],
+                   report[4], report[5], report[6], report[7]);
+            diag--;
+        }
 
-                /* Diagnostic: show the raw report so the A164's real key codes
-                 * can be confirmed against hid_usage_to_key() above. */
+        if (ret == ESP_OK && any) {
+            /* report[0] = modifiers, report[2..7] = HID key usages */
+            uint8_t mods = 0;
+            if (report[0] & 0x01) mods |= DEVOS_MOD_CTRL;
+            if (report[0] & 0x02) mods |= DEVOS_MOD_SHIFT;
+            if (report[0] & 0x04) mods |= DEVOS_MOD_ALT;
+            if (report[0] & 0x08) mods |= DEVOS_MOD_FN;
+
+            if (diag <= 0) {
                 printf("[kbd] raw: %02x %02x %02x %02x %02x %02x %02x %02x\n",
                        report[0], report[1], report[2], report[3],
                        report[4], report[5], report[6], report[7]);
+            }
 
-                bool shift = (mods & DEVOS_MOD_SHIFT) != 0;
-                for (int i = 2; i < 8; i++) {
-                    if (report[i] != 0) {
-                        uint32_t key = hid_usage_to_key(report[i], shift);
-                        if (key != 0) {
-                            tab5_keyboard_inject_key(key, mods, true);
-                        }
+            bool shift = (mods & DEVOS_MOD_SHIFT) != 0;
+            for (int i = 2; i < 8; i++) {
+                if (report[i] != 0) {
+                    uint32_t key = hid_usage_to_key(report[i], shift);
+                    if (key != 0) {
+                        tab5_keyboard_inject_key(key, mods, true);
                     }
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
 #endif
