@@ -105,7 +105,7 @@ static void open_peer_ssh(int idx)
         /* Update telemetry with selected host and launch Terminal */
         devos_telemetry_t t;
         memcpy(&t, devos_telemetry_get(), sizeof(t));
-        strncpy(t.terminal_requested_host, st.peers[idx].ip, sizeof(t.terminal_requested_host) - 1);
+        snprintf(t.terminal_requested_host, sizeof(t.terminal_requested_host), "%s", st.peers[idx].ip);
         devos_telemetry_update(&t);
 
         devos_core_switch_app(DEVOS_APP_TERMINAL);

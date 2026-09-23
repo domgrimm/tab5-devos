@@ -347,12 +347,12 @@ static bool save_bookmark_from_modal(bool close_modal)
 
     ssh_bookmark_t bm;
     memset(&bm, 0, sizeof(bm));
-    strncpy(bm.alias, (alias && strlen(alias) > 0) ? alias : host, sizeof(bm.alias) - 1);
-    strncpy(bm.host, host, sizeof(bm.host) - 1);
+    snprintf(bm.alias, sizeof(bm.alias), "%s", (alias && strlen(alias) > 0) ? alias : host);
+    snprintf(bm.host, sizeof(bm.host), "%s", host);
     bm.port = port;
-    strncpy(bm.user, user, sizeof(bm.user) - 1);
+    snprintf(bm.user, sizeof(bm.user), "%s", user);
     bm.auth_type = SSH_AUTH_KEY;
-    strncpy(bm.key_path, TAB5_SD_MOUNT_POINT "/.ssh/id_ed25519", sizeof(bm.key_path) - 1);
+    snprintf(bm.key_path, sizeof(bm.key_path), "%s", TAB5_SD_MOUNT_POINT "/.ssh/id_ed25519");
 
     int rc = ssh_port_save_bookmark(&bm);
     if (rc == 0) {
@@ -1434,7 +1434,7 @@ static void terminal_show(void)
     const devos_telemetry_t *t = devos_telemetry_get();
     if (t && t->terminal_requested_host[0] != '\0') {
         char target_host[64];
-        strncpy(target_host, t->terminal_requested_host, sizeof(target_host) - 1);
+        snprintf(target_host, sizeof(target_host), "%s", t->terminal_requested_host);
         target_host[sizeof(target_host) - 1] = '\0';
 
         /* Clear requested target in telemetry */

@@ -99,7 +99,7 @@ static void scan_notes(void)
         size_t n = strlen(ent->d_name);
         if (n < 4 || strcmp(ent->d_name + n - 3, ".md") != 0) continue;
         if (s_file_count >= EDITOR_MAX_FILES) break;
-        strncpy(s_files[s_file_count], ent->d_name, EDITOR_NAME_MAX - 1);
+        snprintf(s_files[s_file_count], EDITOR_NAME_MAX, "%s", ent->d_name);
         s_files[s_file_count][EDITOR_NAME_MAX - 1] = '\0';
         s_file_count++;
     }
@@ -218,14 +218,14 @@ static void update_telemetry(void)
 {
     devos_telemetry_t t = *devos_telemetry_get();
     if (s_active >= 0 && s_active < s_file_count) {
-        strncpy(t.editor_file, s_files[s_active], sizeof(t.editor_file) - 1);
+        snprintf(t.editor_file, sizeof(t.editor_file), "%s", s_files[s_active]);
         t.editor_file[sizeof(t.editor_file) - 1] = '\0';
         const char *text = ta_editor ? lv_textarea_get_text(ta_editor) : "";
         size_t bytes = strlen(text ? text : "");
         t.editor_file_kb = (uint32_t)((bytes + 1023) / 1024);
         if (bytes > 0 && t.editor_file_kb == 0) t.editor_file_kb = 1;
     } else {
-        strncpy(t.editor_file, "(none)", sizeof(t.editor_file) - 1);
+        snprintf(t.editor_file, sizeof(t.editor_file), "%s", "(none)");
         t.editor_file[sizeof(t.editor_file) - 1] = '\0';
         t.editor_file_kb = 0;
     }
@@ -840,7 +840,7 @@ static void editor_show(void)
     int keep = s_active;
     char keep_name[EDITOR_NAME_MAX] = {0};
     if (keep >= 0 && keep < s_file_count) {
-        strncpy(keep_name, s_files[keep], sizeof(keep_name) - 1);
+        snprintf(keep_name, sizeof(keep_name), "%s", s_files[keep]);
     }
     scan_notes();
     int found = -1;
@@ -933,7 +933,7 @@ bool app_editor_save_plan(const char *title, const char *content)
         }
     }
     clean[ci] = '\0';
-    if (ci == 0) strncpy(clean, "plan", sizeof(clean) - 1);
+    if (ci == 0) snprintf(clean, sizeof(clean), "%s", "plan");
 
     char path[256];
     snprintf(path, sizeof(path), "%s/plans/%s.md", TAB5_SD_MOUNT_POINT, clean);
@@ -958,7 +958,7 @@ bool app_editor_save_diff(const char *title, const char *diff_content)
         }
     }
     clean[ci] = '\0';
-    if (ci == 0) strncpy(clean, "diff", sizeof(clean) - 1);
+    if (ci == 0) snprintf(clean, sizeof(clean), "%s", "diff");
 
     char path[256];
     snprintf(path, sizeof(path), "%s/diffs/%s.diff", TAB5_SD_MOUNT_POINT, clean);

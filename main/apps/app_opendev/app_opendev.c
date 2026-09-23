@@ -743,7 +743,7 @@ static void on_qr_detected(const char *text, void *ud)
 {
     LV_UNUSED(ud);
     if (!text || !*text) return;
-    strncpy(s_detected_qr, text, sizeof(s_detected_qr) - 1);
+    snprintf(s_detected_qr, sizeof(s_detected_qr), "%s", text);
     s_detected_qr[sizeof(s_detected_qr) - 1] = '\0';
     s_qr_ready = true;
 }
