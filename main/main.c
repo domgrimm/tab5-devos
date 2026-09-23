@@ -56,6 +56,15 @@ static void gui_task(void *arg)
     lv_obj_invalidate(lv_screen_active());
 
     while (1) {
+        /* Dispatch keyboard events here (not on the keyboard task): app
+         * handle_key()s run LVGL, which must stay single-threaded, and they
+         * need this task's larger stack. Bounded per iteration. */
+        uint32_t key;
+        uint8_t mods;
+        for (int n = 0; n < 16 && tab5_keyboard_get_key(&key, &mods); n++) {
+            devos_core_dispatch_key(key, mods);
+        }
+
         uint32_t step = lv_timer_handler();
         if (step == LV_NO_TIMER_READY || step > 30) step = 30;
         if (step < 5) step = 5;

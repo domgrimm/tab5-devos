@@ -99,14 +99,59 @@ static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 
 static uint8_t current_modifiers = DEVOS_MOD_NONE;
 
+#ifdef ESP_PLATFORM
+/* Keyboard events are produced on the keyboard task but must be *dispatched* on
+ * the GUI task: app handle_key()s (and the app-switching they trigger) run LVGL,
+ * which is single-threaded, and they need the GUI task's larger stack. Running
+ * them on the 4 KB keyboard task overflowed it (stack-protection panic). So the
+ * keyboard task only enqueues; the GUI task drains via tab5_keyboard_get_key(). */
+typedef struct {
+    uint32_t key;
+    uint8_t  mods;
+} kbd_event_t;
+
+static QueueHandle_t s_kbd_queue = NULL;
+
+bool tab5_keyboard_get_key(uint32_t *key, uint8_t *modifiers)
+{
+    if (s_kbd_queue == NULL) {
+        return false;
+    }
+    kbd_event_t ev;
+    if (xQueueReceive(s_kbd_queue, &ev, 0) != pdTRUE) {
+        return false;
+    }
+    if (key)       *key = ev.key;
+    if (modifiers) *modifiers = ev.mods;
+    return true;
+}
+#else
+bool tab5_keyboard_get_key(uint32_t *key, uint8_t *modifiers)
+{
+    (void)key;
+    (void)modifiers;
+    return false;  /* simulator dispatches keys directly from the SDL watcher */
+}
+#endif
+
 void tab5_keyboard_inject_key(uint32_t key, uint8_t modifiers, bool pressed)
 {
     current_modifiers = modifiers;
 
-    if (pressed) {
-        /* Pass directly to devos_core hotkey & app dispatcher */
-        devos_core_dispatch_key(key, modifiers);
+    if (!pressed) {
+        return;
     }
+
+#ifdef ESP_PLATFORM
+    /* Hand off to the GUI task; never dispatch app/LVGL code here (see above). */
+    if (s_kbd_queue != NULL) {
+        kbd_event_t ev = { .key = key, .mods = modifiers };
+        xQueueSend(s_kbd_queue, &ev, 0);
+    }
+#else
+    /* Pass directly to devos_core hotkey & app dispatcher */
+    devos_core_dispatch_key(key, modifiers);
+#endif
 }
 
 uint8_t tab5_keyboard_get_modifiers(void)
@@ -175,6 +220,13 @@ bool tab5_keyboard_init(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE
     };
     gpio_config(&io_conf);
+
+    /* Queue drained by the GUI task; keyboard task only produces into it. */
+    s_kbd_queue = xQueueCreate(16, sizeof(kbd_event_t));
+    if (s_kbd_queue == NULL) {
+        printf("[kbd] failed to create key queue\n");
+        return false;
+    }
 
     /* Spawn keyboard polling task pinned to Core 1 (UI & Input core) */
     xTaskCreatePinnedToCore(keyboard_task, "tab5_kbd", 4096, NULL, 10, NULL, DEVOS_CORE_UI_INPUT);
