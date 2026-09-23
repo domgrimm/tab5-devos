@@ -111,3 +111,7 @@ CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
 # card + esp32c6 slave target). If the C6 ever fails to enumerate and you get
 # a boot loop, set this to n to boot without a radio.
 CONFIG_DEVOS_ENABLE_WIFI=y
+
+# Compiler options - avoid treating format warnings as errors for third-party libraries on ESP32-P4
+CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
+

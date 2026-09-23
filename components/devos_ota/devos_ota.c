@@ -74,9 +74,20 @@ static void load(void)
 }
 
 /* Split http://host[:port]/path (no TLS — LAN shelf only). */
-static int split_url(const char *url, char *host, size_t hlen, int *port,
-                     char *path, size_t plen)
+static void str_copy(char *dst, const char *src, size_t dst_size)
 {
+    if (!dst || dst_size == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t len = strlen(src);
+    if (len >= dst_size) len = dst_size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+static int split_url(const char *url, char *host, size_t hlen, int *port,
+                      char *path, size_t plen)
+{
+    if (!url || !host || hlen < 2 || !path || plen < 2 || !port) return -1;
     const char *p = strstr(url, "://");
     p = p ? p + 3 : url;
     const char *slash = strchr(p, '/');
@@ -92,14 +103,11 @@ static int split_url(const char *url, char *host, size_t hlen, int *port,
     } else {
         *port = 80;
     }
-    strncpy(host, tmp, hlen - 1);
-    host[hlen - 1] = '\0';
+    str_copy(host, tmp, hlen);
     if (slash) {
-        strncpy(path, slash, plen - 1);
-        path[plen - 1] = '\0';
+        str_copy(path, slash, plen);
     } else {
-        strncpy(path, "/", plen - 1);
-        path[plen - 1] = '\0';
+        str_copy(path, "/", plen);
     }
     return (host[0] && *port > 0) ? 0 : -1;
 }
@@ -136,7 +144,7 @@ int devos_ota_check(void)
         return -1;
     }
     s_have_update = strcmp(ver, DEVOS_VERSION_STR) != 0;
-    strncpy(s_ver, ver, sizeof(s_ver) - 1);
+    str_copy(s_ver, ver, sizeof(s_ver));
     devos_json_get_str(resp, strlen(resp), "url", s_url, sizeof(s_url));
     s_size = 0;
     {

@@ -21,6 +21,16 @@ static microlink_status_t s_status;
 static microlink_event_cb_t s_listener = NULL;
 static void *s_listener_data = NULL;
 
+static void str_copy(char *dst, const char *src, size_t dst_size)
+{
+    if (!dst || dst_size == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t len = strlen(src);
+    if (len >= dst_size) len = dst_size - 1;
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
 static void notify_state_change(microlink_state_t new_state)
 {
     s_status.state = new_state;
@@ -30,8 +40,8 @@ static void notify_state_change(microlink_state_t new_state)
     memcpy(&t, devos_telemetry_get(), sizeof(devos_telemetry_t));
     if (new_state == MICROLINK_STATE_CONNECTED) {
         t.tailscale_online = true;
-        strncpy(t.tailscale_ip, s_status.assigned_ip, sizeof(t.tailscale_ip) - 1);
-        strncpy(t.tailscale_derp, s_status.derp_relay_name, sizeof(t.tailscale_derp) - 1);
+        str_copy(t.tailscale_ip, s_status.assigned_ip, sizeof(t.tailscale_ip));
+        str_copy(t.tailscale_derp, s_status.derp_relay_name, sizeof(t.tailscale_derp));
         t.tailscale_peers_online = 0;
         for (int i = 0; i < s_status.peer_count; i++) {
             if (s_status.peers[i].is_online) {
@@ -40,8 +50,8 @@ static void notify_state_change(microlink_state_t new_state)
         }
     } else {
         t.tailscale_online = false;
-        strncpy(t.tailscale_ip, "Offline", sizeof(t.tailscale_ip) - 1);
-        strncpy(t.tailscale_derp, "None", sizeof(t.tailscale_derp) - 1);
+        str_copy(t.tailscale_ip, "Offline", sizeof(t.tailscale_ip));
+        str_copy(t.tailscale_derp, "None", sizeof(t.tailscale_derp));
         t.tailscale_peers_online = 0;
     }
     devos_telemetry_update(&t);
@@ -277,7 +287,7 @@ int microlink_init(const microlink_config_t *config)
 
             if (n > 0 && strncmp(key_buf, "tskey-", 6) == 0) {
                 printf("[microlink] Found ts_key file with valid key prefix, enrolling...\n");
-                strncpy(s_config.auth_key, key_buf, sizeof(s_config.auth_key) - 1);
+                snprintf(s_config.auth_key, sizeof(s_config.auth_key), "%s", key_buf);
                 microlink_nvs_save();
                 s_config.auto_connect = true;
 
