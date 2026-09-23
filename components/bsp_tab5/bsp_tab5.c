@@ -641,10 +641,19 @@ static esp_err_t bsp_display_init(void)
     ESP_LOGI(TAG, "Initializing panel (sending vendor init commands)...");
     TAB5_TRY(esp_lcd_panel_init(s_panel), "panel init");
 
-    /* 6. Retrieve both hardware scanout framebuffers and clear them before
-     *    enabling output, so nothing garbage flashes on screen. */
-    TAB5_TRY(esp_lcd_dpi_panel_get_frame_buffer(s_panel, TAB5_NUM_FBS, &s_fb[0], &s_fb[1]),
-             "get frame buffers");
+    ESP_LOGI(TAG, "Enabling display output...");
+    TAB5_TRY(esp_lcd_panel_disp_on_off(s_panel, true), "display on");
+
+    /* 6. Retrieve both hardware scanout framebuffers. Validate them explicitly
+     *    before use: if the driver ever hands back fewer than TAB5_NUM_FBS we
+     *    must not memset() a NULL pointer (that would panic before the console
+     *    is usable). Any failure here degrades gracefully so serial stays up. */
+    esp_err_t fb_ret = esp_lcd_dpi_panel_get_frame_buffer(s_panel, TAB5_NUM_FBS, &s_fb[0], &s_fb[1]);
+    if (fb_ret != ESP_OK || s_fb[0] == NULL || s_fb[1] == NULL) {
+        ESP_LOGE(TAG, "get frame buffers failed: %s (fb0=%p fb1=%p)",
+                 esp_err_to_name(fb_ret), s_fb[0], s_fb[1]);
+        return (fb_ret != ESP_OK) ? fb_ret : ESP_ERR_INVALID_STATE;
+    }
     ESP_LOGI(TAG, "Scanout framebuffers @%p, @%p (clearing both)...", s_fb[0], s_fb[1]);
     for (int i = 0; i < TAB5_NUM_FBS; i++) {
         memset(s_fb[i], 0, TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2);
@@ -652,9 +661,6 @@ static esp_err_t bsp_display_init(void)
                         ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
     }
     s_draw_fb_index = 1;  /* fb[0] is scanned out first; render into fb[1] */
-
-    ESP_LOGI(TAG, "Enabling display output...");
-    TAB5_TRY(esp_lcd_panel_disp_on_off(s_panel, true), "display on");
 
     /* VSYNC signalling for tear-free framebuffer switching (see disp_flush_cb). */
     s_vsync_sem = xSemaphoreCreateCounting(1, 0);
