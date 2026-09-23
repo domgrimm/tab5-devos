@@ -53,6 +53,48 @@ static uint32_t hid_usage_to_key(uint8_t u, bool shift)
         default:   return 0;                /* unmapped */
     }
 }
+
+/* Tab5 keyboard (STM32) register map — from M5's unit_Tab5Keyboard driver.
+ * It is a register device: address a register, then read/write. A raw read
+ * (no register) returns zeros, which is why the old code saw nothing. */
+#define KBD_REG_INT_STAT       0x01
+#define KBD_REG_EVENT_NUM      0x02   /* write 0 to clear the event queue */
+#define KBD_REG_MODE_KEYBOARD  0x10   /* 0=Normal 1=HID 2=Character */
+#define KBD_REG_HID_EVENT      0x30   /* read 2 bytes: [modifier, HID keycode] */
+#define KBD_REG_FW_VERSION     0xFE
+#define KBD_MODE_HID           1
+#define KBD_EVENT_EMPTY        0xFF
+
+static esp_err_t kbd_write_reg(uint8_t reg, uint8_t val)
+{
+    uint8_t buf[2] = {reg, val};
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write(cmd, buf, 2, true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_READ, true);
+    if (len > 1) {
+        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
+    }
+    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
 #endif
 
 static uint8_t current_modifiers = DEVOS_MOD_NONE;
@@ -75,58 +117,48 @@ uint8_t tab5_keyboard_get_modifiers(void)
 #ifdef ESP_PLATFORM
 static void keyboard_task(void *pvParameters)
 {
-    /* Poll the A164 (STM32F030) over I2C. The previous code only read when
-     * GPIO50 (INT) was low, but the line is never seen low here, so no report
-     * was ever read. Poll unconditionally; the controller returns an all-zero
-     * report when idle. `diag` logs the first several reads (with the I2C
-     * status and INT level) so the A164's actual protocol/codes are visible. */
-    int diag = 15;
+    /* The Tab5 keyboard STM32 is a register device (M5 unit_Tab5Keyboard):
+     * put it in HID mode, then drain REG_HID_EVENT (2 bytes: modifier + HID
+     * usage code) until it reports empty (0xFF 0xFF). */
+    vTaskDelay(pdMS_TO_TICKS(50));  /* let the STM32 finish booting */
+    esp_err_t mret = kbd_write_reg(KBD_REG_MODE_KEYBOARD, KBD_MODE_HID);
+    kbd_write_reg(KBD_REG_INT_STAT, 0x00);
+    kbd_write_reg(KBD_REG_EVENT_NUM, 0x00);
+    uint8_t fw = 0;
+    kbd_read_reg(KBD_REG_FW_VERSION, &fw, 1);
+    printf("[kbd] Tab5 keyboard: HID mode %s, fw=0x%02x\n",
+           mret == ESP_OK ? "set" : "FAILED", fw);
+
+    int diag = 20;
     while (1) {
-        uint8_t report[8] = {0};
-        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-        i2c_master_start(cmd);
-        i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_READ, true);
-        i2c_master_read(cmd, report, sizeof(report), I2C_MASTER_LAST_NACK);
-        i2c_master_stop(cmd);
-        esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-        i2c_cmd_link_delete(cmd);
+        /* Drain queued key events (bounded per tick). */
+        for (int n = 0; n < 16; n++) {
+            uint8_t buf[2] = {KBD_EVENT_EMPTY, KBD_EVENT_EMPTY};
+            if (kbd_read_reg(KBD_REG_HID_EVENT, buf, sizeof(buf)) != ESP_OK) break;
+            if (buf[0] == KBD_EVENT_EMPTY && buf[1] == KBD_EVENT_EMPTY) break; /* empty */
 
-        uint8_t any = 0;
-        for (int i = 0; i < 8; i++) any |= report[i];
+            uint8_t hidmod = buf[0];
+            uint8_t keycode = buf[1];
 
-        if (diag > 0) {
-            printf("[kbd] read ret=%s int=%d raw: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                   esp_err_to_name(ret), gpio_get_level(TAB5_PIN_KBD_INT),
-                   report[0], report[1], report[2], report[3],
-                   report[4], report[5], report[6], report[7]);
-            diag--;
-        }
-
-        if (ret == ESP_OK && any) {
-            /* report[0] = modifiers, report[2..7] = HID key usages */
-            uint8_t mods = 0;
-            if (report[0] & 0x01) mods |= DEVOS_MOD_CTRL;
-            if (report[0] & 0x02) mods |= DEVOS_MOD_SHIFT;
-            if (report[0] & 0x04) mods |= DEVOS_MOD_ALT;
-            if (report[0] & 0x08) mods |= DEVOS_MOD_FN;
-
-            if (diag <= 0) {
-                printf("[kbd] raw: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                       report[0], report[1], report[2], report[3],
-                       report[4], report[5], report[6], report[7]);
+            if (diag > 0) {
+                printf("[kbd] hid event: mod=0x%02x key=0x%02x\n", hidmod, keycode);
+                diag--;
             }
 
-            bool shift = (mods & DEVOS_MOD_SHIFT) != 0;
-            for (int i = 2; i < 8; i++) {
-                if (report[i] != 0) {
-                    uint32_t key = hid_usage_to_key(report[i], shift);
-                    if (key != 0) {
-                        tab5_keyboard_inject_key(key, mods, true);
-                    }
+            uint8_t mods = 0;
+            if (hidmod & 0x01) mods |= DEVOS_MOD_CTRL;
+            if (hidmod & 0x02) mods |= DEVOS_MOD_SHIFT;
+            if (hidmod & 0x04) mods |= DEVOS_MOD_ALT;
+            if (hidmod & 0x08) mods |= DEVOS_MOD_FN;
+
+            if (keycode != 0) {
+                uint32_t key = hid_usage_to_key(keycode, (mods & DEVOS_MOD_SHIFT) != 0);
+                if (key != 0) {
+                    tab5_keyboard_inject_key(key, mods, true);
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(30));
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
 }
 #endif
