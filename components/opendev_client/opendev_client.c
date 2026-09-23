@@ -452,7 +452,8 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     memset(s, 0, sizeof(*s));
     if (devos_json_get_str(obj, len, "id", s->id, sizeof(s->id)) != 0) return;
     if (devos_json_get_str(obj, len, "title", s->title, sizeof(s->title)) != 0) {
-        snprintf(s->title, sizeof(s->title), "%.8s", s->id);
+        s->title[0] = '\0';
+        strncat(s->title, s->id, 8);
     }
     devos_json_get_str(obj, len, "modelID", s->model, sizeof(s->model));
     if (!s->model[0]) devos_json_get_str(obj, len, "model", s->model, sizeof(s->model));
@@ -861,8 +862,8 @@ int opendev_client_pair(const char *uri)
 
     /* If there is an authority before '?' (e.g. openchamber://10.0.0.1:8421?token=...) */
     size_t auth_len = q ? (size_t)(q - rest) : strlen(rest);
-    if (auth_len > 0 && auth_len < 128) {
-        char auth[128];
+    if (auth_len > 0 && auth_len < 64) {
+        char auth[64];
         memcpy(auth, rest, auth_len);   /* fixed-length substring, not a C-string copy */
         auth[auth_len] = '\0';
         if (auth[auth_len - 1] == '/') auth[auth_len - 1] = '\0';

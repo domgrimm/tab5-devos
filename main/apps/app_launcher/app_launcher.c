@@ -290,9 +290,9 @@ void app_launcher_swap_slots(int slot_a, int slot_b)
     }
 
     char tmp[DEVOS_MAX_UID];
-    snprintf(tmp, sizeof(tmp), "%s", slot_uids[slot_a]);
-    snprintf(slot_uids[slot_a], sizeof(slot_uids[slot_a]), "%s", slot_uids[slot_b]);
-    snprintf(slot_uids[slot_b], sizeof(slot_uids[slot_b]), "%s", tmp);
+    strlcpy(tmp, slot_uids[slot_a], sizeof(tmp));
+    strlcpy(slot_uids[slot_a], slot_uids[slot_b], sizeof(slot_uids[slot_a]));
+    strlcpy(slot_uids[slot_b], tmp, sizeof(slot_uids[slot_b]));
 
     selected_slot = -1;
     save_layout();

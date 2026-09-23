@@ -504,21 +504,21 @@ int ssh_port_load_bookmarks(ssh_bookmark_t *out_bookmarks, int max_count, int *o
     int count = 0;
 
     while (fgets(line, sizeof(line), f) && count < max_count) {
-        char val[128];
+        char val[64];
         int num = 0;
 
-        if (sscanf(line, " \"alias\": \"%127[^\"]\"", val) == 1) {
+        if (sscanf(line, " \"alias\": \"%63[^\"]\"", val) == 1) {
             snprintf(current.alias, sizeof(current.alias), "%s", val);
-        } else if (sscanf(line, " \"host\": \"%127[^\"]\"", val) == 1) {
+        } else if (sscanf(line, " \"host\": \"%63[^\"]\"", val) == 1) {
             snprintf(current.host, sizeof(current.host), "%s", val);
         } else if (sscanf(line, " \"port\": %d", &num) == 1) {
             current.port = num;
-        } else if (sscanf(line, " \"user\": \"%127[^\"]\"", val) == 1) {
+        } else if (sscanf(line, " \"user\": \"%63[^\"]\"", val) == 1) {
             snprintf(current.user, sizeof(current.user), "%s", val);
-        } else if (sscanf(line, " \"auth\": \"%127[^\"]\"", val) == 1) {
+        } else if (sscanf(line, " \"auth\": \"%63[^\"]\"", val) == 1) {
             if (strcasecmp(val, "key") == 0) current.auth_type = SSH_AUTH_KEY;
             else current.auth_type = SSH_AUTH_PASSWORD;
-        } else if (sscanf(line, " \"key_path\": \"%127[^\"]\"", val) == 1) {
+        } else if (sscanf(line, " \"key_path\": \"%63[^\"]\"", val) == 1) {
             snprintf(current.key_path, sizeof(current.key_path), "%s", val);
         } else if (strstr(line, "}") != NULL) {
             if (current.host[0] != '\0') {
