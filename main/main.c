@@ -55,24 +55,7 @@ static void gui_task(void *arg)
 
     lv_obj_invalidate(lv_screen_active());
 
-    /* DIAGNOSTIC (temporary): after 8 s, stop ALL rendering/dispatch so the
-     * framebuffer is completely static -- no lv_timer_handler, no rotation, no
-     * FB swaps, no msync. If the screen STILL flickers while frozen, the cause
-     * is the DPI scanout / PHY / panel config, not our GUI/render loop. If it
-     * goes clean, the cause is something our loop does each refresh. */
-    uint32_t diag_freeze_at_ms = (uint32_t)(esp_timer_get_time() / 1000ULL) + 8000;
-    bool diag_frozen_logged = false;
-
     while (1) {
-        if ((uint32_t)(esp_timer_get_time() / 1000ULL) > diag_freeze_at_ms) {
-            if (!diag_frozen_logged) {
-                printf("[DIAG] GUI frozen: framebuffer is now static. Observe whether it still flickers.\n");
-                diag_frozen_logged = true;
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
-            continue;
-        }
-
         /* Dispatch keyboard events here (not on the keyboard task): app
          * handle_key()s run LVGL, which must stay single-threaded, and they
          * need this task's larger stack. Bounded per iteration. */
