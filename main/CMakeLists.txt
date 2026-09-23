@@ -1,3 +1,18 @@
+# THROWAWAY DIAGNOSTIC SWITCH: set to 1 to build the display-only firmware
+# (main_display_test.c) which links ONLY the display stack so the 256 KB L2 cache
+# fits. Set back to 0 for the normal firmware. Keep in sync with the 256 KB cache
+# setting in sdkconfig.defaults.
+set(DEVOS_DISPLAY_TEST 1)
+
+if(DEVOS_DISPLAY_TEST)
+    idf_component_register(
+        SRCS "main_display_test.c"
+        INCLUDE_DIRS "." "include"
+        REQUIRES
+            bsp_tab5
+            lvgl
+    )
+else()
 set(APP_SRCS
     "main.c"
     "apps/app_launcher/app_launcher.c"
@@ -41,5 +56,6 @@ idf_component_register(
         lvgl
         nvs_flash
 )
+endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)

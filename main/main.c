@@ -25,13 +25,6 @@
 #include <stdio.h>
 #include <unistd.h>
 
-/* DIAGNOSTIC (temporary): set to 1 to boot a display-only test -- bring up the
- * MIPI-DSI panel, paint static colour bars straight into the framebuffer, and
- * do NOTHING else (no keyboard, net/SDIO, storage, apps, LVGL rendering). If the
- * bars flicker, the cause is purely the display bring-up; if they are stable,
- * some other subsystem was disturbing the panel. Set back to 0 for normal boot. */
-#define DEVOS_DISPLAY_TEST 1
-
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -371,18 +364,6 @@ void app_main(void)
     }
 
     lv_tick_set_cb(esp_tick_get_cb);
-
-#if DEVOS_DISPLAY_TEST
-    /* Display-only diagnostic: bring up ONLY the panel, show static colour bars,
-     * then idle. No keyboard, network/SDIO, storage, apps, or LVGL rendering. */
-    printf("[DISPLAY-TEST] Display-only mode: bringing up panel, nothing else.\n");
-    bsp_tab5_init();
-    bsp_tab5_fill_test_pattern();
-    printf("[DISPLAY-TEST] Static colour bars shown. Observe whether they flicker.\n");
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-#endif
 
     /* Target board bringup */
     devos_system_bringup();
