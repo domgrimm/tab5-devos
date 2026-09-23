@@ -48,6 +48,7 @@ static esp_netif_t       *s_sta_netif = NULL;
 static EventGroupHandle_t s_wifi_events = NULL;
 static int                s_retry_num = 0;
 static bool               s_wifi_started = false;
+static bool               s_have_creds = false;   /* an SSID has been configured */
 
 static void devos_wifi_save_creds(const char *ssid, const char *password)
 {
@@ -75,11 +76,14 @@ static void devos_wifi_event_handler(void *arg, esp_event_base_t base, int32_t i
 {
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        /* Don't auto-connect with an empty SSID; wait until credentials are
+         * configured (via devos_net_wifi_connect / saved NVS creds). Otherwise
+         * esp_wifi_connect() just fails and spams disconnect retries at boot. */
+        if (s_have_creds) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_wifi_status.connected = false;
         s_wifi_status.ip[0] = '\0';
-        if (s_retry_num < DEVOS_WIFI_MAX_RETRY) {
+        if (s_have_creds && s_retry_num < DEVOS_WIFI_MAX_RETRY) {
             s_retry_num++;
             esp_wifi_connect();
             ESP_LOGW(TAG, "Wi-Fi disconnected; retry %d/%d", s_retry_num, DEVOS_WIFI_MAX_RETRY);
@@ -179,6 +183,7 @@ int devos_net_wifi_connect(const char *ssid, const char *password)
 
     if (esp_wifi_set_config(WIFI_IF_STA, &wc) != ESP_OK) return -1;
 
+    s_have_creds = true;
     s_retry_num = 0;
     xEventGroupClearBits(s_wifi_events, DEVOS_WIFI_CONNECTED_BIT | DEVOS_WIFI_FAIL_BIT);
     esp_wifi_disconnect();
