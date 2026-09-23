@@ -108,6 +108,7 @@ static SemaphoreHandle_t s_vsync_sem = NULL;
 static tab5_panel_t s_panel_type = TAB5_PANEL_UNKNOWN;
 static esp_lcd_touch_handle_t s_tp = NULL;
 static lv_indev_t *s_indev = NULL;
+static bool s_touch_int_gated = false;  /* TDDI: read I2C only while INT asserted */
 
 /* -------------------------------------------------------------------------
  * LVGL flush + tear-free frame-buffer swap
@@ -439,6 +440,26 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     (void)indev;
     if (!s_tp) { data->state = LV_INDEV_STATE_RELEASED; return; }
 
+    /* TDDI panels (ST7121/ST7123) time-share their panel lines between display
+     * driving and touch sensing, so hammering the touch controller with I2C on
+     * every LVGL poll (~33 Hz) interrupts the display -> continuous flicker.
+     * Gate the I2C read on the touch INT line (active low) so we only talk to
+     * the controller while a finger is actually down -- the same effect as
+     * esp-bsp's interrupt-driven touch. A slow fallback poll keeps touch alive
+     * even if an INT edge is ever missed. */
+    if (s_touch_int_gated) {
+        static uint32_t idle_skips = 0;
+        if (gpio_get_level(TAB5_PIN_TOUCH_INT) != 0) {   /* INT high = no touch */
+            if (++idle_skips < 30) {                     /* ~1 s fallback at 33 Hz */
+                data->state = LV_INDEV_STATE_RELEASED;
+                return;                                  /* skip the I2C read */
+            }
+            idle_skips = 0;
+        } else {
+            idle_skips = 0;
+        }
+    }
+
     uint16_t tx = 0, ty = 0, strength = 0;
     uint8_t cnt = 0;
     esp_lcd_touch_read_data(s_tp);
@@ -507,6 +528,18 @@ static void bsp_tab5_touch_init(void)
                                           &io_cfg, &tp_io);
         if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_tp);
     } else {
+        /* TDDI (ST7121/ST7123): poll the shared INT line so touch_read_cb only
+         * hits the I2C bus while a finger is down (the panel time-shares its
+         * lines with touch sensing, so idle polling flickers the display).
+         * Configured as a plain input; we read its level, no ISR. */
+        gpio_config_t int_cfg = {
+            .mode = GPIO_MODE_INPUT,
+            .pin_bit_mask = 1ULL << TAB5_PIN_TOUCH_INT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+        };
+        gpio_config(&int_cfg);
+        s_touch_int_gated = true;
+
         esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
         io_cfg.scl_speed_hz = 0;  /* legacy v1 i2c-lcd IO rejects a nonzero value */
         ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
