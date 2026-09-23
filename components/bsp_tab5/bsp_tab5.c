@@ -369,6 +369,7 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     esp_lcd_touch_read_data(s_tp);
     bool pressed = esp_lcd_touch_get_coordinates(s_tp, &tx, &ty, &strength, &cnt, 1);
 
+    static bool was_pressed = false;
     if (pressed && cnt > 0) {
         /* The controller reports in the panel's native portrait frame
          * (tx: 0..H_RES-1, ty: 0..V_RES-1). Apply the inverse of the 90deg CW
@@ -381,10 +382,18 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         if (lx > DEVOS_SCREEN_WIDTH - 1)  lx = DEVOS_SCREEN_WIDTH - 1;
         if (ly < 0) ly = 0;
         if (ly > DEVOS_SCREEN_HEIGHT - 1) ly = DEVOS_SCREEN_HEIGHT - 1;
+        /* Diagnostic on the press edge only: shows whether the controller
+         * returns points and how raw coords map to LVGL space (for calibration). */
+        if (!was_pressed) {
+            ESP_LOGI(TAG, "touch: raw(tx=%u ty=%u cnt=%u) -> lvgl(%ld,%ld)",
+                     tx, ty, cnt, (long)lx, (long)ly);
+        }
+        was_pressed = true;
         data->point.x = lx;
         data->point.y = ly;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
+        was_pressed = false;
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
