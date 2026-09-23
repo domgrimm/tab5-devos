@@ -24,21 +24,24 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
 # MIPI-DSI DPI-from-PSRAM bandwidth (fixes the display flicker/underrun).
 # The DPI panel scans its framebuffer straight out of PSRAM with no bounce
-# buffer, so PSRAM read efficiency has to be high enough to keep the pixel FIFO
-# fed while the CPU and C6/SDIO also hit PSRAM. M5's own flicker-free Tab5
-# firmware (m5stack/M5Tab5-UserDemo) uses these knobs:
-#   - 128-byte L2 cache lines: doubles the PSRAM burst size, so the framebuffer
-#     DMA reads far fewer, larger bursts. This is the key underrun fix and costs
-#     no internal RAM.
-#   - XIP-from-PSRAM + PERF optimisation: keep code in cached PSRAM and speed up
-#     the per-frame rotation so the CPU holds the bus for less time.
-# NOTE: M5 also sets CONFIG_CACHE_L2_CACHE_256KB, but that steals 128 KB from the
-# ~161 KB of free internal RAM this Wi-Fi + SSH build has, which would starve
-# mbedTLS/Wi-Fi. Left at the 128 KB default; revisit only if 128B lines alone
-# aren't enough (and then free internal RAM elsewhere first).
+# buffer, so anything else that reads PSRAM steals bandwidth from the pixel FIFO
+# and causes underrun -> flicker (visible even on a static screen).
+#
+#   - 128-byte L2 cache lines: doubles the framebuffer DMA burst size so the
+#     scanout reads far fewer, larger bursts. Key underrun fix, no internal-RAM
+#     cost.
+#   - PERF optimisation (-O2): faster code / shorter bus occupancy.
+#
+# Do NOT enable CONFIG_SPIRAM_XIP_FROM_PSRAM here: it relocates .text/.rodata
+# into PSRAM, so every code/rodata fetch that misses L2 competes with the
+# framebuffer scanout on the same bus -> constant underrun. M5 only gets away
+# with it because it pairs XIP with a 256 KB L2 cache (keeps hot code cached);
+# we can't afford that 256 KB (it would take 128 KB from this build's ~157 KB of
+# free internal RAM and starve Wi-Fi/mbedTLS). With code left in flash (separate
+# bus) the DPI keeps the PSRAM bandwidth it needs.
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
-CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=n
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
