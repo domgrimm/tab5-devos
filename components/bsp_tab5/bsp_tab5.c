@@ -349,7 +349,12 @@ static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
     case TAB5_PANEL_ILI9881C:
         return (tab5_panel_timing_t){ "ILI9881C", 1000, 60, 40, 140, 40, 4, 20, 20 };
     case TAB5_PANEL_ST7121:
-        return (tab5_panel_timing_t){ "ST7121", 965, 70, 2, 40, 40, 20, 24, 200 };
+        /* DPI clock lowered 70->60 MHz to cut the framebuffer read rate from
+         * PSRAM: the MIPI-DSI driver has no bounce buffer, so with the C6 SDIO
+         * streaming continuously the DPI underruns -> constant flicker. On an
+         * IPS LCD with a steady backlight the lower refresh isn't visible.
+         * If flicker persists, drop further (55 or 50). */
+        return (tab5_panel_timing_t){ "ST7121", 965, 60, 2, 40, 40, 20, 24, 200 };
     case TAB5_PANEL_ST7123:
     default:
         return (tab5_panel_timing_t){ "ST7123", 1000, 70, 2, 40, 40, 2, 8, 220 };
