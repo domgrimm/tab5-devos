@@ -415,20 +415,20 @@ typedef struct {
 
 static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
 {
+    /* Values taken from M5GFX (m5stack/M5GFX, Panel setup in M5GFX.cpp), which
+     * is the display stack that ships flicker-free on this exact hardware. The
+     * critical one is the MIPI-DSI lane bit rate: esp-bsp uses 965 Mbps for the
+     * ST7121 and that produces continuous scanout flicker on this panel (the DSI
+     * PHY clock the panel's receiver must lock to is marginal). M5GFX uses
+     * 900 Mbps, which locks cleanly. DPI clock + porches otherwise match. */
     switch (panel) {
     case TAB5_PANEL_ILI9881C:
-        return (tab5_panel_timing_t){ "ILI9881C", 1000, 60, 40, 140, 40, 4, 20, 20 };
+        return (tab5_panel_timing_t){ "ILI9881C", 1040, 80, 40, 140, 40, 4, 20, 20 };
     case TAB5_PANEL_ST7121:
-        /* Exact esp-bsp / M5 ST7121 timing. The 70 MHz DPI clock (~57 Hz
-         * refresh) is what this panel expects; an earlier 60 MHz "underrun
-         * mitigation" only pushed the refresh (~49 Hz) below the panel's stable
-         * range and made the flicker worse. Bandwidth headroom for the 70 MHz
-         * scanout comes from the 128-byte L2 cache line + double-buffered FBs,
-         * not from starving the panel's clock. */
-        return (tab5_panel_timing_t){ "ST7121", 965, 70, 2, 40, 40, 20, 24, 200 };
+        return (tab5_panel_timing_t){ "ST7121", 900, 70, 2, 40, 40, 20, 24, 200 };
     case TAB5_PANEL_ST7123:
     default:
-        return (tab5_panel_timing_t){ "ST7123", 1000, 70, 2, 40, 40, 2, 8, 220 };
+        return (tab5_panel_timing_t){ "ST7123", 1040, 80, 2, 40, 40, 2, 8, 220 };
     }
 }
 
