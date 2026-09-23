@@ -177,8 +177,8 @@ int devos_net_wifi_connect(const char *ssid, const char *password)
 
     wifi_config_t wc;
     memset(&wc, 0, sizeof(wc));
-    strncpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid) - 1);
-    if (password) strncpy((char *)wc.sta.password, password, sizeof(wc.sta.password) - 1);
+    snprintf((char *)wc.sta.ssid, sizeof(wc.sta.ssid), "%s", ssid);
+    if (password) snprintf((char *)wc.sta.password, sizeof(wc.sta.password), "%s", password);
     wc.sta.threshold.authmode = (password && password[0]) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     if (esp_wifi_set_config(WIFI_IF_STA, &wc) != ESP_OK) return -1;
@@ -189,7 +189,7 @@ int devos_net_wifi_connect(const char *ssid, const char *password)
     esp_wifi_disconnect();
     if (esp_wifi_connect() != ESP_OK) return -1;
 
-    strncpy(s_wifi_status.ssid, ssid, sizeof(s_wifi_status.ssid) - 1);
+    snprintf(s_wifi_status.ssid, sizeof(s_wifi_status.ssid), "%s", ssid);
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events,
                                            DEVOS_WIFI_CONNECTED_BIT | DEVOS_WIFI_FAIL_BIT,
@@ -220,7 +220,7 @@ int devos_net_wifi_get_status(devos_wifi_status_t *out_status)
         wifi_ap_record_t ap;
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             s_wifi_status.rssi = ap.rssi;
-            strncpy(s_wifi_status.ssid, (const char *)ap.ssid, sizeof(s_wifi_status.ssid) - 1);
+            snprintf(s_wifi_status.ssid, sizeof(s_wifi_status.ssid), "%s", (const char *)ap.ssid);
         }
     }
     memcpy(out_status, &s_wifi_status, sizeof(devos_wifi_status_t));
@@ -247,7 +247,7 @@ int devos_net_wifi_scan(devos_wifi_ap_t *out_aps, int max_aps, int *out_count)
     int count = (num > (uint16_t)max_aps) ? max_aps : (int)num;
     for (int i = 0; i < count; i++) {
         memset(&out_aps[i], 0, sizeof(out_aps[i]));
-        strncpy(out_aps[i].ssid, (const char *)recs[i].ssid, sizeof(out_aps[i].ssid) - 1);
+        snprintf(out_aps[i].ssid, sizeof(out_aps[i].ssid), "%s", (const char *)recs[i].ssid);
         out_aps[i].rssi = recs[i].rssi;
         out_aps[i].authmode = (uint8_t)recs[i].authmode;
     }
@@ -262,12 +262,12 @@ int devos_net_init(void)
 {
     memset(&s_wifi_status, 0, sizeof(s_wifi_status));
     s_wifi_status.connected = true;
-    strncpy(s_wifi_status.ssid, "DevNet", sizeof(s_wifi_status.ssid));
+    snprintf(s_wifi_status.ssid, sizeof(s_wifi_status.ssid), "DevNet");
     s_wifi_status.rssi = -58;
-    strncpy(s_wifi_status.ip, "192.168.1.150", sizeof(s_wifi_status.ip));
-    strncpy(s_wifi_status.gateway, "192.168.1.1", sizeof(s_wifi_status.gateway));
-    strncpy(s_wifi_status.netmask, "255.255.255.0", sizeof(s_wifi_status.netmask));
-    strncpy(s_wifi_status.dns, "192.168.1.1", sizeof(s_wifi_status.dns));
+    snprintf(s_wifi_status.ip, sizeof(s_wifi_status.ip), "192.168.1.150");
+    snprintf(s_wifi_status.gateway, sizeof(s_wifi_status.gateway), "192.168.1.1");
+    snprintf(s_wifi_status.netmask, sizeof(s_wifi_status.netmask), "255.255.255.0");
+    snprintf(s_wifi_status.dns, sizeof(s_wifi_status.dns), "192.168.1.1");
     return 0;
 }
 
@@ -275,10 +275,10 @@ int devos_net_wifi_connect(const char *ssid, const char *password)
 {
     (void)password;
     if (!ssid) return -1;
-    strncpy(s_wifi_status.ssid, ssid, sizeof(s_wifi_status.ssid) - 1);
+    snprintf(s_wifi_status.ssid, sizeof(s_wifi_status.ssid), "%s", ssid);
     s_wifi_status.connected = true;
     s_wifi_status.rssi = -60;
-    strncpy(s_wifi_status.ip, "192.168.1.150", sizeof(s_wifi_status.ip));
+    snprintf(s_wifi_status.ip, sizeof(s_wifi_status.ip), "192.168.1.150");
     return 0;
 }
 
