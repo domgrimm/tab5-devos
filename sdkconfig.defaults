@@ -42,6 +42,12 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
+# DIAGNOSTIC (temporary): C6/Wi-Fi is OFF (see CONFIG_DEVOS_ENABLE_WIFI below),
+# which frees the internal RAM the 256 KB L2 cache needs. This build tests
+# whether the flicker is DPI-from-PSRAM underrun: with the SDIO link quiet AND
+# the larger cache, the DPI has maximum PSRAM headroom. If the screen is clean,
+# the flicker was bandwidth contention (revisit the Wi-Fi trade-off next).
+CONFIG_CACHE_L2_CACHE_256KB=y
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -110,10 +116,11 @@ CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
 CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
 
-# Wi-Fi on by default now that the C6 SDIO link is fixed (slot 0 for the SD
-# card + esp32c6 slave target). If the C6 ever fails to enumerate and you get
-# a boot loop, set this to n to boot without a radio.
-CONFIG_DEVOS_ENABLE_WIFI=y
+# DIAGNOSTIC (temporary): Wi-Fi OFF to take the C6 SDIO link off the PSRAM bus
+# and test whether the display flicker is bandwidth contention. This skips
+# esp_wifi_init(), which is what brings up the SDIO master (see boot log ~3.7s),
+# so the SDIO bus stays quiet. Set back to =y once the flicker cause is settled.
+CONFIG_DEVOS_ENABLE_WIFI=n
 
 # Compiler options - avoid treating format warnings as errors for third-party libraries on ESP32-P4
 CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
