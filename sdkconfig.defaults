@@ -22,20 +22,12 @@ CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 # Memory Reserve (Keep >120KB internal SRAM free for mbedTLS / Wi-Fi)
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
-# MIPI-DSI cache config -- MATCH M5GFX EXACTLY. We have matched M5GFX on every
-# display value (init table, lane rate 900, DPI 70 MHz, porches, LDO, driver) and
-# a static framebuffer still flickers, while M5GFX is flicker-free on this exact
-# panel. The one remaining difference is M5's cache config, which uses XIP AND the
-# 256 KB L2 cache *together*: XIP relocates .text/.rodata into (cached) PSRAM,
-# freeing the internal RAM that the larger cache carve needs -- which is why the
-# earlier 256 KB-alone attempt overflowed the linker. Test the full M5 combo.
+# Cache / perf. (The 256 KB L2 cache M5GFX uses doesn't fit alongside Wi-Fi/SSH
+# and LVGL's 256 KB static pool; it is being tested in isolation via
+# sdkconfig.displaytest -- see DEVOS_DISPLAY_TEST in the top-level CMakeLists.)
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
-# THROWAWAY: 256 KB L2 cache, only fits because the display-only test build
-# (main/CMakeLists DEVOS_DISPLAY_TEST=1) strips Wi-Fi/SSH/apps. Single-variable
-# test vs the flickering 128 KB baseline. Revert with DEVOS_DISPLAY_TEST=0.
-CONFIG_CACHE_L2_CACHE_256KB=y
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y

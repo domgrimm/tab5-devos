@@ -1,7 +1,7 @@
 # THROWAWAY DIAGNOSTIC SWITCH: set to 1 to build the display-only firmware
 # (main_display_test.c) which links ONLY the display stack so the 256 KB L2 cache
-# fits. Set back to 0 for the normal firmware. Keep in sync with the 256 KB cache
-# setting in sdkconfig.defaults.
+# fits. Set back to 0 for the normal firmware. Keep in sync with DEVOS_DISPLAY_TEST
+# in the top-level CMakeLists.txt (which also applies sdkconfig.displaytest).
 set(DEVOS_DISPLAY_TEST 1)
 
 if(DEVOS_DISPLAY_TEST)
