@@ -333,26 +333,20 @@ static void devos_system_bringup(void)
 }
 
 #ifdef ESP_PLATFORM
-void app_main(void)
+/* devOS bring-up + LVGL init, then hand off to the GUI task.
+ *
+ * Runs in its own task rather than in app_main because IDF creates the main
+ * task (CONFIG_ESP_MAIN_TASK_STACK_SIZE) *before* the scheduler starts, when
+ * only the small low internal-RAM region (~66-69 KB, shared with ESP-Hosted's
+ * early tasks/queues and IDF's own tasks) is available; the large regions are
+ * only added once main_task runs. A 16 KB main stack left so little headroom
+ * that the FreeRTOS idle-task stacks fell through to TCM and tripped
+ * xPortcheckValidStackMem (boot loop). This task is created after the
+ * scheduler starts, so its stack comes from the big region; it stays pinned
+ * to Core 0 so every driver interrupt lands on the same core as before. */
+static void devos_boot_task(void *arg)
 {
-    printf("[devOS] Booting app_main on Core %d...\n", xPortGetCoreID());
-
-    /* Initialize NVS early: persistent config (OTA feed, Tailscale auth key,
-     * opendev/agy tokens) opens the "nvs" partition, and nvs_open() fails with
-     * ESP_ERR_NVS_NOT_INITIALIZED until this runs. Kept non-fatal so a corrupt
-     * or version-bumped partition can't block boot. */
-    esp_err_t nvs_ret = nvs_flash_init();
-    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        printf("[devOS] NVS needs erase (%s); reformatting nvs partition...\n",
-               esp_err_to_name(nvs_ret));
-        if (nvs_flash_erase() == ESP_OK) {
-            nvs_ret = nvs_flash_init();
-        }
-    }
-    if (nvs_ret != ESP_OK) {
-        printf("[devOS] Warning: nvs_flash_init failed (%s); config will not persist\n",
-               esp_err_to_name(nvs_ret));
-    }
+    LV_UNUSED(arg);
 
     /* Initialize LVGL */
     lv_init();
@@ -381,14 +375,37 @@ void app_main(void)
 
     /* Target board bringup */
     devos_system_bringup();
+    printf("[devOS] Boot task stack headroom: %u bytes\n",
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
 
     /* Pin GUI presentation loop to Core 1 (Rule 1) */
     xTaskCreatePinnedToCore(gui_task, "gui_task", 16384, NULL, 5, NULL, DEVOS_CORE_UI_INPUT);
+    vTaskDelete(NULL);
+}
 
-    /* Core 0 background supervisor loop */
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+void app_main(void)
+{
+    printf("[devOS] Booting app_main on Core %d...\n", xPortGetCoreID());
+
+    /* Initialize NVS early: persistent config (OTA feed, Tailscale auth key,
+     * opendev/agy tokens) opens the "nvs" partition, and nvs_open() fails with
+     * ESP_ERR_NVS_NOT_INITIALIZED until this runs. Kept non-fatal so a corrupt
+     * or version-bumped partition can't block boot. */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        printf("[devOS] NVS needs erase (%s); reformatting nvs partition...\n",
+               esp_err_to_name(nvs_ret));
+        if (nvs_flash_erase() == ESP_OK) {
+            nvs_ret = nvs_flash_init();
+        }
     }
+    if (nvs_ret != ESP_OK) {
+        printf("[devOS] Warning: nvs_flash_init failed (%s); config will not persist\n",
+               esp_err_to_name(nvs_ret));
+    }
+
+    /* Bring-up runs in a post-scheduler task (see devos_boot_task). */
+    xTaskCreatePinnedToCore(devos_boot_task, "devos_boot", 20480, NULL, 1, NULL, DEVOS_CORE_NET_CRYPTO);
 }
 #else
 int main(int argc, char **argv)

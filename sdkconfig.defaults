@@ -46,7 +46,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # FreeRTOS Task Stacks
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# The main task is created BEFORE the scheduler starts, when only the small low
+# internal-RAM region is usable (shared with ESP-Hosted's early tasks/queues).
+# Keep it small: app_main only initialises NVS and starts the devos_boot task
+# (main.c), whose 20 KB stack comes from the large post-scheduler region. A
+# 16 KB main stack starved the idle-task stacks into TCM -> boot loop.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
 # Primary Console over USB-C (Hardware CDC & JTAG)
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
