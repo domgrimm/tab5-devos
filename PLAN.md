@@ -524,6 +524,29 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 
 ## 5. Implementation Roadmap
 
+> [!WARNING]
+> **Reality check (hardware audit, 2026-09-25).** Many `[x]` items below were only ever
+> true in the desktop simulator. On the device, as of commit `46e2898`:
+>
+> **Real now:** display (flicker fixed: IDF < 5.5.3 DSI timing backport), touch, keyboard
+> (Normal mode, Sym shortcuts), Wi-Fi manager + Settings UI, live battery/RTC/NTP/SD/heap/CPU
+> telemetry, backlight dimming/sleep, theme persistence, SD long filenames, OpenCode REST client.
+>
+> **Stub / fake / missing on hardware (backlog, roughly in priority order):**
+> 1. SSH: no password field (always empty password), Ed25519 unsupported by the mbedTLS libssh2
+>    build, no known_hosts check (MITM), no keepalive; dead session slots after errors.
+> 2. Terminal: not a VT100 (escape codes stripped, proportional font, no cursor addressing), wrong
+>    row count, background session output dropped.
+> 3. Tailscale: no client at all (MicroLink was a mock; now reports "not available").
+> 4. OTA: flashing is a no-op (DEVOS_OTA_HTTPS undefined), no checksum, blocks the UI, allows downgrades.
+> 5. OpenCode SSE likely never dispatches (expects `event:` lines); diff pane shows raw JSON;
+>    REST calls block the UI up to 4 s.
+> 6. Antigravity bridge real mode is a stub (prompts/permissions not forwarded); WS client
+>    breaks on frames > 8 KB and sends empty PONGs.
+> 7. Camera/QR: no camera driver (grey frames); "Simulate QR" ships on hardware and overwrites pairing.
+> 8. Secrets (Tailscale key, tokens, PSK, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
+> 9. Missing: command palette, keyboard RGB, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
 - [x] Set up **Remote Web UI Simulator (`tools/sim/run_web_sim.sh`)** with SDL2, Xvfb, and noVNC on port 6080.
