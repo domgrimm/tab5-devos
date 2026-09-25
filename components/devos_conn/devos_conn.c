@@ -62,7 +62,7 @@ static void unreachable(const char *host, int port, char *err, size_t errlen)
     if (devos_net_is_tailnet_target(host) && !devos_telemetry_get()->tailscale_online) {
         snprintf(err, errlen, "%.80s is on your tailnet: connect Tailscale first", host);
     } else {
-        unreachable(host, port, err, errlen);
+        snprintf(err, errlen, "Could not reach %.80s:%d", host, port);
     }
 }
 
