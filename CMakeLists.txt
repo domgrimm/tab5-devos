@@ -43,6 +43,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_tailnet
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_conn
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_sysmon
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_vterm
@@ -81,6 +82,7 @@ else()
         components/tab5_keyboard/tab5_keyboard.c
         components/devos_tailnet/devos_tailnet.c
         components/devos_net/devos_net.c
+        components/devos_conn/devos_conn.c
         components/devos_sysmon/devos_sysmon.c
         components/libssh2_port/libssh2_port.c
         components/devos_vterm/devos_vterm.c
@@ -93,7 +95,7 @@ else()
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
-    target_link_libraries(devos_sim PRIVATE lvgl ${SDL2_LIBRARIES} m pthread)
+    target_link_libraries(devos_sim PRIVATE lvgl ${SDL2_LIBRARIES} m pthread ${CMAKE_DL_LIBS})
 
     # Output directory convenience
     set_target_properties(devos_sim PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

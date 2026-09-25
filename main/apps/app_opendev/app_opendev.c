@@ -87,6 +87,8 @@ static lv_timer_t *poll_timer = NULL;
 static void refresh_all(void);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 static void srv_focus_paint(void);
+static void srv_open(bool login);
+static bool s_login_prompted = false;       /* sign-in dialog shown for this prompt */
 
 /* ------------------------------------------------------------------ theme */
 static void apply_theme(const devos_palette_t *p, void *user_data)
@@ -522,6 +524,25 @@ static lv_obj_t *new_block_card(const opendev_block_t *b, const devos_palette_t 
     return card;
 }
 
+static const char *s_last_hint = NULL;
+
+static const char *chat_hint(void)
+{
+    if (opendev_client_messages_loading() && opendev_client_active() >= 0) return "Loading messages...";
+    switch (opendev_client_status()) {
+    case OPENDEV_UP:
+        return opendev_client_active() >= 0 ? "No messages yet: type below and press Enter."
+                                            : "Connected. Pick a session or press + New, then type below.";
+    case OPENDEV_LOGIN:
+        return "Sign in to OpenChamber: tap the server box and enter its password.";
+    case OPENDEV_CONNECTING:
+        return "Connecting...";
+    default:
+        return "No server link. Tap the server box to set the URL: an OpenChamber URL such as "
+               "https://host.tail1234.ts.net, or http://<computer>:4096 for `opencode serve --hostname 0.0.0.0`.";
+    }
+}
+
 static void refresh_chat(bool force)
 {
     if (!chat_scroll) return;
@@ -587,14 +608,8 @@ static void refresh_chat(bool force)
     }
     if (nb == 0) {
         lv_obj_t *card = chat_card(p, p->surface_border);
-        const char *hint;
-        if (opendev_client_messages_loading() && opendev_client_active() >= 0) hint = "Loading messages...";
-        else if (opendev_client_status() == OPENDEV_UP)
-            hint = opendev_client_active() >= 0 ? "No messages yet: type below and press Enter."
-                                                : "Connected. Pick a session or press + New, then type below.";
-        else hint = "No server link. Tap the server row or Connect, or start "
-                    "`opencode serve --port 4096 --hostname 0.0.0.0` on your computer.";
-        chat_text(card, hint, p->text_secondary, &lv_font_montserrat_14);
+        s_last_hint = chat_hint();
+        chat_text(card, s_last_hint, p->text_secondary, &lv_font_montserrat_14);
     }
     s_rendered_count = nb;
     if (near_bottom || first) {
@@ -612,7 +627,12 @@ static void refresh_meta(void)
     opendev_client_get_config(host, sizeof(host), &port, &mode, NULL, 0);
 
     char buf[200];
-    snprintf(buf, sizeof(buf), "%s:%d%s", host, port, mode == OPENDEV_MODE_CHAMBER ? " [chamber]" : "");
+    char url[OPENDEV_URL_MAX];
+    opendev_client_get_url(url, sizeof(url));
+    const char *shown = strstr(url, "://") ? strstr(url, "://") + 3 : url;
+    snprintf(buf, sizeof(buf), "%s%s", mode == OPENDEV_MODE_CHAMBER ? "OpenChamber  " : "", shown);
+    LV_UNUSED(host);
+    LV_UNUSED(port);
     if (lbl_target && strcmp(lv_label_get_text(lbl_target), buf) != 0) lv_label_set_text(lbl_target, buf);
     if (lbl_status) {
         snprintf(buf, sizeof(buf), "%s%s", opendev_client_status_text(), opendev_client_loading() ? "  (loading)" : "");
@@ -655,6 +675,13 @@ static void refresh_meta(void)
             snprintf(buf, sizeof(buf), "No session selected");
         }
         if (strcmp(lv_label_get_text(lbl_info), buf) != 0) lv_label_set_text(lbl_info, buf);
+    }
+
+    if (opendev_client_needs_login()) {
+        if (!s_login_prompted && modal_srv && lv_obj_has_flag(modal_srv, LV_OBJ_FLAG_HIDDEN)) srv_open(true);
+        s_login_prompted = true;
+    } else {
+        s_login_prompted = false;
     }
 
     opendev_permission_t perm;
@@ -866,65 +893,49 @@ static void srv_ta_click_cb(lv_event_t *e)
     }
 }
 
+static lv_obj_t *lbl_srv_hint = NULL;
+
+static void srv_open(bool login)
+{
+    if (!modal_srv || !ta_host || !ta_token) return;
+    char url[OPENDEV_URL_MAX] = "";
+    opendev_client_get_url(url, sizeof(url));
+    lv_textarea_set_text(ta_host, url);
+    lv_textarea_set_text(ta_token, "");
+    lv_label_set_text(lbl_srv_title, login ? LV_SYMBOL_WARNING " Sign in to OpenChamber"
+                                           : LV_SYMBOL_SETTINGS " Server (OpenCode / OpenChamber)");
+    if (login) {
+        char t[200];
+        snprintf(t, sizeof(t), "%s", opendev_client_status_text());
+        lv_label_set_text(lbl_srv_hint, t);
+    } else {
+        lv_label_set_text(lbl_srv_hint, "e.g. https://dev-server.tail1234.ts.net (OpenChamber, needs its password)\n"
+                                        "or http://10.0.0.5:4096 (opencode serve)");
+    }
+    srv_focus = login ? ta_token : ta_host;
+    srv_focus_paint();
+    lv_obj_remove_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal_srv);
+}
+
 static void srv_row_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (modal_srv && ta_host && ta_port) {
-        char host[OPENDEV_HOST_MAX] = "";
-        int port = 0;
-        opendev_mode_t mode = OPENDEV_MODE_CODE;
-        char token[OPENDEV_TOKEN_MAX] = "";
-        opendev_client_get_config(host, sizeof(host), &port, &mode, token, sizeof(token));
-        lv_textarea_set_text(ta_host, host);
-        char pb[16];
-        snprintf(pb, sizeof(pb), "%d", port > 0 ? port : 4096);
-        lv_textarea_set_text(ta_port, pb);
-        if (ta_token) {
-            lv_textarea_set_text(ta_token, token);
-        }
-        srv_focus = ta_host;
-        srv_focus_paint();
-        lv_obj_remove_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(modal_srv);
-    }
+    srv_open(opendev_client_needs_login());
 }
 
 static void srv_save_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    bool ok = false;
-    if (ta_host && ta_port) {
-        const char *h = lv_textarea_get_text(ta_host);
-        const char *p_str = lv_textarea_get_text(ta_port);
-        const char *tok = ta_token ? lv_textarea_get_text(ta_token) : "";
-        int port = atoi(p_str ? p_str : "0");
-
-        /* ponytail: chamber pairing pasted into the host field just works */
-        if (h && strncmp(h, "openchamber://", 14) == 0) {
-            ok = opendev_client_pair(h) == 0;
-            if (ok && port > 0 && port < 65536) {
-                char cur_host[OPENDEV_HOST_MAX] = "";
-                char cur_tok[OPENDEV_TOKEN_MAX] = "";
-                opendev_client_get_config(cur_host, sizeof(cur_host), NULL, NULL, cur_tok, sizeof(cur_tok));
-                opendev_client_set_chamber(cur_host, port, cur_tok);
-            }
-        } else if (h && *h && port > 0 && port < 65536) {
-            if (tok && *tok) {
-                ok = opendev_client_set_chamber(h, port, tok) == 0;
-            } else {
-                opendev_mode_t cur_mode = OPENDEV_MODE_CODE;
-                char cur_tok[OPENDEV_TOKEN_MAX] = "";
-                opendev_client_get_config(NULL, 0, NULL, &cur_mode, cur_tok, sizeof(cur_tok));
-                if (cur_mode == OPENDEV_MODE_CHAMBER && cur_tok[0] && (!ta_token || tok == NULL)) {
-                    ok = opendev_client_set_chamber(h, port, cur_tok) == 0;
-                } else {
-                    ok = opendev_client_set_server(h, port) == 0;
-                }
-            }
-        }
-    }
-    /* ponytail: invalid input keeps the modal open instead of vanishing */
+    const char *u = ta_host ? lv_textarea_get_text(ta_host) : "";
+    const char *pw = ta_token ? lv_textarea_get_text(ta_token) : "";
+    bool ok;
+    if (u && strncmp(u, "openchamber://", 14) == 0) ok = opendev_client_pair(u) == 0;
+    else ok = u && *u && opendev_client_connect_url(u, pw) == 0;
+    if (ta_token) lv_textarea_set_text(ta_token, "");       /* never keep the password around */
+    s_login_prompted = false;                               /* re-prompt if this sign-in fails */
     if (ok && modal_srv) lv_obj_add_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
+    else if (lbl_srv_hint) lv_label_set_text(lbl_srv_hint, "Enter a URL like https://host.tail1234.ts.net or http://10.0.0.5:4096");
     refresh_all();
 }
 
@@ -1017,6 +1028,8 @@ static void poll_cb(lv_timer_t *t)
         if (bg != s_seen_blocks_gen) {
             s_seen_blocks_gen = bg;
             refresh_chat(false);
+        } else if (opendev_client_block_count() == 0 && chat_hint() != s_last_hint) {
+            refresh_chat(true);                 /* empty-chat hint follows the link state */
         }
         refresh_diff(false);
     }
@@ -1127,30 +1140,8 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
             srv_save_cb(NULL);
             return true;
         }
-        if (key == '\t') {
-            if (modifiers & DEVOS_MOD_SHIFT) {
-                if (srv_focus == ta_token) srv_focus = ta_port;
-                else if (srv_focus == ta_port) srv_focus = ta_host;
-                else srv_focus = ta_token ? ta_token : ta_port;
-            } else {
-                if (srv_focus == ta_host) srv_focus = ta_port;
-                else if (srv_focus == ta_port) srv_focus = ta_token ? ta_token : ta_host;
-                else srv_focus = ta_host;
-            }
-            srv_focus_paint();
-            return true;
-        }
-        if (key == LV_KEY_DOWN) {
-            if (srv_focus == ta_host || srv_focus == ta_port) {
-                srv_focus = ta_token ? ta_token : ((srv_focus == ta_host) ? ta_port : ta_host);
-            } else {
-                srv_focus = ta_host;
-            }
-            srv_focus_paint();
-            return true;
-        }
-        if (key == LV_KEY_UP) {
-            if (srv_focus == ta_token) srv_focus = ta_host;
+        if (key == '\t' || key == LV_KEY_DOWN || key == LV_KEY_UP) {
+            srv_focus = (srv_focus == ta_host) ? ta_token : ta_host;
             srv_focus_paint();
             return true;
         }
@@ -1167,13 +1158,7 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
             return true;
         }
         if (key >= 32 && key <= 126) {
-            if (srv_focus == ta_port) {
-                if (key >= '0' && key <= '9') {
-                    lv_textarea_add_char(ta_port, (char)key);
-                }
-            } else {
-                if (srv_focus) lv_textarea_add_char(srv_focus, (char)key);
-            }
+            if (srv_focus) lv_textarea_add_char(srv_focus, (char)key);
             return true;
         }
         return true;
@@ -1254,12 +1239,16 @@ static void opendev_init(void)
     lbl_target = lv_label_create(status_card);
     lv_label_set_text(lbl_target, "...");
     lv_obj_set_pos(lbl_target, 0, 0);
+    lv_obj_set_width(lbl_target, DEVOS_PANE_LEFT_WIDTH - 56);
+    lv_label_set_long_mode(lbl_target, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(lbl_target, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_target, p->text_primary, 0);
 
     lbl_status = lv_label_create(status_card);
     lv_label_set_text(lbl_status, "Offline");
-    lv_obj_set_pos(lbl_status, 0, 22);
+    lv_obj_set_pos(lbl_status, 0, 18);
+    lv_obj_set_width(lbl_status, DEVOS_PANE_LEFT_WIDTH - 56);
+    lv_label_set_long_mode(lbl_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_status, p->text_secondary, 0);
 
@@ -1496,7 +1485,7 @@ static void opendev_init(void)
 
     /* Server modal */
     modal_srv = lv_obj_create(screen);
-    lv_obj_set_size(modal_srv, 480, 210);
+    lv_obj_set_size(modal_srv, 560, 262);
     lv_obj_align(modal_srv, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(modal_srv, p->surface, 0);
     lv_obj_set_style_border_color(modal_srv, p->accent_primary, 0);
@@ -1513,9 +1502,10 @@ static void opendev_init(void)
 
     /* Row 1: Host (320px) + Port (120px) */
     ta_host = lv_textarea_create(modal_srv);
-    lv_textarea_set_placeholder_text(ta_host, "Host or openchamber:// URI");
+    lv_textarea_set_placeholder_text(ta_host, "https://host.tail1234.ts.net  or  http://10.0.0.5:4096");
     lv_textarea_set_one_line(ta_host, true);
-    lv_obj_set_size(ta_host, 320, 36);
+    lv_textarea_set_max_length(ta_host, OPENDEV_URL_MAX - 1);
+    lv_obj_set_size(ta_host, 528, 36);
     lv_obj_set_pos(ta_host, 0, 32);
     lv_obj_set_style_bg_color(ta_host, p->code_bg, 0);
     lv_obj_set_style_text_color(ta_host, p->text_primary, 0);
@@ -1541,12 +1531,14 @@ static void opendev_init(void)
     lv_obj_add_event_cb(ta_port, srv_ta_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(ta_port, srv_ta_click_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(ta_port, srv_ta_click_cb, LV_EVENT_FOCUSED, NULL);
+    lv_obj_add_flag(ta_port, LV_OBJ_FLAG_HIDDEN);              /* the port is part of the URL now */
 
     /* Row 2: Token (290px) + Scan QR button (150px) */
     ta_token = lv_textarea_create(modal_srv);
-    lv_textarea_set_placeholder_text(ta_token, "Token (optional, for Chamber)");
+    lv_textarea_set_placeholder_text(ta_token, "Password (OpenChamber only, not stored)");
     lv_textarea_set_one_line(ta_token, true);
-    lv_obj_set_size(ta_token, 290, 36);
+    lv_textarea_set_password_mode(ta_token, true);
+    lv_obj_set_size(ta_token, 370, 36);
     lv_obj_set_pos(ta_token, 0, 76);
     lv_obj_set_style_bg_color(ta_token, p->code_bg, 0);
     lv_obj_set_style_text_color(ta_token, p->text_primary, 0);
@@ -1560,7 +1552,7 @@ static void opendev_init(void)
 
     btn_scan_qr = lv_button_create(modal_srv);
     lv_obj_set_size(btn_scan_qr, 150, 36);
-    lv_obj_set_pos(btn_scan_qr, 298, 76);
+    lv_obj_set_pos(btn_scan_qr, 378, 76);
     lv_obj_set_style_bg_color(btn_scan_qr, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_scan_qr, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_scan_qr, 1, 0);
@@ -1571,22 +1563,30 @@ static void opendev_init(void)
     lv_obj_center(lbl_scan_qr);
     lv_obj_set_style_text_color(lbl_scan_qr, p->text_primary, 0);
 
+    lbl_srv_hint = lv_label_create(modal_srv);
+    lv_obj_set_pos(lbl_srv_hint, 0, 122);
+    lv_obj_set_width(lbl_srv_hint, 528);
+    lv_label_set_long_mode(lbl_srv_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(lbl_srv_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_srv_hint, p->text_secondary, 0);
+    lv_label_set_text(lbl_srv_hint, "");
+
     /* Row 3: Save & Cancel */
     lv_obj_t *btn_srv_save = lv_button_create(modal_srv);
     lv_obj_set_size(btn_srv_save, 130, 34);
-    lv_obj_set_pos(btn_srv_save, 190, 126);
+    lv_obj_set_pos(btn_srv_save, 270, 180);
     lv_obj_set_style_bg_color(btn_srv_save, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_srv_save, 4, 0);
     lv_obj_add_event_cb(btn_srv_save, srv_save_cb, LV_EVENT_CLICKED, NULL);
     lbl_srv_save = lv_label_create(btn_srv_save);
-    lv_label_set_text(lbl_srv_save, LV_SYMBOL_OK " Save");
+    lv_label_set_text(lbl_srv_save, LV_SYMBOL_OK " Connect");
     lv_obj_center(lbl_srv_save);
     lv_obj_set_style_text_color(lbl_srv_save,
         devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
 
     lv_obj_t *btn_srv_cancel = lv_button_create(modal_srv);
     lv_obj_set_size(btn_srv_cancel, 118, 34);
-    lv_obj_set_pos(btn_srv_cancel, 330, 126);
+    lv_obj_set_pos(btn_srv_cancel, 410, 180);
     lv_obj_set_style_bg_color(btn_srv_cancel, p->surface, 0);
     lv_obj_set_style_border_color(btn_srv_cancel, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_srv_cancel, 1, 0);

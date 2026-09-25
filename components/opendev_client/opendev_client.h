@@ -33,6 +33,7 @@ typedef enum {
     OPENDEV_DOWN = 0,         /* no SSE link */
     OPENDEV_CONNECTING,       /* TCP handshake in flight */
     OPENDEV_UP,               /* SSE live */
+    OPENDEV_LOGIN,            /* OpenChamber: password needed (opendev_client_login) */
 } opendev_status_t;
 
 typedef enum {
@@ -51,7 +52,8 @@ typedef enum {
 #define OPENDEV_ID_MAX 64
 #define OPENDEV_TITLE_MAX 96
 #define OPENDEV_BLOCK_MAX 4096
-#define OPENDEV_HOST_MAX 64
+#define OPENDEV_HOST_MAX 96
+#define OPENDEV_URL_MAX 160
 #define OPENDEV_TOKEN_MAX 128
 #define OPENDEV_DIFF_MAX 65536
 #define OPENDEV_DIFF_FILES 32
@@ -97,7 +99,16 @@ uint32_t opendev_client_diff_generation(void);     /* diff text changed */
 bool opendev_client_loading(void);          /* REST requests in flight */
 bool opendev_client_messages_loading(void); /* the active session is (re)loading */
 
-/* Server config (persisted: NVS on target, JSON file in sim) */
+/* Server config (persisted: NVS on target, JSON file in sim).
+ * Preferred: opendev_client_connect_url("https://box.tail1234.ts.net", pw)
+ * or ("http://10.0.0.5:4096", NULL). OpenChamber vs `opencode serve` is
+ * detected; for OpenChamber the password is exchanged once for a device token
+ * (only the token is stored). */
+int opendev_client_connect_url(const char *url, const char *password);
+void opendev_client_get_url(char *out, size_t len);
+bool opendev_client_needs_login(void);
+int opendev_client_login(const char *password);
+int opendev_client_sign_out(void);
 void opendev_client_get_config(char *host, size_t host_len, int *port,
                                opendev_mode_t *mode, char *token, size_t token_len);
 int opendev_client_set_server(const char *host, int port);
