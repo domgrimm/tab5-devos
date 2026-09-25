@@ -12,7 +12,7 @@ if(DEFINED ENV{IDF_PATH} AND NOT DEVOS_SIMULATOR)
     #    COMPONENTS, so hide the manifests that pull in esp_hosted/esp_wifi_remote
     #    (devos_net) and libssh2 (libssh2_port) from the component manager.
     #  - sdkconfig.displaytest: 256 KB L2 cache + smaller LVGL pool (test only).
-    set(DEVOS_DISPLAY_TEST 1)
+    set(DEVOS_DISPLAY_TEST 0)
     if(DEVOS_DISPLAY_TEST)
         set(COMPONENTS main)
         set(EXCLUDE_COMPONENTS devos_net libssh2_port)
