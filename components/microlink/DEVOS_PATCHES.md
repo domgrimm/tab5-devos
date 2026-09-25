@@ -22,5 +22,16 @@ devOS talks to it only through `components/devos_tailnet`.
 3. `CMakeLists.txt`: `-Wno-stringop-truncation`. GCC 14 (ESP-IDF 5.4) turns
    upstream's bounded strncpy() copies into errors; GCC 13 did not.
 
+4. Nearest DERP region (`src/ml_stun.c` `ml_stun_pick_derp_region`,
+   `src/ml_coord.c`, `src/microlink.c`, `derp_measured_region` in
+   `include/microlink_internal.h`). Upstream always asked to be homed on
+   region 9 (Dallas). A peer can only be relayed through its own home
+   region, so from Australia every peer homed on Sydney answered
+   "DERP PeerGone" and was unreachable unless a direct UDP path happened to
+   work. Now, once per boot after the DERPMap arrives, one STUN binding
+   request goes to every region from a private socket; the fastest region
+   becomes the home region and the PreferredDERP sent to control (and is
+   kept in NVS `microlink/derp_pref` so the next boot registers with it).
+
 Everything else is upstream as-is (cellular, network switching and the HTTP
 config server stay disabled in Kconfig).

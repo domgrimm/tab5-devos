@@ -47,7 +47,7 @@ typedef enum {
     OPENDEV_KIND_TOOL
 } opendev_kind_t;
 
-#define OPENDEV_MAX_SESSIONS 8
+#define OPENDEV_MAX_SESSIONS 60
 #define OPENDEV_MAX_BLOCKS 64
 #define OPENDEV_ID_MAX 64
 #define OPENDEV_TITLE_MAX 96
@@ -63,6 +63,7 @@ typedef struct {
     char title[OPENDEV_TITLE_MAX];
     char model[OPENDEV_TITLE_MAX];
     bool busy;
+    long long updated;   /* last activity, ms since the epoch (0 = unknown) */
 } opendev_session_t;
 
 typedef struct {

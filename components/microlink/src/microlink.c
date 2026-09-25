@@ -64,6 +64,12 @@ static esp_err_t load_or_generate_keys(microlink_t *ml) {
     size_t key_len = 32;
     bool need_save = false;
 
+    /* devOS: nearest DERP region measured on an earlier boot */
+    uint16_t derp_pref = 0;
+    if (nvs_get_u16(nvs, "derp_pref", &derp_pref) == ESP_OK && derp_pref > 0) {
+        ml->derp_measured_region = derp_pref;
+    }
+
     /* Machine key */
     if (nvs_get_blob(nvs, NVS_KEY_MACHINE_PRI, ml->machine_private_key, &key_len) != ESP_OK) {
         generate_keypair(ml->machine_private_key, ml->machine_public_key);

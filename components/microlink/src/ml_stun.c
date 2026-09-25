@@ -19,6 +19,7 @@
 #include "esp_crc.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <errno.h>
 
@@ -347,6 +348,93 @@ esp_err_t ml_stun_send_probe_to(microlink_t *ml, uint32_t server_ip, uint16_t po
     microlink_ip_to_str(server_ip, ip_str);
     ESP_LOGI(TAG, "STUN probe sent to %s:%u (%d bytes)", ip_str, port, (int)req_len);
     return ESP_OK;
+}
+
+/* ============================================================================
+ * devOS: nearest DERP region (like Tailscale's netcheck)
+ *
+ * Upstream always prefers region 9 (Dallas). Peers can only be relayed
+ * through the region they are homed on, and a tailnet's devices usually sit
+ * on the region nearest to them, so a far-away home makes every relayed peer
+ * unreachable ("PeerGone"). One binding request per region from a private
+ * socket (not seen by the net_io task); the fastest answer wins.
+ * ========================================================================== */
+
+uint16_t ml_stun_pick_derp_region(microlink_t *ml, int timeout_ms, int *best_ms) {
+    if (ml->derp_region_count == 0) return 0;
+    int sock = ml_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) return 0;
+    int flags = ml_fcntl(sock, F_GETFL, 0);
+    ml_fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+    struct {
+        uint8_t txid[12];
+        uint16_t region;
+        int64_t sent_us;
+        bool done;
+    } probes[ML_MAX_DERP_REGIONS];
+    int sent = 0;
+    for (int i = 0; i < ml->derp_region_count && sent < ML_MAX_DERP_REGIONS; i++) {
+        const ml_derp_region_t *r = &ml->derp_regions[i];
+        if (r->avoid) continue;
+        for (int k = 0; k < r->node_count; k++) {
+            unsigned a, b, c, d;
+            if (sscanf(r->nodes[k].ipv4, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) continue;
+            struct sockaddr_in to = {
+                .sin_family = AF_INET,
+                .sin_port = htons(r->nodes[k].stun_port ? r->nodes[k].stun_port : 3478),
+                .sin_addr.s_addr = htonl((a << 24) | (b << 16) | (c << 8) | d),
+            };
+            uint8_t req[STUN_REQUEST_SIZE];
+            size_t len = build_stun_request(req, probes[sent].txid);
+            probes[sent].region = r->region_id;
+            probes[sent].done = false;
+            probes[sent].sent_us = esp_timer_get_time();
+            if (ml_sendto(sock, req, len, 0, (struct sockaddr *)&to, sizeof(to)) == (int)len) sent++;
+            break;  /* one node per region is enough */
+        }
+    }
+
+    uint16_t best = 0;
+    int64_t best_us = INT64_MAX;
+    int answered = 0;
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (answered < sent) {
+        int64_t left = deadline - esp_timer_get_time();
+        if (left <= 0) break;
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(sock, &rd);
+        struct timeval tv = { .tv_sec = (time_t)(left / 1000000), .tv_usec = (suseconds_t)(left % 1000000) };
+        if (ml_select_fds(sock + 1, &rd, NULL, NULL, &tv) <= 0) break;
+        uint8_t buf[256];
+        int got;
+        while ((got = ml_recvfrom(sock, buf, sizeof(buf), 0, NULL, NULL)) >= STUN_HEADER_SIZE) {
+            int64_t now = esp_timer_get_time();
+            if (((buf[0] << 8) | buf[1]) != STUN_BINDING_RESPONSE) continue;
+            for (int i = 0; i < sent; i++) {
+                if (probes[i].done || memcmp(buf + 8, probes[i].txid, 12) != 0) continue;
+                probes[i].done = true;
+                answered++;
+                int64_t rtt = now - probes[i].sent_us;
+                ESP_LOGD(TAG, "DERP region %u: %lld ms", probes[i].region, rtt / 1000);
+                if (rtt < best_us) {
+                    best_us = rtt;
+                    best = probes[i].region;
+                }
+                break;
+            }
+        }
+    }
+    ml_close_sock(sock);
+    if (best) {
+        ESP_LOGI(TAG, "Nearest DERP region: %u (%lld ms, %d of %d regions answered)", best,
+                 best_us / 1000, answered, sent);
+        if (best_ms) *best_ms = (int)(best_us / 1000);
+    } else {
+        ESP_LOGW(TAG, "DERP latency probe: no region answered (%d probed)", sent);
+    }
+    return best;
 }
 
 /* ============================================================================
