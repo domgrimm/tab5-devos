@@ -74,6 +74,9 @@ int microlink_connect(void);
 int microlink_disconnect(void);
 microlink_state_t microlink_get_state(void);
 int microlink_get_status(microlink_status_t *out_status);
+/* MagicDNS-style lookup of a tailnet host name (node or peer) without copying
+ * the ~4 KB status struct. Returns 0 and fills out_ip when connected and found. */
+int microlink_resolve(const char *name, char *out_ip, size_t out_len);
 
 /* Diagnostics & Controls */
 int microlink_ping_derp(int *out_ping_ms);

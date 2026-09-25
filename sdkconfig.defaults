@@ -88,6 +88,11 @@ CONFIG_LV_FONT_UNSCII_8=y
 # PSRAM pools to LVGL at boot, so keep only a small fast internal pool here:
 # at 256 KB it alone left < 120 KB internal RAM for mbedTLS / SSH / Wi-Fi.
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# LVGL's TLSF sizes its index from LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE, which
+# caps both the pools that can be added AND the largest single lv_malloc().
+# With a 64 KB pool alone that cap is 64 KB, and the 8 MB PSRAM pool main.c
+# adds is rejected. Raise the cap without growing the static internal pool.
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=8192
 CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 

@@ -242,7 +242,8 @@ static void sample(snapshot_t *n, uint32_t tick)
     if (tick % 5 == 0) devos_net_wifi_refresh_rssi();
     devos_net_wifi_get_status(&n->wifi);
 
-    microlink_status_t ms;
+    /* ~4 KB (16 peers): static, never on this task's stack. sysmon-only. */
+    static microlink_status_t ms;
     n->ts_online = microlink_get_status(&ms) == 0 && ms.state == MICROLINK_STATE_CONNECTED;
     if (n->ts_online) {
         snprintf(n->ts_ip, sizeof(n->ts_ip), "%.19s", ms.assigned_ip);
@@ -329,7 +330,8 @@ void devos_sysmon_init(void)
 
     s_lock = xSemaphoreCreateMutex();
     memset(&s_snap, 0, sizeof(s_snap));
-    xTaskCreatePinnedToCore(sysmon_task, "sysmon", 4096, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
+    /* Headroom for the ESP-Hosted RPC (RSSI) and FATFS free-space scan. */
+    xTaskCreatePinnedToCore(sysmon_task, "sysmon", 6144, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
 }
 
 void devos_sysmon_apply(void)

@@ -354,21 +354,15 @@ static void devos_boot_task(void *arg)
     lv_log_register_print_cb(lvgl_log_cb);
 #endif
 
-    /* Allocate 8 MB from external PSRAM to expand LVGL memory pool (Rule 2) */
+    /* Give LVGL 8 MB of PSRAM as ONE pool (Rule 2), so large allocations
+     * (layers, big labels) can be contiguous. Needs the TLSF cap raised via
+     * CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES (sdkconfig.defaults). */
     size_t lv_pool_size = 8 * 1024 * 1024;
     uint8_t *lv_psram_pool = (uint8_t *)heap_caps_malloc(lv_pool_size, MALLOC_CAP_SPIRAM);
-    if (lv_psram_pool) {
-        size_t chunk_size = 250 * 1024;
-        int pools_added = 0;
-        for (size_t offset = 0; offset + chunk_size <= lv_pool_size; offset += chunk_size) {
-            if (lv_mem_add_pool(lv_psram_pool + offset, chunk_size)) {
-                pools_added++;
-            }
-        }
-        printf("[devOS] Added %d PSRAM memory pools (%zu KB total) to LVGL\n",
-               pools_added, (pools_added * chunk_size) / 1024);
+    if (lv_psram_pool && lv_mem_add_pool(lv_psram_pool, lv_pool_size)) {
+        printf("[devOS] Added %zu KB PSRAM pool to LVGL\n", lv_pool_size / 1024);
     } else {
-        printf("[devOS] Warning: Failed to allocate 8MB PSRAM pool for LVGL\n");
+        printf("[devOS] Warning: failed to add the 8 MB PSRAM pool to LVGL\n");
     }
 
     lv_tick_set_cb(esp_tick_get_cb);

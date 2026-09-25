@@ -988,27 +988,9 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
         return 0;
     }
 
-    /* 2. MagicDNS lookup via MicroLink peer table */
-    microlink_status_t ml_status;
-    if (microlink_get_status(&ml_status) == 0 && ml_status.state == MICROLINK_STATE_CONNECTED) {
-        /* Check local node */
-        if (strcasecmp(hostname, "devos") == 0 ||
-            strcasecmp(hostname, ml_status.node_name) == 0 ||
-            strcasecmp(hostname, "devos.tailnet") == 0) {
-            snprintf(out_ip, out_len, "%s", ml_status.assigned_ip);
-            out_ip[out_len - 1] = '\0';
-            return 0;
-        }
-
-        /* Check peers */
-        for (int i = 0; i < ml_status.peer_count; i++) {
-            if (strcasecmp(hostname, ml_status.peers[i].name) == 0 ||
-                strcasecmp(hostname, ml_status.peers[i].fqdn) == 0) {
-                snprintf(out_ip, out_len, "%s", ml_status.peers[i].ip);
-                out_ip[out_len - 1] = '\0';
-                return 0;
-            }
-        }
+    /* 2. MagicDNS lookup via MicroLink (only while the tailnet is up). */
+    if (microlink_resolve(hostname, out_ip, out_len) == 0) {
+        return 0;
     }
 
     /* 3. Fall back to standard DNS resolution */
