@@ -4,7 +4,7 @@
 #include "devos_config.h"
 #include "devos_net.h"
 #include "devos_storage.h"
-#include "microlink.h"
+#include "devos_tailnet.h"
 #include "bsp_tab5.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -244,16 +244,13 @@ static void sample(snapshot_t *n, uint32_t tick)
     if (tick % 5 == 0) devos_net_wifi_refresh_rssi();
     devos_net_wifi_get_status(&n->wifi);
 
-    /* ~4 KB (16 peers): static, never on this task's stack. sysmon-only. */
-    static microlink_status_t ms;
-    n->ts_online = microlink_get_status(&ms) == 0 && ms.state == MICROLINK_STATE_CONNECTED;
+    static devos_ts_info_t ts;             /* sysmon task only */
+    devos_tailnet_get_info(&ts);
+    n->ts_online = ts.state == DEVOS_TS_CONNECTED && ts.ip[0];
     if (n->ts_online) {
-        snprintf(n->ts_ip, sizeof(n->ts_ip), "%.19s", ms.assigned_ip);
-        snprintf(n->ts_derp, sizeof(n->ts_derp), "%.19s", ms.derp_relay_name);
-        n->ts_peers = 0;
-        for (int i = 0; i < ms.peer_count; i++) {
-            if (ms.peers[i].is_online) n->ts_peers++;
-        }
+        snprintf(n->ts_ip, sizeof(n->ts_ip), "%.19s", ts.ip);
+        snprintf(n->ts_derp, sizeof(n->ts_derp), "%.19s", ts.derp);
+        n->ts_peers = (uint8_t)devos_tailnet_peer_count();
     } else {
         n->ts_ip[0] = n->ts_derp[0] = '\0';
         n->ts_peers = 0;
@@ -405,6 +402,12 @@ void devos_sysmon_apply(void)
     t.wifi_connected = w.state == DEVOS_WIFI_STATE_CONNECTED;
     snprintf(t.wifi_ssid, sizeof(t.wifi_ssid), "%s", w.ssid);
     t.wifi_rssi = w.rssi;
+    devos_ts_info_t ts;
+    devos_tailnet_get_info(&ts);
+    t.tailscale_online = ts.state == DEVOS_TS_CONNECTED && ts.ip[0];
+    snprintf(t.tailscale_ip, sizeof(t.tailscale_ip), "%.19s", t.tailscale_online ? ts.ip : "");
+    snprintf(t.tailscale_derp, sizeof(t.tailscale_derp), "%.19s", t.tailscale_online ? ts.derp : "");
+    t.tailscale_peers_online = t.tailscale_online ? (uint8_t)ts.peer_count : 0;
     t.uptime_s = (uint32_t)(time(NULL) - s_boot);
     fill_time(&t);
     devos_telemetry_update(&t);

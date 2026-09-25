@@ -41,7 +41,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
         ${CMAKE_CURRENT_SOURCE_DIR}/components/bsp_tab5
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
-        ${CMAKE_CURRENT_SOURCE_DIR}/components/microlink
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_tailnet
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_sysmon
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
@@ -79,7 +79,7 @@ else()
         components/quirc/identify.c
         components/quirc/version_db.c
         components/tab5_keyboard/tab5_keyboard.c
-        components/microlink/microlink.c
+        components/devos_tailnet/devos_tailnet.c
         components/devos_net/devos_net.c
         components/devos_sysmon/devos_sysmon.c
         components/libssh2_port/libssh2_port.c

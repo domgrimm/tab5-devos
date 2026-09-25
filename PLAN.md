@@ -530,14 +530,16 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >
 > **Real now:** display (flicker fixed: IDF < 5.5.3 DSI timing backport), touch, keyboard
 > (Normal mode, Sym shortcuts), Wi-Fi manager + Settings UI, live battery/RTC/NTP/SD/heap/CPU
-> telemetry, backlight dimming/sleep, theme persistence, SD long filenames, OpenCode REST client.
+> telemetry, backlight dimming/sleep, theme persistence, SD long filenames, OpenCode REST client,
+> SSH client (libssh2: known_hosts TOFU, password/key/on-device ECDSA key, keepalive) with a
+> VT100/xterm-256color terminal (`devos_vterm`), Tailscale client (vendored MicroLink v2 via
+> `devos_tailnet`: ts2021, WireGuard netif for 100.64/10, DERP, DISCO; auth-key enrolment).
 >
 > **Stub / fake / missing on hardware (backlog, roughly in priority order):**
-> 1. SSH: no password field (always empty password), Ed25519 unsupported by the mbedTLS libssh2
->    build, no known_hosts check (MITM), no keepalive; dead session slots after errors.
-> 2. Terminal: not a VT100 (escape codes stripped, proportional font, no cursor addressing), wrong
->    row count, background session output dropped.
-> 3. Tailscale: no client at all (MicroLink was a mock; now reports "not available").
+> 1. SSH: Ed25519 keys unsupported (libssh2 mbedTLS backend); use the device key or RSA/ECDSA PEM.
+> 2. Tailscale: no interactive (browser) login yet, auth key only; DERP TLS certificates are not
+>    verified by MicroLink (traffic is WireGuard-encrypted end to end regardless).
+> 3. (was: Terminal) done.
 > 4. OTA: flashing is a no-op (DEVOS_OTA_HTTPS undefined), no checksum, blocks the UI, allows downgrades.
 > 5. OpenCode SSE likely never dispatches (expects `event:` lines); diff pane shows raw JSON;
 >    REST calls block the UI up to 4 s.

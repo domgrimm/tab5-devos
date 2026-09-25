@@ -1,6 +1,7 @@
 #include "libssh2_port.h"
 #include <stdarg.h>
 #include "devos_config.h"
+#include "devos_core.h"
 #include "devos_net.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -326,8 +327,11 @@ static void ssh_session_task(void *arg)
     s->state = SSH_SESSION_CONNECTING;
     int fd = devos_net_socket_connect(s->host, s->port, 10000);
     if (fd < 0) {
-        set_error(s, "Could not reach %.60s:%d (network or host down?)",
-                 s->host, s->port);
+        if (devos_net_is_tailnet_target(s->host) && !devos_telemetry_get()->tailscale_online) {
+            set_error(s, "%.60s is a tailnet address, but Tailscale is not connected", s->host);
+        } else {
+            set_error(s, "Could not reach %.60s:%d (network or host down?)", s->host, s->port);
+        }
         ESP_LOGE(TAG, "ssh %d: %s", s->id, s->last_error);
         goto cleanup;
     }
