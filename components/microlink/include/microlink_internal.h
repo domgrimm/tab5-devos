@@ -530,6 +530,8 @@ int ml_h2_build_window_update(uint8_t *out, size_t out_size,
 esp_err_t ml_peer_nvs_init(void);
 void ml_peer_nvs_deinit(void);
 esp_err_t ml_peer_nvs_save(const ml_peer_t *peer);
+/* devOS: write the peer cache if it changed and has been quiet for idle_ms. */
+esp_err_t ml_peer_nvs_flush_if_idle(int idle_ms);
 int ml_peer_nvs_load_all(ml_peer_t *peers, int max_peers);
 esp_err_t ml_peer_nvs_clear(void);
 

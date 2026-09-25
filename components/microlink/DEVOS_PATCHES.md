@@ -35,5 +35,13 @@ devOS talks to it only through `components/devos_tailnet`.
    connects) and is not stored in NVS: an earlier version wrote it to flash
    from that task and the device hard-reset once.
 
+5. `src/ml_peer_nvs.c`: `ml_peer_nvs_save()` no longer writes the whole
+   peer table to flash (and commits) for every peer added: that was 24
+   flash writes in a burst from the WG task at every boot. It updates the
+   RAM table; `ml_peer_nvs_flush_if_idle()` writes it once it has been
+   quiet for 20 s, called by devos_tailnet from the UI task. Two hard
+   watchdog resets happened during flash writes from core 0 while the UI
+   was busy; UI-core flash writes (settings) never did.
+
 Everything else is upstream as-is (cellular, network switching and the HTTP
 config server stay disabled in Kconfig).

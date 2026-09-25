@@ -86,6 +86,9 @@ uint32_t devos_tailnet_generation(void);
 
 /* ICMP echo to a peer through the tunnel; result lands in peer.ping_ms. */
 int  devos_tailnet_ping(int peer_index);
+/* Call about once a second from the UI task: saves the peer cache to flash
+ * once it has settled (flash writes stay on the UI core). */
+void devos_tailnet_housekeeping(void);
 
 /* MagicDNS: "box" or "box.tail1234.ts.net" -> "100.x.y.z" (connected only). */
 int  devos_tailnet_resolve(const char *name, char *out_ip, size_t out_len);

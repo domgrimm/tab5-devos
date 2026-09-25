@@ -37,6 +37,11 @@ static lv_obj_t *btn_model = NULL, *lbl_model_btn = NULL;
 static lv_obj_t *modal_models = NULL, *lbl_models_title = NULL, *models_list = NULL;
 static lv_obj_t *model_rows[OPENDEV_MAX_MODELS];
 static int s_models_sel = 0, s_models_built = -1;
+/* Project groups start collapsed; a tap on the project name toggles it. */
+#define GROUPS_MAX 32
+static char s_expanded[GROUPS_MAX][64];
+static int s_expanded_n = 0;
+static char s_group_names[GROUPS_MAX][64];
 static lv_obj_t *sess_list = NULL;          /* scrolling list of every conversation */
 static int s_sess_rows = 0;                 /* rows created so far (grown on demand) */
 static int s_sess_shown_active = -2;
@@ -592,6 +597,7 @@ static void refresh_meta(void)
     }
     time_t now = time(NULL);
     for (int i = 0; i < s_sess_rows; i++) {
+        if (!sess_btns[i]) continue;                /* its project is collapsed */
         const opendev_session_t *s = opendev_client_session(i);
         char age[24] = "";
         long long secs = (s->updated > 946684800000LL && now > 1700000000) ? (long long)now - s->updated / 1000 : -1;
@@ -617,7 +623,7 @@ static void refresh_meta(void)
     }
     if (active != s_sess_shown_active) {        /* keep the open conversation in view */
         s_sess_shown_active = active;
-        if (active >= 0 && active < s_sess_rows) lv_obj_scroll_to_view(sess_btns[active], LV_ANIM_OFF);
+        if (active >= 0 && active < s_sess_rows && sess_btns[active]) lv_obj_scroll_to_view(sess_btns[active], LV_ANIM_OFF);
     }
 
     if (lbl_info) {
@@ -684,28 +690,82 @@ static void refresh_all(void)
 /* ---------------------------------------------------------------- lists */
 static void sess_row_create(int i);
 
-/* Conversations grouped by project: a header, then its sessions. */
+static bool group_expanded(const char *name)
+{
+    for (int i = 0; i < s_expanded_n; i++) {
+        if (strcmp(s_expanded[i], name) == 0) return true;
+    }
+    return false;
+}
+
+static void group_toggle(const char *name)
+{
+    for (int i = 0; i < s_expanded_n; i++) {
+        if (strcmp(s_expanded[i], name) == 0) {
+            memmove(s_expanded[i], s_expanded[i + 1], (size_t)(s_expanded_n - 1 - i) * sizeof(s_expanded[0]));
+            s_expanded_n--;
+            return;
+        }
+    }
+    if (s_expanded_n < GROUPS_MAX) snprintf(s_expanded[s_expanded_n++], sizeof(s_expanded[0]), "%s", name);
+}
+
+static void group_hdr_cb(lv_event_t *e)
+{
+    int g = (int)(intptr_t)lv_event_get_user_data(e);
+    if (g < 0 || g >= GROUPS_MAX) return;
+    group_toggle(s_group_names[g]);
+    s_sess_built_gen = UINT32_MAX;          /* rebuild on the next refresh */
+    refresh_all();
+}
+
+/* Conversations grouped by project: a header (tap to show/hide), then its
+ * sessions when the project is expanded. */
 static void sess_list_rebuild(void)
 {
     const devos_palette_t *p = devos_theme_get();
     lv_obj_clean(sess_list);
+    memset(sess_btns, 0, sizeof(sess_btns));
+    memset(sess_lbls, 0, sizeof(sess_lbls));
+    memset(sess_meta, 0, sizeof(sess_meta));
     s_sess_rows = 0;
     s_sess_shown_active = -2;
     int n = opendev_client_session_count();
+    int ng = 0;
+    bool open_group = true;
     for (int i = 0; i < n && i < OPENDEV_SESS_BTNS; i++) {
         const opendev_session_t *s = opendev_client_session(i);
-        if (s->group_start && s->project[0]) {
-            lv_obj_t *h = lv_label_create(sess_list);
-            char t[96];
-            snprintf(t, sizeof(t), LV_SYMBOL_DIRECTORY "  %s", s->project);
-            lv_label_set_text(h, t);
-            lv_obj_set_width(h, lv_pct(100));
-            lv_label_set_long_mode(h, LV_LABEL_LONG_DOT);
-            lv_obj_set_style_text_font(h, &lv_font_montserrat_12, 0);
-            lv_obj_set_style_text_color(h, p->accent_secondary, 0);
-            lv_obj_set_style_pad_top(h, i ? 8 : 0, 0);
+        if (s->group_start && s->project[0] && ng < GROUPS_MAX) {
+            /* count + busy flag for the header */
+            int cnt = 0;
+            bool busy = false;
+            for (int k = i; k < n; k++) {
+                const opendev_session_t *o = opendev_client_session(k);
+                if (k > i && o->group_start) break;
+                cnt++;
+                busy |= o->busy;
+            }
+            snprintf(s_group_names[ng], sizeof(s_group_names[0]), "%s", s->project);
+            open_group = group_expanded(s->project);
+            lv_obj_t *h = lv_obj_create(sess_list);
+            lv_obj_remove_style_all(h);
+            lv_obj_set_size(h, lv_pct(100), 30);
+            lv_obj_set_style_pad_top(h, 4, 0);
+            lv_obj_add_flag(h, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(h, group_hdr_cb, LV_EVENT_CLICKED, (void *)(intptr_t)ng);
+            lv_obj_t *l = lv_label_create(h);
+            char t[120];
+            snprintf(t, sizeof(t), "%s  %s  (%d)%s", open_group ? LV_SYMBOL_DOWN : LV_SYMBOL_RIGHT, s->project, cnt,
+                     busy ? "  " LV_SYMBOL_BULLET : "");
+            lv_label_set_text(l, t);
+            lv_obj_set_width(l, lv_pct(100));
+            lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+            lv_obj_align(l, LV_ALIGN_LEFT_MID, 2, 0);
+            lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(l, busy ? p->accent_secondary : p->text_primary, 0);
+            ng++;
         }
-        sess_row_create(i);
+        if (open_group) sess_row_create(i);     /* collapsed: no row (sess_btns[i] stays NULL) */
         s_sess_rows++;
     }
     s_sess_built_gen = opendev_client_sessions_generation();
