@@ -367,7 +367,7 @@ uint16_t ml_stun_pick_derp_region(microlink_t *ml, int timeout_ms, int *best_ms)
     int flags = ml_fcntl(sock, F_GETFL, 0);
     ml_fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 
-    struct {
+    static struct {   /* static: keeps the caller's (deep) stack small */
         uint8_t txid[12];
         uint16_t region;
         int64_t sent_us;

@@ -22,7 +22,6 @@
  */
 
 #include "microlink_internal.h"
-#include "nvs.h"
 #include "x25519.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -63,18 +62,11 @@ typedef enum {
  * ========================================================================== */
 
 /* devOS: the region we ask to be homed on — the nearest one once measured
- * (remembered across boots), upstream's default before that. */
+ * this boot, upstream's default before that. (Not saved to NVS: a flash
+ * write from this task coincided with a hard watchdog reset, and the probe
+ * runs before DERP connects anyway.) */
 static uint16_t preferred_derp(const microlink_t *ml) {
     return ml->derp_measured_region ? ml->derp_measured_region : ML_DERP_REGION;
-}
-
-static void save_measured_derp(uint16_t region) {
-    nvs_handle_t h;
-    if (nvs_open("microlink", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u16(h, "derp_pref", region);
-        nvs_commit(h);
-        nvs_close(h);
-    }
 }
 
 static void bytes_to_hex(const uint8_t *bytes, size_t len, char *hex) {
@@ -1817,19 +1809,6 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                 ml->derp_region_count++;
             }
             ESP_LOGI(TAG, "DERPMap: parsed %d regions", ml->derp_region_count);
-            /* devOS: home on the nearest region (once per boot, before DERP connects) */
-            static bool s_derp_probed = false;
-            if (!s_derp_probed && ml->derp_region_count > 0) {
-                s_derp_probed = true;
-                int ms = 0;
-                uint16_t nearest = ml_stun_pick_derp_region(ml, 1500, &ms);
-                if (nearest) {
-                    if (nearest != ml->derp_measured_region) save_measured_derp(nearest);
-                    ml->derp_measured_region = nearest;
-                    ml->derp_home_region = nearest;
-                    ESP_LOGI(TAG, "Home DERP region: %d (nearest, %d ms)", nearest, ms);
-                }
-            }
         }
     }
 
@@ -2187,6 +2166,8 @@ static int poll_map_update(microlink_t *ml, ml_noise_state_t *noise) {
  * Coordination Task Main Loop
  * ========================================================================== */
 
+static bool s_derp_probed = false;   /* devOS: nearest-region probe done this boot */
+
 void ml_coord_task(void *arg) {
     microlink_t *ml = (microlink_t *)arg;
     ESP_LOGI(TAG, "Coord task started (Core %d)", xPortGetCoreID());
@@ -2333,6 +2314,21 @@ void ml_coord_task(void *arg) {
                 ml->coord_sock = -1;
                 state = COORD_RECONNECTING;
                 break;
+            }
+
+            /* devOS: home on the nearest DERP region, once per boot, before DERP
+             * connects. Runs here at the top of the task, not inside the map
+             * parser: that path is already deep in stack (overflowed there). */
+            if (!s_derp_probed && ml->derp_region_count > 0) {
+                s_derp_probed = true;
+                int ms = 0;
+                uint16_t nearest = ml_stun_pick_derp_region(ml, 1500, &ms);
+                if (nearest) {
+                    ml->derp_measured_region = nearest;
+                    ml->derp_home_region = nearest;
+                    ESP_LOGI(TAG, "Home DERP region: %d (nearest, %d ms); coord stack free %u",
+                             nearest, ms, (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                }
             }
 
             xEventGroupSetBits(ml->events, ML_EVT_COORD_REGISTERED);

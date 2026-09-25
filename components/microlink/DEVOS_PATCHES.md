@@ -30,8 +30,10 @@ devOS talks to it only through `components/devos_tailnet`.
    "DERP PeerGone" and was unreachable unless a direct UDP path happened to
    work. Now, once per boot after the DERPMap arrives, one STUN binding
    request goes to every region from a private socket; the fastest region
-   becomes the home region and the PreferredDERP sent to control (and is
-   kept in NVS `microlink/derp_pref` so the next boot registers with it).
+   becomes the home region and the PreferredDERP sent to control. It runs
+   from the top of the coord task loop (after the peer fetch, before DERP
+   connects) and is not stored in NVS: an earlier version wrote it to flash
+   from that task and the device hard-reset once.
 
 Everything else is upstream as-is (cellular, network switching and the HTTP
 config server stay disabled in Kconfig).
