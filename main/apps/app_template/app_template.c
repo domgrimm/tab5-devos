@@ -108,7 +108,7 @@ static void template_init(void)
         "4. Never hardcode app IDs into closed enums or modify app_launcher.c.\n"
         "5. Register with devos_theme_add_listener() to support Dark & Light modes.\n"
         "6. Pin heavy network/crypto I/O to Core 0; keep UI interaction on Core 1.\n"
-        "7. Press [Fn + H] or [Esc] to return to Home Screen / App Launcher.");
+        "7. Press [Sym + H] or [Esc] to return to Home Screen / App Launcher.");
     lv_obj_set_pos(lbl_info_body, 0, 32);
     lv_obj_set_style_text_font(lbl_info_body, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_info_body, p->text_primary, 0);

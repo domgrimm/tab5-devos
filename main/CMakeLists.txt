@@ -33,6 +33,7 @@ idf_component_register(
         bsp_tab5
         tab5_keyboard
         devos_net
+        devos_sysmon
         microlink
         libssh2_port
         opendev_client

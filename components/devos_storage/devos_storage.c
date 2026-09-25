@@ -5,6 +5,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifndef ESP_PLATFORM
+#include <sys/statvfs.h>
+#endif
 
 #ifdef ESP_PLATFORM
 #include "esp_vfs_fat.h"
@@ -13,8 +16,8 @@
 #endif
 
 static bool storage_mounted = false;
-static uint32_t total_mb = 31200;
-static uint32_t free_mb = 29412;
+static uint32_t total_mb = 0;
+static uint32_t free_mb = 0;
 
 static const char *WELCOME_MD_CONTENT =
 "# Welcome to devOS on M5Stack Tab5!\n\n"
@@ -24,16 +27,20 @@ static const char *WELCOME_MD_CONTENT =
 "- **`Ctrl + N`**: Create new note (untitled-N.md)\n"
 "- **`Ctrl + O`**: Focus file list\n"
 "- **`Ctrl + P`**: Cycle Edit / Split / Preview views\n"
-"- **`Fn + [`**: Toggle file sidebar (fullscreen editing)\n"
+"- **`Sym + L`**: Toggle file sidebar (fullscreen editing)\n"
 "- **`Tab`**: Toggle focus between file list and editor\n\n"
 "## Global Keyboard Shortcuts\n\n"
-"- **`1` .. `6`**: Quick launch app from Home Screen\n"
-"- **`Fn + H`** or **`Esc`**: Global return to Home Screen\n"
-"- **`Fn + 1` .. `Fn + 6`**: Instant app switch from anywhere\n"
-"- **`Fn + T`**: Toggle Dark Cyberdeck / High-Contrast Light theme\n"
-"- **`Fn + F`**: Toggle Focus Mode in AI Agent & Antigravity views\n"
-"- **`Fn + [`**: Toggle Left Sidebar (Sessions, Subagents, Bookmarks)\n"
-"- **`Fn + ]`**: Toggle Right Inspector (Files, Diffs, Artifacts)\n"
+"The Tab5 keyboard has no Fn key: hold **`Sym`** for system shortcuts.\n"
+"Tap **`Aa`** for caps lock, hold it for Shift.\n\n"
+"- **`1` .. `8`**: Quick launch app from Home Screen\n"
+"- **`Sym + H`** or **`Esc`**: Global return to Home Screen (Esc goes to the remote shell in Terminal)\n"
+"- **`Sym + 1` .. `Sym + 8`**: Instant app switch from anywhere\n"
+"- **`Sym + T`**: Toggle Dark Cyberdeck / High-Contrast Light theme\n"
+"- **`Sym + -` / `Sym + +`**: Screen brightness\n"
+"- **`Sym + F`**: Toggle Focus Mode in AI Agent & Antigravity views\n"
+"- **`Sym + L`**: Toggle Left Sidebar (Sessions, Subagents, Bookmarks)\n"
+"- **`Sym + R`**: Toggle Right Inspector (Files, Diffs, Artifacts)\n"
+"- **`Sym + Up` / `Sym + Down`**: Page Up / Page Down\n"
 "- **`Alt + Tab`**: Switch to previous application\n\n"
 "## Hardware Quick Reference\n\n"
 "| Peripheral | Controller | Bus / Pins | Notes |\n"
@@ -180,8 +187,9 @@ bool devos_storage_init(void)
     if (ret == ESP_OK) {
         storage_mounted = true;
         total_mb = (uint32_t)(((uint64_t)card->csd.capacity) * card->csd.sector_size / (1024 * 1024));
-        free_mb = total_mb * 9 / 10;
         devos_storage_bootstrap(TAB5_SD_MOUNT_POINT);
+        /* Free space is filled in by devos_sysmon's background task: the first
+         * f_getfree() on a big card can take seconds, too long to block boot. */
         return true;
     }
     return false;
@@ -206,4 +214,30 @@ uint32_t devos_storage_get_total_mb(void)
 uint32_t devos_storage_get_free_mb(void)
 {
     return free_mb;
+}
+
+bool devos_storage_refresh_stats(void)
+{
+    if (!storage_mounted) {
+        free_mb = 0;
+        return false;
+    }
+#ifdef ESP_PLATFORM
+    /* May scan the FAT on the first call for a large card; call from a
+     * background task, never the GUI task. */
+    uint64_t total_bytes = 0, free_bytes = 0;
+    if (esp_vfs_fat_info(TAB5_SD_MOUNT_POINT, &total_bytes, &free_bytes) != ESP_OK) {
+        return false;
+    }
+    total_mb = (uint32_t)(total_bytes / (1024 * 1024));
+    free_mb = (uint32_t)(free_bytes / (1024 * 1024));
+#else
+    struct statvfs vfs;
+    if (statvfs(TAB5_SD_MOUNT_POINT, &vfs) != 0) {
+        return false;
+    }
+    total_mb = (uint32_t)(((uint64_t)vfs.f_blocks * vfs.f_frsize) / (1024 * 1024));
+    free_mb = (uint32_t)(((uint64_t)vfs.f_bavail * vfs.f_frsize) / (1024 * 1024));
+#endif
+    return true;
 }

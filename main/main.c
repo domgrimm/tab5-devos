@@ -9,6 +9,7 @@
 #include "bsp_tab5.h"
 #include "tab5_keyboard.h"
 #include "devos_net.h"
+#include "devos_sysmon.h"
 #include "microlink.h"
 #include "libssh2_port.h"
 
@@ -71,7 +72,7 @@ static void gui_task(void *arg)
 
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
         if (now != last_telemetry_tick) {
-            devos_telemetry_tick_sim();
+            devos_sysmon_apply();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
@@ -120,16 +121,14 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key('f', DEVOS_MOD_FN);
             return 0;
         }
-        if (sym == SDLK_F3 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_b) || sym == SDLK_LEFTBRACKET) {
-            /* Simulate Fn + [ */
-            if ((devos_mods & DEVOS_MOD_CTRL) || sym == SDLK_F3) {
-                devos_core_dispatch_key('[', DEVOS_MOD_FN);
-                return 0;
-            }
+        if (sym == SDLK_F3 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_LEFTBRACKET)) {
+            /* Simulate Sym + L (left sidebar) */
+            devos_core_dispatch_key('l', DEVOS_MOD_FN);
+            return 0;
         }
         if (sym == SDLK_F4 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_RIGHTBRACKET)) {
-            /* Simulate Fn + ] */
-            devos_core_dispatch_key(']', DEVOS_MOD_FN);
+            /* Simulate Sym + R (right inspector) */
+            devos_core_dispatch_key('r', DEVOS_MOD_FN);
             return 0;
         }
         if (sym == SDLK_F5 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_e)) {
@@ -220,6 +219,11 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
 }
 #endif
 
+static void power_backlight_cb(int percent)
+{
+    bsp_tab5_set_brightness((uint8_t)percent);
+}
+
 static void devos_system_bringup(void)
 {
     printf("\n==================================================\n");
@@ -247,8 +251,13 @@ static void devos_system_bringup(void)
     printf("[devOS] 5/8 Initializing Core Event Bus...\n");
     devos_core_init();
 
-    /* 5b. Power-mode state machine */
+    /* 5b. Power-mode state machine: drives the real backlight; touch and keys
+     * count as activity; Sym+-/+ step the brightness. */
     devos_power_init();
+    devos_power_set_backlight_cb(power_backlight_cb);
+    devos_power_load_prefs();
+    bsp_tab5_set_touch_activity_cb(devos_power_activity);
+    devos_core_set_brightness_step_cb(devos_power_step_brightness);
 
     /* 5c. OTA feed config */
     devos_ota_init();
@@ -256,6 +265,10 @@ static void devos_system_bringup(void)
     /* 6. Network & Transparent Socket Routing bring-up */
     printf("[devOS] 6/8 Initializing Network Stack...\n");
     devos_net_init();
+
+    /* 6b. System monitor: live battery/Wi-Fi/SD/memory/CPU telemetry and the
+     * wall clock (RTC at boot, NTP once online). */
+    devos_sysmon_init();
 
     /* 7. SSH & PTY Engine bring-up */
     printf("[devOS] 7/8 Initializing SSH Subsystem...\n");
@@ -293,10 +306,11 @@ static void devos_system_bringup(void)
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
+#ifndef ESP_PLATFORM
+    /* Placeholder tiles with invented telemetry: simulator only (exercises
+     * launcher pagination), never on real hardware. */
     printf("[devOS]   - Registering Demo Apps...\n");
     app_template_register_demo_apps();
-#ifdef ESP_PLATFORM
-    vTaskDelay(pdMS_TO_TICKS(10));
 #endif
     printf("[devOS]   - Registering Launcher...\n");
     devos_core_register_app(app_launcher_get_descriptor());
@@ -408,7 +422,7 @@ int main(int argc, char **argv)
 
         uint32_t now = SDL_GetTicks();
         if (now - last_telemetry_tick >= 1000) {
-            devos_telemetry_tick_sim();
+            devos_sysmon_apply();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();

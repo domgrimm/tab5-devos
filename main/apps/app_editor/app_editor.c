@@ -505,9 +505,9 @@ static void file_btn_cb(lv_event_t *e)
 
 static bool editor_handle_key(uint32_t key, uint8_t modifiers)
 {
-    /* Fullscreen editing: Fn + [ collapses the file tree; Fn + A attaches note to OpenDev */
+    /* Fullscreen editing: Sym + L collapses the file tree; Sym + A attaches note to OpenDev */
     if (modifiers & DEVOS_MOD_FN) {
-        if (key == '[') {
+        if (key == 'l' || key == 'L') {
             s_sidebar_visible = !s_sidebar_visible;
             if (!s_sidebar_visible) s_focus_list = false;
             apply_layout();

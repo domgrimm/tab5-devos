@@ -28,6 +28,12 @@ bool tab5_keyboard_get_key(uint32_t *key, uint8_t *modifiers);
 /* Get current modifier state */
 uint8_t tab5_keyboard_get_modifiers(void);
 
+/* Keyboard attached and answering on I2C (always true in the simulator). */
+bool tab5_keyboard_is_connected(void);
+
+/* Caps lock (tap Aa) state. */
+bool tab5_keyboard_caps_lock(void);
+
 #ifdef __cplusplus
 }
 #endif

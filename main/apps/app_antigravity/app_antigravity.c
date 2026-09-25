@@ -418,7 +418,7 @@ static void refresh_all(void)
     /* Center: status strip */
     if (lbl_strip) {
         snprintf(buf, sizeof(buf),
-                 "Bridge: %s%s  |  Fn+F Focus  |  Fn+[ Left  |  Fn+] Right",
+                 "Bridge: %s%s  |  Sym+F Focus  |  Sym+L Left  |  Sym+R Right",
                  agy_client_status_text(),
                  agy_client_busy() ? " (working)" : "");
         lv_label_set_text(lbl_strip, buf);
@@ -825,10 +825,10 @@ static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
         if (key == 'f' || key == 'F') {
             app_antigravity_toggle_focus();
             return true;
-        } else if (key == '[') {
+        } else if (key == 'l' || key == 'L') {      /* Sym+L: left sidebar */
             app_antigravity_toggle_left();
             return true;
-        } else if (key == ']') {
+        } else if (key == 'r' || key == 'R') {      /* Sym+R: right inspector */
             app_antigravity_toggle_right();
             return true;
         } else if (key == 'n' || key == 'N') {
@@ -1153,7 +1153,7 @@ static void antigravity_init(void)
     lv_obj_set_style_pad_gap(input_bar, 6, 0);
 
     ta = lv_textarea_create(input_bar);
-    lv_textarea_set_placeholder_text(ta, "Prompt or /command (Fn+N adds note)...");
+    lv_textarea_set_placeholder_text(ta, "Prompt or /command (Sym+N adds note)...");
     lv_textarea_set_one_line(ta, true);
     lv_obj_set_size(ta, 0, 38);
     lv_obj_set_flex_grow(ta, 1);
@@ -1190,7 +1190,7 @@ static void antigravity_init(void)
 
     /* 3. Right: artifacts + diffs */
     lbl_insp_title = lv_label_create(right_panel);
-    lv_label_set_text(lbl_insp_title, "INSPECTOR (Fn+])");
+    lv_label_set_text(lbl_insp_title, "INSPECTOR (Sym+R)");
     lv_obj_set_pos(lbl_insp_title, 4, 4);
     lv_obj_set_style_text_font(lbl_insp_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_insp_title, p->text_secondary, 0);

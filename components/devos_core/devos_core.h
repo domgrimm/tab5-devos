@@ -14,6 +14,10 @@ extern "C" {
 #define DEVOS_MOD_CTRL      0x01
 #define DEVOS_MOD_SHIFT     0x02
 #define DEVOS_MOD_ALT       0x04
+/* "System" modifier. The Tab5 keyboard has no Fn key: tab5_keyboard reports
+ * this while Sym is held with a key whose Sym layer is otherwise unused
+ * (letters, digits, arrows, Space, Esc, Tab, Enter, Backspace, - and +).
+ * User-facing text calls it "Sym". */
 #define DEVOS_MOD_FN        0x08
 
 /* Registry capacity (Phase 7: up to 32 self-registering apps) */
@@ -49,10 +53,13 @@ typedef struct {
     uint8_t  battery_percent;
     bool     battery_charging;
     uint16_t runtime_minutes_left;
+    bool     battery_valid;         /* power monitor answered */
+    bool     battery_present;       /* a pack is fitted (false = USB power only) */
 
     /* Network Telemetry */
     bool     wifi_connected;
-    char     wifi_ssid[32];
+    uint8_t  wifi_state;            /* devos_wifi_state_t */
+    char     wifi_ssid[33];
     int8_t   wifi_rssi;
     char     local_ip[20];
     bool     tailscale_online;
@@ -66,6 +73,9 @@ typedef struct {
     uint32_t sd_free_mb;
     uint32_t free_psram_kb;
     uint32_t free_sram_kb;
+    uint32_t psram_total_kb;
+    uint32_t sram_min_free_kb;      /* low-water mark since boot */
+    uint32_t uptime_s;
 
     /* CPU Telemetry */
     uint8_t  cpu_load_core0;
@@ -76,6 +86,7 @@ typedef struct {
     uint8_t  rtc_min;
     uint8_t  rtc_sec;
     char     rtc_date_str[32];
+    bool     time_valid;            /* wall clock set (RTC or NTP) */
 
     /* App Subsystem Statuses */
     char     opendev_status[24];
@@ -106,6 +117,9 @@ void devos_core_switch_app_by_uid(const char *uid);
 const devos_telemetry_t *devos_telemetry_get(void);
 void devos_telemetry_update(const devos_telemetry_t *new_telemetry);
 void devos_telemetry_tick_sim(void);
+/* Brightness step for the global Sym+-/Sym++ hotkeys (set by main). */
+typedef void (*devos_brightness_step_fn)(int delta);
+void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb);
 
 /* Input & Hotkey Dispatcher */
 typedef void (*devos_theme_toggle_fn)(void);

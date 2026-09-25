@@ -21,14 +21,15 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 3. **Responsive Tri-Pane UI & "Focus Mode":**
    * Both `app_opendev` and `app_antigravity` must share the unified `devos_agent_viewport` container from `components/devos_ui/`.
    * Support all 4 layout states: Tri-Pane (260px | 720px | 300px), Left-Only (260px | 1020px), Right-Only (980px | 300px), and Focus Mode (full-width 1280px).
-   * Respect global hotkeys: `Fn + F` (Focus Mode), `Fn + [` (Left Sidebar), `Fn + ]` (Right Inspector).
+   * Respect global hotkeys: `Sym + F` (Focus Mode), `Sym + L` (Left Sidebar), `Sym + R` (Right Inspector).
+   * The Tab5 keyboard has **no Fn key**: every system shortcut is `Sym + <letter/digit/arrow>` (Sym + punctuation must keep typing its symbol, e.g. `Sym + [` = `{`). User-facing text says "Sym".
 
 4. **Dynamic Terminal PTY Resizing:**
    * `app_terminal` must send a `TIOCSWINSZ` window size update (`libssh2_channel_request_pty_size`) whenever the connections side panel is toggled, transitioning between 160 columns (collapsed) and 128 columns (open).
 
 5. **Theme Propagating Everywhere:**
    * Any new widget, card, or screen must register with `devos_theme`.
-   * Must support both **Dark Cyberdeck** and **High-Contrast Light** palettes. Colors must update instantly when `devos_theme_toggle()` is called (`Fn + T`).
+   * Must support both **Dark Cyberdeck** and **High-Contrast Light** palettes. Colors must update instantly when `devos_theme_toggle()` is called (`Sym + T`).
 
 6. **Automatic MicroSD Scaffolding:**
    * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/plans/`, `/diffs/`, `/.devos/`) and missing starter templates (`welcome.md`, `bookmarks.json`). Zero manual file creation on PC/Mac.
@@ -52,7 +53,7 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 | **Co-SoC (Wi-Fi 6)**| ESP32-C6 | SDIO (ESP-Hosted) | P4 acts as host, C6 as slave |
 | **Display** | 5.0" 1280×720 IPS | MIPI-DSI (ST7123/EK79007) | 2 partial line buffers in PSRAM, PPA 2D enabled |
 | **Touch** | Goodix GT911 | I2C | 5-point multi-touch input driver for LVGL |
-| **Keyboard** | A164 (70 Keys) | Ext.Port1 I2C (`0x6D`) | SDA: GPIO 0, SCL: GPIO 1, INT: GPIO 50 (STM32F030) |
+| **Keyboard** | A164 (70 Keys) | Ext.Port1 I2C (`0x6D`) | SDA: GPIO 0, SCL: GPIO 1, INT: GPIO 50 (STM32F030). Modifiers are **Sym / Aa / Ctrl / Alt, no Fn key**: run in Normal (matrix) mode, Sym = system modifier (`DEVOS_MOD_FN`), Aa = Shift (tap = caps lock) |
 | **Power Telemetry** | TI INA226 | I2C | Monitors NP-F550 voltage, current, and wattage |
 | **RTC** | RX8130CE | I2C | Offline hardware clock with battery backup |
 | **Storage** | MicroSD Slot | 4-bit SDMMC | Mounts at `/sdcard` via VFS FATFS |
@@ -127,7 +128,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Fn + T`, `Fn + F`, `1..6`).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + F`, `1..6`).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target
