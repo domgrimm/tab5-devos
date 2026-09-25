@@ -3,21 +3,6 @@ cmake_minimum_required(VERSION 3.16)
 # Detect if building under ESP-IDF or Host Simulator
 if(DEFINED ENV{IDF_PATH} AND NOT DEVOS_SIMULATOR)
     include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-    # THROWAWAY DIAGNOSTIC SWITCH: keep in sync with DEVOS_DISPLAY_TEST in
-    # main/CMakeLists.txt. IDF links *every* project component into main, and
-    # esp_hosted is WHOLE_ARCHIVE with a boot-time constructor, so without this
-    # the display-only build would still link and start Wi-Fi.
-    #  - COMPONENTS main: only main + its own dependency tree (bsp_tab5, lvgl, ...)
-    #  - EXCLUDE_COMPONENTS: IDF adds every *managed* component regardless of
-    #    COMPONENTS, so hide the manifests that pull in esp_hosted/esp_wifi_remote
-    #    (devos_net) and libssh2 (libssh2_port) from the component manager.
-    #  - sdkconfig.displaytest: 256 KB L2 cache + smaller LVGL pool (test only).
-    set(DEVOS_DISPLAY_TEST 0)
-    if(DEVOS_DISPLAY_TEST)
-        set(COMPONENTS main)
-        set(EXCLUDE_COMPONENTS devos_net libssh2_port)
-        set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.displaytest")
-    endif()
     project(tab5-devos)
 else()
     # Host Simulator Build (Linux / macOS with SDL2 & LVGL v9)

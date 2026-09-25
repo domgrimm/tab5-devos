@@ -888,26 +888,3 @@ void bsp_tab5_set_brightness(uint8_t percent)
     (void)percent;
 #endif
 }
-
-void bsp_tab5_fill_test_pattern(void)
-{
-#ifdef ESP_PLATFORM
-    static const uint16_t bars[8] = {
-        0xF800, /* red    */ 0x07E0, /* green  */ 0x001F, /* blue   */ 0xFFFF, /* white  */
-        0xFFE0, /* yellow */ 0x07FF, /* cyan   */ 0xF81F, /* magenta*/ 0x8410, /* gray   */
-    };
-    for (int i = 0; i < TAB5_NUM_FBS; i++) {
-        if (!s_fb[i]) continue;
-        uint16_t *fb = (uint16_t *)s_fb[i];
-        for (int y = 0; y < TAB5_PANEL_V_RES; y++) {
-            uint16_t *row = &fb[y * TAB5_PANEL_H_RES];
-            for (int x = 0; x < TAB5_PANEL_H_RES; x++) {
-                row[x] = bars[(x * 8) / TAB5_PANEL_H_RES];
-            }
-        }
-        esp_cache_msync(s_fb[i], TAB5_PANEL_H_RES * TAB5_PANEL_V_RES * 2,
-                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-    }
-    ESP_LOGI(TAG, "Test pattern (colour bars) written to %d framebuffer(s)", TAB5_NUM_FBS);
-#endif
-}
