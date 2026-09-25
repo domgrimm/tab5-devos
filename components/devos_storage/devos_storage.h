@@ -17,6 +17,9 @@ bool devos_storage_bootstrap(const char *mount_point);
 bool devos_storage_is_mounted(void);
 uint32_t devos_storage_get_total_mb(void);
 uint32_t devos_storage_get_free_mb(void);
+/* Re-read total/free space from the filesystem (slow on first call for large
+ * FAT volumes: call from a background task). */
+bool devos_storage_refresh_stats(void);
 
 #ifdef __cplusplus
 }

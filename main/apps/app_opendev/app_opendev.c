@@ -830,10 +830,10 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
         if (key == 'f' || key == 'F') {
             devos_agent_viewport_toggle_focus(viewport);
             return true;
-        } else if (key == '[') {
+        } else if (key == 'l' || key == 'L') {      /* Sym+L: left sidebar */
             devos_agent_viewport_toggle_left(viewport);
             return true;
-        } else if (key == ']') {
+        } else if (key == 'r' || key == 'R') {      /* Sym+R: right inspector */
             devos_agent_viewport_toggle_right(viewport);
             return true;
         } else if (key == 'n' || key == 'N') {
@@ -843,7 +843,11 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
     }
     if (modifiers & DEVOS_MOD_CTRL) {
         if (key == 'b' || key == 'B') {
-            devos_agent_viewport_toggle_left(viewport);
+            if (modifiers & DEVOS_MOD_SHIFT) {
+                devos_agent_viewport_toggle_right(viewport);
+            } else {
+                devos_agent_viewport_toggle_left(viewport);
+            }
             return true;
         }
     }
@@ -1144,7 +1148,7 @@ static void opendev_init(void)
 
     /* Right: session info + diffs */
     lbl_rg = lv_label_create(right_panel);
-    lv_label_set_text(lbl_rg, "SESSION (Fn+])");
+    lv_label_set_text(lbl_rg, "SESSION (Sym+R)");
     lv_obj_set_pos(lbl_rg, 4, 4);
     lv_obj_set_style_text_font(lbl_rg, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_rg, p->text_secondary, 0);

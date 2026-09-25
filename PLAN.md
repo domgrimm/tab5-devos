@@ -27,7 +27,7 @@
   |                                                                             |
   |               ◄ [Page 1 / 2]  ●  ○  [Page 2 ►]     [⇋ Arrange]             |
   +-----------------------------------------------------------------------------+
-  | [Enter/Tap] Launch | [1-8] Page Key | [PgUp/PgDn] Flip | [Fn+H] Home        |
+  | [Enter/Tap] Launch | [1-8] Page Key | [PgUp/PgDn] Flip | [Sym+H] Home        |
   +-----------------------------------------------------------------------------+
 ```
 
@@ -64,7 +64,7 @@ graph TD
         LVGL["LVGL v9 GUI Engine (PPA Accelerated)"]
         UI_TopBar["Top Status Bar & Notifications"]
         UI_Launcher["Home Screen / App Launcher Dashboard"]
-        UI_WM["Window & App Switcher (Fn+1..6 / Alt+Tab)"]
+        UI_WM["Window & App Switcher (Sym+1..6 / Alt+Tab)"]
         UI_Apps["devOS Applications (Agent, SSH, Editor, AGY)"]
         KbdDrv["Tab5 I2C Keyboard Driver (HID/Char)"]
         TouchDrv["GT911 Touch Driver"]
@@ -133,7 +133,7 @@ graph TD
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
 *   **Visual Layout & Scalable Grid (1280×720):**
-    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Fn + T`; the top bar carries no theme button.)
+    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Sym + T`; the top bar carries no theme button.)
     *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
     *   **Modular App Registry Architecture:** Rather than a closed hardcoded set of 6 apps, `devOS` uses an extensible dynamic app registry (`components/devos_core/`). Apps define a standardized descriptor (`devos_app_descriptor_t`) with cold init, show, hide, key handler, and live tile telemetry callbacks (`get_telemetry_lines()`). New apps in `main/apps/app_*` simply self-register at boot time (`devos_core_register_app()`) without modifying the launcher or core OS logic.
     *   **Compact Scalable App Grid (4×2 per Page with Pagination):**
@@ -144,13 +144,13 @@ The Home Screen serves as the operational dashboard and application launcher for
 *   **Navigation & Ergonomics:**
     *   **Direct Key Launch:** Pressing keys `1` through `8` on the physical keyboard immediately launches the corresponding tile on the active page.
     *   **Cross-Page Arrow Navigation:** Arrow keys (`↑`, `↓`, `←`, `→`) move selection between cards with smooth focus borders; navigating past the right/left boundary automatically turns the page. Pressing `Enter` launches the selected app.
-    *   **Page Flipping Shortcuts:** Press `Page Up` / `Page Down` (or `Fn + ←` / `Fn + →`) to flip between app pages instantly.
+    *   **Page Flipping Shortcuts:** Press `Page Up` / `Page Down` (or `Sym + ←` / `Sym + →`) to flip between app pages instantly.
     *   **Touch & Gesture Controls:** Swipe left/right across the grid to flip pages with smooth carousel snapping; tap any card to open.
-    *   **Global Return:** Pressing `Fn + H`, `Esc`, or tapping the top-left `[devOS]` logo from within any application returns to the Home Screen.
+    *   **Global Return:** Pressing `Sym + H`, `Esc`, or tapping the top-left `[devOS]` logo from within any application returns to the Home Screen.
     *   **Multitasking:** Background tasks (SSH sessions, streaming agent tokens, Tailscale tunnels) continue running when returning to the Home Screen.
 *   **Generalized Tile & Widget Re-arrangement Mode:**
     *   **Interactive Customization:** Users can re-order and customize the launcher grid across pages to place their most-used tools into preferred slots.
-    *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the footer or via keyboard shortcut `Fn + E` (or pressing `E` while on the Home Screen).
+    *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the footer or via keyboard shortcut `Sym + E` (or pressing `E` while on the Home Screen).
     *   **Touch / Click Reordering:** Tap any tile to select it (highlighted with an amber `#FFB300` border), flip pages if desired, then tap the destination tile to immediately swap their positions.
     *   **Keyboard Reordering:** Pressing `1` through `8` selects a source slot on the current page; pressing a second slot key (or switching pages with `PgUp`/`PgDn` and pressing a key) executes the swap.
     *   **Reset & Exit:** Press `R` or tap `[↺ Defaults]` to revert to the factory layout. Press `Esc` or tap `[✓ Done]` to finalize.
@@ -192,29 +192,29 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   Bearer token persisted (encrypted NVS on target, JSON file in sim).
 *   **UI (as built in `app_opendev` on the shared viewport):**
     *   Left: server status card (tap = Server modal for host/port/pairing), Link/refresh, + New session, live session list with busy badges.
-    *   Center: chat stream (user bubbles, in-place chronological thinking accordions, tool cards, auto-scroll), prompt bar with responsive flex expansion, active note injection button (`[Note]` / `Fn+N`), and `[Send]` button (`Enter` sends, `Ctrl+C` aborts).
+    *   Center: chat stream (user bubbles, in-place chronological thinking accordions, tool cards, auto-scroll), prompt bar with responsive flex expansion, active note injection button (`[Note]` / `Sym+N`), and `[Send]` button (`Enter` sends, `Ctrl+C` aborts).
     *   Right: session inspector (ID/model/state), action row (`[Diff]`, `[Save Diff]`, `[Save Plan]`), color-coded unified diff viewer (green `+`, red `-`, cyan `@@`, muted headers), and automated MicroSD exports to `/sdcard/plans/` and `/sdcard/diffs/`.
     *   Permission modal `[Y] Once / [N] Deny / [A] Always` via touch or keys (Deny-on-Esc; answers never trap the UI on transport failure).
 *   **Tri-Pane Flexible Layout & Focus Mode (1280×720):**
     *   **Left Panel (Collapsible, 260px):**
         *   Project selector and active session list with live status badges.
         *   Session Goals progress tracker and active model picker (`Claude 3.7 Sonnet`, `Gemini 2.5 Pro`, `GPT-4o`, etc.).
-        *   *Shortcut:* `Fn + [` (or `Ctrl + B`) to toggle.
+        *   *Shortcut:* `Sym + L` (or `Ctrl + B`) to toggle.
     *   **Center Main Canvas (Dynamic Responsive Width: 720px / 980px / 1280px):**
         *   User prompt bubble (styled container with syntax formatting).
         *   Thinking/Reasoning block (collapsible accordion with elapsed time counter, rendered chronologically within turn).
         *   Tool execution cards (showing command run, exit code, file path).
         *   Streaming response text with smooth auto-scroll.
-        *   Bottom prompt input bar with physical keyboard input support, active note attachment (`Fn + N`), and responsive flex growth.
+        *   Bottom prompt input bar with physical keyboard input support, active note attachment (`Sym + N`), and responsive flex growth.
     *   **Right Panel (Collapsible, 300px):**
         *   **Files Modified List:** Summary of touched files in the active session.
         *   **Interactive Diff Viewer:** Color-coded unified diffs (green additions, red deletions, cyan hunks) with monospace font styling.
         *   **Session Plan / Task Checklist:** Live checklist of agent sub-tasks, with one-tap export to `/sdcard/plans/<session>.md` and `/sdcard/diffs/<session>.diff`.
-        *   *Shortcut:* `Fn + ]` to toggle.
-    *   **"Focus Mode" (`Fn + F`):**
+        *   *Shortcut:* `Sym + R` to toggle.
+    *   **"Focus Mode" (`Sym + F`):**
         *   Instantly collapses both left and right panels with a single keystroke (or tapping the top `[Focus]` button).
         *   Center chat canvas expands to the **full 1280px display width** for distraction-free reading, long reasoning inspection, and typing.
-        *   Pressing `Fn + F` again immediately restores previous sidebar states.
+        *   Pressing `Sym + F` again immediately restores previous sidebar states.
     *   **Interactive Permission Prompts:**
         *   Modal dialog interrupts when an agent asks to execute a command or modify sensitive files: `[Approve (Y)]`, `[Deny (N)]`, `[Always Allow in Session (A)]`. Can be answered with physical keyboard shortcuts.
 *   **3.2.1 Camera-Based Zero-Touch Pairing (OpenChamber QR Scanner):**
@@ -246,7 +246,7 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   One-click / one-key instant connect.
         *   Supports importing standard SSH config from `/sdcard/.ssh/config`.
     *   **Side Panel Controls:**
-        *   Toggle shortcut: **`Fn + [`** (or `Ctrl + B`), matching the left panel toggle across OpenDev and Antigravity.
+        *   Toggle shortcut: **`Sym + L`** (or `Ctrl + B`), matching the left panel toggle across OpenDev and Antigravity.
         *   Touch toggle: Left margin chevron handle and top header `[Sessions]` icon.
 *   **Dynamic PTY Resizing on Panel Toggle:**
     *   *Side Panel Collapsed (Fullscreen Terminal):* Canvas occupies full 1280px width, rendering **160 columns × 45 lines** (with 8×16 font).
@@ -287,20 +287,20 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
                 └── logs/              # Ring-buffered boot and crash logs
             ```
     *   **Auto-Populated Starter Templates (Generated if missing):**
-        *   `/sdcard/notes/welcome.md`: Interactive getting-started guide detailing global hotkeys (`Fn + T`, `Fn + F`, `Fn + [`, `Fn + ]`), Tailscale enrollment, and agent tips.
+        *   `/sdcard/notes/welcome.md`: Interactive getting-started guide detailing global hotkeys (`Sym + T`, `Sym + F`, `Sym + L`, `Sym + R`), Tailscale enrollment, and agent tips.
         *   `/sdcard/.ssh/bookmarks.json`: Pre-populated starter JSON schema with a sample bookmark so users can immediately add server connections.
         *   `/sdcard/.devos/version.txt`: Writes active firmware version and build timestamp.
     *   **Visual Status:**
         *   Home Screen telemetry and top status bar display live SD card presence, capacity, and remaining free space (e.g. `SD: 29.4 GB Free`).
 *   **Editor Features (as built):**
     *   **File Explorer:** Live scan of `/sdcard/notes/*.md` (FATFS on target, `./sim_sdcard` in sim) on init and every show; up to 12 entries, tap/click or `Tab` → `↑/↓` → `Enter` to open (amber = keyboard cursor, cyan = open file).
-    *   **Multiline Editor:** Physical typing, arrows, backspace, Enter; `Ctrl+S` (save, `[*]` dirty flag), `Ctrl+O` (jump to file list), `Ctrl+N` (new `untitled-N.md`), `Tab` (focus list/editor), `Fn + [` (collapse file tree = fullscreen editing). Save/create failures report transient `SAVE FAILED`-style status (e.g. missing SD).
+    *   **Multiline Editor:** Physical typing, arrows, backspace, Enter; `Ctrl+S` (save, `[*]` dirty flag), `Ctrl+O` (jump to file list), `Ctrl+N` (new `untitled-N.md`), `Tab` (focus list/editor), `Sym + L` (collapse file tree = fullscreen editing). Save/create failures report transient `SAVE FAILED`-style status (e.g. missing SD).
     *   **View Modes:** `Ctrl+P` cycles Edit → Split → Preview; split preview re-renders on a 400 ms debounce while typing.
     *   **Markdown Renderer (spangroup-based blocks):** H1–H6 (distinct size/color ladder), fenced code (single padded Unscii-16 mono block), GFM tables with/without outer pipes (`+---+` grid, header separator, `:--`/`:--:`/`--:` alignment, shrink-to-fit), `---`/`***`/`___` rules, blockquotes, ul/ol (renumbered)/task lists, paragraphs.
     *   **Inline:** `**bold**` (underline — only a regular font exists), `*italic*` (secondary color), `~~strike~~` (decor), `` `code` ``, `[t](u)` (URL kept visible; balanced parens, `<dest>`, titles), `![a](s)`, `<autolink>`, backslash escapes, `*`/`_` flanking rules.
     *   **Limits (documented in code):** 16 KB/file, setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths, no `Ctrl+F` find.
 *   **Agent Synergy:**
-    *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context (via action bar `[Attach]` button, `Fn + A`, `Ctrl + U`, or `[Note]` pull button in OpenDev).
+    *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context (via action bar `[Attach]` button, `Sym + A`, `Ctrl + U`, or `[Note]` pull button in OpenDev).
     *   **"Export Agent Plan & Diffs"**: Save an agent's plan or code explanation directly to `/sdcard/plans/<session>.md` and unified diffs to `/sdcard/diffs/<session>.diff` via right-panel action buttons. Export helpers include filename sanitization (`app_editor_save_plan`, `app_editor_save_diff`).
 
 ---
@@ -355,7 +355,7 @@ sequenceDiagram
     *   **Left Navigation Pane (Collapsible, 260px):**
         *   Active Conversation details and current AI model selector.
         *   **Subagent Hierarchy Tree:** Displays invoked subagents (e.g. `research`, `self`) with live execution state badges (`running`, `idle`, `waiting_for_input`).
-        *   *Shortcut:* `Fn + [` (or `Ctrl + B`) to toggle.
+        *   *Shortcut:* `Sym + L` (or `Ctrl + B`) to toggle.
     *   **Center Main Chat Canvas (Dynamic Responsive Width: 720px / 980px / 1280px):**
         *   User messages and Assistant responses rendered with styled Markdown typography.
         *   **Collapsible Thinking Block:** Live accordion showing the agent's internal reasoning/thinking steps with elapsed timer.
@@ -364,11 +364,11 @@ sequenceDiagram
     *   **Right Auxiliary Inspector (Collapsible, 300px):**
         *   **Artifacts Tab:** Direct preview of generated code files, architectural plans, and diagrams with markdown rendering.
         *   **File Changes Tab:** Unified diff summary of all files modified in the active session.
-        *   *Shortcut:* `Fn + ]` (or `Ctrl + Shift + B`) to toggle.
-    *   **"Focus Mode" (`Fn + F`):**
+        *   *Shortcut:* `Sym + R` (or `Ctrl + Shift + B`) to toggle.
+    *   **"Focus Mode" (`Sym + F`):**
         *   Instantly collapses both left and right panels with a single keystroke (or tapping the top `[Focus]` button).
         *   Center chat canvas expands to the **full 1280px display width** for pure conversational immersion and code reading.
-        *   Pressing `Fn + F` again instantly restores previous panel states.
+        *   Pressing `Sym + F` again instantly restores previous panel states.
     *   **Permission & Question Modals:**
         *   Interactive popups when an agent requests tool authorization or asks multiple-choice clarification questions. Accessible via touchscreen or instant physical keyboard shortcuts (`Y` for approve, `N` for deny, `1`..`4` for multiple-choice options).
 
@@ -388,7 +388,7 @@ State 1: Tri-Pane (Full Context Mode)
 | Models        | > Assistant Markdown Response         | Plan Tasks    |
 +---------------+---------------------------------------+---------------+
 
-State 2: Focus Mode (Full-Width Chat Mode - Fn + F)
+State 2: Focus Mode (Full-Width Chat Mode - Sym + F)
 +-----------------------------------------------------------------------+
 | Center Chat & Reasoning Stream (Full 1280px Viewport)                 |
 |                                                                       |
@@ -408,9 +408,9 @@ State 2: Focus Mode (Full-Width Chat Mode - Fn + F)
     3.  **Right-Only (Left Collapsed):** Center 980px | Right 300px.
     4.  **Focus Mode (Both Collapsed):** Center expands to **full 1280px**.
 *   **Hardware & Touch Controls:**
-    *   **`Fn + F`**: Toggle Focus Mode on/off. Restores previous panel configuration when toggled off.
-    *   **`Fn + [` (or `Ctrl + B`)**: Toggle Left Sidebar independently (supported across OpenDev, Antigravity, and Terminal).
-    *   **`Fn + ]` (or `Ctrl + Shift + B`)**: Toggle Right Inspector independently (supported across OpenDev and Antigravity).
+    *   **`Sym + F`**: Toggle Focus Mode on/off. Restores previous panel configuration when toggled off.
+    *   **`Sym + L` (or `Ctrl + B`)**: Toggle Left Sidebar independently (supported across OpenDev, Antigravity, and Terminal).
+    *   **`Sym + R` (or `Ctrl + Shift + B`)**: Toggle Right Inspector independently (supported across OpenDev and Antigravity).
     *   **Touch Handles**: Subtle chevron toggle handles on the top left and top right of the viewport, plus a dedicated `[Focus]` header icon.
 
 ---
@@ -441,8 +441,8 @@ State 2: Focus Mode (Full-Width Chat Mode - Fn + F)
     *   **Markdown Editor:** Editor canvas switches from Dark Editor (monokai/charcoal) to Clean Paper (black text on crisp white with light code block backgrounds).
     *   **Keyboard RGB Backlight:** Tab5 A164 keyboard status LEDs sync with theme (e.g., cyan/amber ambient in Dark mode, crisp neutral daylight white in Light mode).
 *   **Toggle Controls:**
-    *   **Global Hotkey:** **`Fn + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
-    *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Fn + T`.
+    *   **Global Hotkey:** **`Sym + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
+    *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Sym + T`.
     *   **Boot Default:** Dark Cyberdeck. (NVS persistence of the theme preference is not yet implemented.)
 
 ---
@@ -462,21 +462,21 @@ The Tab5 physical keyboard is a critical input surface for `devOS`.
     *   *HID Mode:* Emits standard USB HID keyboard reports (modifier byte + 6 keycodes).
     *   *Character Mode:* Emits ASCII character strings along with modifier states.
 *   **Implementation Strategy:**
-    *   Use **HID Mode** for the core OS input layer. HID mode provides unambiguous key-down and key-up events for modifier keys (`Ctrl`, `Alt`, `Shift`, `Fn`).
+    *   Use **Normal (matrix) Mode** for the core OS input layer. HID mode hides the Sym key entirely (Sym+H arrives as a plain `h`), so devOS reads raw press/release events and maps them itself (base + Sym layers, Aa = Shift / tap for caps lock, software auto-repeat, hot-plug re-attach).
     *   A dedicated FreeRTOS keyboard task waits on GPIO 50 interrupt transitions, reads reports via I2C, and pushes structured `key_event_t` structs into an LVGL input driver queue.
-*   **Global Hotkeys:**
+*   **Global Hotkeys** (the A164 has **no Fn key**; its modifiers are Sym / Aa / Ctrl / Alt. devOS runs the keyboard in Normal/matrix mode so Sym can be the system modifier. Sym + punctuation still types the Sym-layer symbol, so sidebars use `Sym + L` / `Sym + R` rather than `[` / `]`):
     *   `1` .. `6` (from Home Screen): Instant app launch.
-    *   `Fn + H`: Global Home Screen return from any application.
-    *   `Fn + 1` .. `Fn + 6`: Instant switch between Apps from anywhere.
-    *   `Fn + T`: **Toggle Dark / Light Theme** system-wide.
-    *   `Fn + F`: **Toggle Focus Mode** (collapses/restores sidebars in OpenDev & Antigravity).
-    *   `Fn + [` (or `Ctrl + B`): Toggle Left Sidebar (Sessions / Bookmarks / Subagents in OpenDev, AGY, and Terminal).
-    *   `Fn + ]` (or `Ctrl + Shift + B`): Toggle Right Inspector (Files / Diffs / Artifacts in OpenDev & AGY).
+    *   `Sym + H`: Global Home Screen return from any application.
+    *   `Sym + 1` .. `Sym + 6`: Instant switch between Apps from anywhere.
+    *   `Sym + T`: **Toggle Dark / Light Theme** system-wide.
+    *   `Sym + F`: **Toggle Focus Mode** (collapses/restores sidebars in OpenDev & Antigravity).
+    *   `Sym + L` (or `Ctrl + B`): Toggle Left Sidebar (Sessions / Bookmarks / Subagents in OpenDev, AGY, and Terminal).
+    *   `Sym + R` (or `Ctrl + Shift + B`): Toggle Right Inspector (Files / Diffs / Artifacts in OpenDev & AGY).
     *   `Alt + 1` .. `Alt + 9`: Instant switch between active concurrent SSH sessions in Terminal.
     *   `Ctrl + Tab` / `Alt + Tab`: Cycle recent apps.
-    *   `Fn + Space`: Global quick-launcher / command palette.
-    *   `Fn + Up/Down`: Screen brightness adjustment.
-    *   `Fn + B`: Toggle keyboard RGB backlight mode / power.
+    *   `Sym + Space`: Global quick-launcher / command palette.
+    *   `Sym + Up/Down`: Screen brightness adjustment.
+    *   `Sym + B`: Toggle keyboard RGB backlight mode / power.
 
 ### 4.2 Display & Graphics Pipeline
 
@@ -516,7 +516,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
     *   **Direct Developer URLs:** `http://10.2.132.54:6080/vnc.html` (direct LAN) or `http://100.77.11.92:6080/vnc.html` (Tailscale).
 *   **Emulated Inputs:**
     *   *Mouse clicks & drags* map directly to GT911 capacitive touch events (tap, swipe, scroll).
-    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Fn + T` for Theme, `Fn + F` for Focus Mode, `Fn + [` / `Fn + ]` for Sidebars, and `1`..`6` for App launcher).
+    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + F` for Focus Mode, `Sym + L` / `Sym + R` for Sidebars, and `1`..`6` for App launcher).
 *   **One-Command Runner Script (`tools/sim/run_web_sim.sh`):**
     *   Automatically handles building the desktop simulator target with CMake/Ninja, launching or restarting the Xvfb/noVNC background service, and binding to port `6080`.
 
@@ -534,11 +534,11 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 
 ### Phase 1: Core OS Shell, Home Screen, Themes & Window Manager
 - [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
-- [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Fn + T`.
-- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock; theme control lives in Settings + `Fn + T`).
+- [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Sym + T`.
+- [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock; theme control lives in Settings + `Sym + T`).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
-- [x] Implement Window Manager & App Switcher with hotkey navigation (`Fn + 1..6`, `Fn + H`).
+- [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..6`, `Sym + H`).
 - [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
@@ -551,7 +551,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 
 ### Phase 3: Terminal & Multi-Session SSH Client
 - [x] Integrate `libssh2` with mbedTLS hardware cryptography.
-- [x] Implement **Collapsible Connections & Sessions Side Panel (260px)** with Active Sessions and Saved Bookmarks tabs (`Fn + [`).
+- [x] Implement **Collapsible Connections & Sessions Side Panel (260px)** with Active Sessions and Saved Bookmarks tabs (`Sym + L`).
 - [x] Implement ANSI/VT100 terminal widget in LVGL (dynamic 160×45 / 128×45 character grid).
 - [x] Implement real-time PTY window resizing (`TIOCSWINSZ` / SIGWINCH) on sidebar toggle.
 - [x] Map Tab5 physical keyboard to VT100 control sequences (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, arrow keys, Esc, Tab, `Alt + 1..9` session switch).
@@ -560,10 +560,10 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 
 ### Phase 4: Markdown Editor
 - [x] Implement File Explorer UI with MicroSD directory navigation (live `/sdcard/notes/*.md` scan, keyboard + touch open).
-- [x] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`, plus `Ctrl+N`, `Tab`, `Fn + [`).
+- [x] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`, plus `Ctrl+N`, `Tab`, `Sym + L`).
 - [x] Integrate lightweight Markdown renderer (headings, bold/italic/strike/code, links, tables, code blocks, lists, quotes, rules, checklists; see §3.4 for exact coverage).
 - [x] Implement split-view and fullscreen editing modes (`Ctrl+P` cycle; 400 ms debounce re-render). Adversarial review fixes merged (pipe-less tables, balanced-paren URLs, UTF-8-safe truncation, save-failure feedback); unit test in `tools/md_preview_test.c`.
-- [x] Agent Synergy & Export API: added top-bar `[Attach]` button and hotkeys (`Fn + A`, `Ctrl + U`) to inject active notes directly into AI agent prompt contexts, plus sanitized file exporters to `/sdcard/plans/` and `/sdcard/diffs/`.
+- [x] Agent Synergy & Export API: added top-bar `[Attach]` button and hotkeys (`Sym + A`, `Ctrl + U`) to inject active notes directly into AI agent prompt contexts, plus sanitized file exporters to `/sdcard/plans/` and `/sdcard/diffs/`.
 
 ### Phase 5: Remote OpenCode & OpenChamber Client
 - [x] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
@@ -572,7 +572,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement rich message cards: reasoning/thought accordions, tool logs, diff visualizer.
 - [x] Build interactive Permission Request popup system.
 - [x] Interactive Diff & Session Export: color-coded unified diff viewer in right inspector, `[Diff]`, `[Save Diff]`, and `[Save Plan]` export triggers.
-- [x] Dual-Way Synergy & Input Bar: integrated `[Note]` button in OpenDev input bar (`Fn + N`) to pull active notes; fixed viewport positioning and padding for full visibility across all 4 responsive viewport modes (Tri-Pane, Left-Only, Right-Only, Focus Mode).
+- [x] Dual-Way Synergy & Input Bar: integrated `[Note]` button in OpenDev input bar (`Sym + N`) to pull active notes; fixed viewport positioning and padding for full visibility across all 4 responsive viewport modes (Tri-Pane, Left-Only, Right-Only, Focus Mode).
 - [x] Hardened REST & SSE Engine: fixed HTTP Authorization header concatenation, resolved premature SSE buffer clearing, and implemented fallback parsing for message parts and tool inputs.
 - [x] Camera-Based OpenChamber QR Pairing: onboard SC2356 MIPI-CSI camera capture + `quirc` QR decoder on Core 0 with live viewfinder modal in `app_opendev`, pairing token extraction, and simulator mock support.
 
@@ -586,7 +586,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
   - [x] Unified diff viewer in right inspector with color-coded additions/deletions, hunk headers, and `[Save Diff]` button exporting to `/sdcard/diffs/`.
   - [x] Artifact viewer modal with Markdown rendering, theme adaptation, and `[Save]` button exporting to `/sdcard/plans/`.
   - [x] Interactive tool permission popup (`[Y]`, `[N]`, `[A]`) and question picker modals (`[1..4]`) with physical keyboard bindings.
-  - [x] Input bar with prompt textarea, `[Note]` injection button (`Fn + N`), `/command` preservation, and Send trigger.
+  - [x] Input bar with prompt textarea, `[Note]` injection button (`Sym + N`), `/command` preservation, and Send trigger.
   - [x] Cross-app synergy: active note attachment from Editor to Antigravity, and background telemetry sync to launcher tile [5].
 - [x] Add power management (`components/devos_power/`): INA226 battery gauge telemetry, screen dimming after 120s, sleep mode after 600s, activity wakeup on keyboard and capacitive touch/click, and live 1 Hz settings refresh.
 - [x] Implement OTA (Over-The-Air) firmware update mechanism (`components/devos_ota/`): manifest version checks, LAN staging server support, checksum validation, and dry-run simulation mode. Unit tested in `tools/ota_test.c`.
@@ -596,8 +596,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Implement self-registration API (`devos_core_register_app()`) allowing new apps to be dropped into `main/apps/` without modifying core OS dispatching or launcher source files.
 - [x] Redesign Home Screen (`app_launcher`) grid with compact tile dimensions (4 columns × 2 rows = 8 visible tiles per page).
 - [x] Implement multi-page carousel / pagination container with horizontal gesture snapping, swipe animations, and page indicator dots (`● ○ ○`).
-- [x] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Fn + ←/→`) page flipping.
-- [x] Generalize tile arrangement mode (`Fn + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
+- [x] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Sym + ←/→`) page flipping.
+- [x] Generalize tile arrangement mode (`Sym + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
 - [x] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
 - [x] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 

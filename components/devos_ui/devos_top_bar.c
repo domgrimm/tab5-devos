@@ -20,6 +20,12 @@ static void home_btn_cb(lv_event_t *e)
     devos_core_switch_app(DEVOS_APP_LAUNCHER);
 }
 
+static void wifi_label_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    devos_core_switch_app(DEVOS_APP_SETTINGS);
+}
+
 static void tailscale_icon_click_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -123,10 +129,15 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
 
     /* 2. Wi-Fi Status */
     lbl_wifi = lv_label_create(top_bar_container);
-    lv_label_set_text(lbl_wifi, "WiFi: DevNet -58dBm");
-    lv_obj_align(lbl_wifi, LV_ALIGN_LEFT_MID, 110, 0);
+    lv_label_set_text(lbl_wifi, LV_SYMBOL_WIFI " --");
+    lv_label_set_long_mode(lbl_wifi, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl_wifi, 360);
+    lv_obj_align(lbl_wifi, LV_ALIGN_LEFT_MID, 100, 0);
     lv_obj_set_style_text_color(lbl_wifi, p->text_secondary, 0);
     lv_obj_set_style_text_font(lbl_wifi, &lv_font_montserrat_12, 0);
+    lv_obj_add_flag(lbl_wifi, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(lbl_wifi, 8);
+    lv_obj_add_event_cb(lbl_wifi, wifi_label_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* 3. Local Network IP + Optional Tailscale Status Icon */
     box_ip = lv_obj_create(top_bar_container);
@@ -154,7 +165,7 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
 
     /* Local IP Label */
     lbl_ip = lv_label_create(box_ip);
-    lv_label_set_text(lbl_ip, "IP: 10.2.132.54");
+    lv_label_set_text(lbl_ip, "IP: Offline");
     lv_obj_set_style_text_color(lbl_ip, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_ip, &lv_font_montserrat_14, 0);
 
@@ -165,14 +176,14 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
 
     /* 4. Clock (Far Right) */
     lbl_clock = lv_label_create(top_bar_container);
-    lv_label_set_text(lbl_clock, "14:28");
+    lv_label_set_text(lbl_clock, "--:--");
     lv_obj_align(lbl_clock, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_text_color(lbl_clock, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_14, 0);
 
     /* 5. Battery Status */
     lbl_battery = lv_label_create(top_bar_container);
-    lv_label_set_text(lbl_battery, "94% " LV_SYMBOL_CHARGE);
+    lv_label_set_text(lbl_battery, "--%");
     lv_obj_align_to(lbl_battery, lbl_clock, LV_ALIGN_OUT_LEFT_MID, -22, 0);
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_battery, &lv_font_montserrat_14, 0);
@@ -188,15 +199,35 @@ void devos_top_bar_update(void)
     if (!top_bar_container) return;
 
     const devos_telemetry_t *t = devos_telemetry_get();
+    const devos_palette_t *p = devos_theme_get();
+    char buf[80];
 
-    /* Wi-Fi */
-    char buf[64];
-    if (t->wifi_connected) {
-        snprintf(buf, sizeof(buf), "WiFi: %s (%ddBm)", t->wifi_ssid, t->wifi_rssi);
-    } else {
-        snprintf(buf, sizeof(buf), "WiFi: Disconnected");
+    /* Wi-Fi (states mirror devos_wifi_state_t: 0 off, 1 idle, 2 connecting,
+     * 3 connected, 4 failed). Tap opens Settings. */
+    lv_color_t wifi_col = p->text_secondary;
+    switch (t->wifi_state) {
+    case 3:
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %s  %d dBm", t->wifi_ssid, t->wifi_rssi);
+        break;
+    case 2:
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " Connecting to %s...", t->wifi_ssid);
+        wifi_col = p->accent_warning;
+        break;
+    case 4:
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " Wi-Fi: connection failed");
+        wifi_col = p->accent_danger;
+        break;
+    case 0:
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " Wi-Fi unavailable");
+        wifi_col = p->text_muted;
+        break;
+    default:
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " Wi-Fi: not connected");
+        wifi_col = p->text_muted;
+        break;
     }
     lv_label_set_text(lbl_wifi, buf);
+    lv_obj_set_style_text_color(lbl_wifi, wifi_col, 0);
 
     /* Tailscale Icon Visibility next to Local IP */
     if (icon_tailscale) {
@@ -218,10 +249,32 @@ void devos_top_bar_update(void)
     lv_label_set_text(lbl_ip, buf);
 
     /* Battery */
-    snprintf(buf, sizeof(buf), "%d%%%s", t->battery_percent, t->battery_charging ? " " LV_SYMBOL_CHARGE : "");
+    lv_color_t bat_col = p->accent_secondary;
+    if (!t->battery_valid) {
+        snprintf(buf, sizeof(buf), "--%%");
+        bat_col = p->text_muted;
+    } else if (!t->battery_present) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_USB " USB");
+    } else {
+        const char *sym = t->battery_percent >= 90 ? LV_SYMBOL_BATTERY_FULL
+                        : t->battery_percent >= 65 ? LV_SYMBOL_BATTERY_3
+                        : t->battery_percent >= 40 ? LV_SYMBOL_BATTERY_2
+                        : t->battery_percent >= 15 ? LV_SYMBOL_BATTERY_1
+                        : LV_SYMBOL_BATTERY_EMPTY;
+        snprintf(buf, sizeof(buf), "%s %d%%%s", sym, t->battery_percent,
+                 t->battery_charging ? " " LV_SYMBOL_CHARGE : "");
+        if (t->battery_percent < 15 && !t->battery_charging) bat_col = p->accent_danger;
+    }
     lv_label_set_text(lbl_battery, buf);
+    lv_obj_set_style_text_color(lbl_battery, bat_col, 0);
 
     /* Clock */
-    snprintf(buf, sizeof(buf), "%02d:%02d", t->rtc_hour, t->rtc_min);
+    if (t->time_valid) {
+        snprintf(buf, sizeof(buf), "%02d:%02d", t->rtc_hour, t->rtc_min);
+    } else {
+        snprintf(buf, sizeof(buf), "--:--");
+    }
     lv_label_set_text(lbl_clock, buf);
+    /* Battery sits left of the clock; re-anchor as both widths change. */
+    lv_obj_align_to(lbl_battery, lbl_clock, LV_ALIGN_OUT_LEFT_MID, -22, 0);
 }

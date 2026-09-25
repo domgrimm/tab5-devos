@@ -61,6 +61,8 @@ static void notify_state_change(microlink_state_t new_state)
     }
 }
 
+#ifndef ESP_PLATFORM
+/* Simulator fallback peers (used when the host has no tailscale CLI). */
 static void init_default_peers(void)
 {
     s_status.peer_count = 6;
@@ -144,7 +146,6 @@ static void init_default_peers(void)
     s_status.peers[5].tx_bytes = 110000;
 }
 
-#ifndef ESP_PLATFORM
 static void load_live_tailscale_status(void)
 {
     FILE *fp = popen("./tools/sim/tailscale_live.py", "r");
@@ -306,18 +307,13 @@ int microlink_init(const microlink_config_t *config)
 #ifndef ESP_PLATFORM
     load_live_tailscale_status();
 #else
-    /* Populate initial node status */
+    /* No Tailscale data plane exists on the target yet (no WireGuard/ts2021/
+     * DERP client), so report only what is true: our hostname, no tailnet IP,
+     * no peers. Previously this invented an IP and six peers, which made the
+     * top bar / home screen claim a live tailnet that did not exist. */
     snprintf(s_status.node_name, sizeof(s_status.node_name), "%s", s_config.hostname);
-    snprintf(s_status.tailnet_domain, sizeof(s_status.tailnet_domain), "%s", "devos.tailnet");
-    snprintf(s_status.assigned_ip, sizeof(s_status.assigned_ip), "%s", "100.77.11.92");
-    snprintf(s_status.derp_relay_name, sizeof(s_status.derp_relay_name), "%s", "DERP-19 (Sydney)");
-    s_status.derp_ping_ms = 18;
     s_status.mtu = 1280;
-    s_status.is_wireguard_hw = true;
-    s_status.total_rx_bytes = 10485760;
-    s_status.total_tx_bytes = 5242880;
-
-    init_default_peers();
+    s_status.peer_count = 0;
 #endif
 
     if (s_config.auto_connect) {
@@ -331,14 +327,17 @@ int microlink_init(const microlink_config_t *config)
 
 int microlink_connect(void)
 {
+#ifdef ESP_PLATFORM
+    /* Tailscale client not implemented on the target yet: fail honestly. */
+    printf("[microlink] Tailscale is not available on this build yet\n");
+    notify_state_change(MICROLINK_STATE_ERROR);
+    return -1;
+#else
     notify_state_change(MICROLINK_STATE_CONNECTING);
-
-#ifndef ESP_PLATFORM
     load_live_tailscale_status();
-#endif
-
     notify_state_change(MICROLINK_STATE_CONNECTED);
     return 0;
+#endif
 }
 
 int microlink_disconnect(void)

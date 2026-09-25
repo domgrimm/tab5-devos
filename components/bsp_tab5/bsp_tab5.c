@@ -117,6 +117,7 @@ static tab5_panel_t s_panel_type = TAB5_PANEL_UNKNOWN;
 static esp_lcd_touch_handle_t s_tp = NULL;
 static lv_indev_t *s_indev = NULL;
 static bool s_touch_int_gated = false;  /* TDDI: read I2C only while INT asserted */
+static void (*s_touch_activity_cb)(void) = NULL;
 
 /* -------------------------------------------------------------------------
  * LVGL flush + tear-free frame-buffer swap
@@ -308,6 +309,80 @@ static void bsp_io_expanders_init(void)
              io_dir, out_set, out_him,
              (io_dir & 1), (out_set & 1), !(out_him & 1));
 }
+
+/* -------------------------------------------------------------------------
+ * Power monitor (INA226) + RTC (RX8130CE) on the internal I2C bus.
+ * Register sequences follow M5Unified (Power_Class / RX8130_Class), which is
+ * M5's reference driver for this board.
+ * ----------------------------------------------------------------------- */
+#define TAB5_INA226_ADDR_INTERNAL   0x41   /* INA226 on the Tab5 internal bus */
+#define TAB5_RX8130_ADDR            0x32
+#define PI4IO_REG_INPUT_STATUS      0x0F
+#define PI4IO2_BIT_CHG_STAT         (1 << 6)
+
+static bool s_ina226_ok = false;
+static bool s_rtc_ok = false;
+
+static esp_err_t i2c_write_buf(i2c_port_t port, uint8_t addr, const uint8_t *buf, size_t len)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write(cmd, buf, len, true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static esp_err_t i2c_read_buf(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t *buf, size_t len)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
+    if (len > 1) {
+        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
+    }
+    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static void bsp_power_monitor_init(void)
+{
+    /* Config: AVG=16, VBUSCT=VSHCT=1.1 ms, continuous shunt+bus (0x4527). */
+    const uint8_t cfg[3] = { 0x00, 0x45, 0x27 };
+    s_ina226_ok = (i2c_write_buf(TAB5_INTERNAL_I2C_PORT, TAB5_INA226_ADDR_INTERNAL, cfg, 3) == ESP_OK);
+    ESP_LOGI(TAG, "INA226 power monitor @0x%02X: %s", TAB5_INA226_ADDR_INTERNAL,
+             s_ina226_ok ? "ok" : "not responding");
+}
+
+static void bsp_rtc_init(void)
+{
+    /* As M5Unified RX8130_Class::begin(): set CHGEN|INIEN in 0x1F, clear the
+     * digital offset (0x30) and control register 0 (0x1E, releases STOP). */
+    uint8_t r1f = 0;
+    bool ok = i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, 0x1F, &r1f, 1) == ESP_OK;
+    if (ok) {
+        const uint8_t w1f[2] = { 0x1F, (uint8_t)(r1f | 0x30) };
+        const uint8_t w30[2] = { 0x30, 0x00 };
+        const uint8_t w1e[2] = { 0x1E, 0x00 };
+        ok = i2c_write_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, w1f, 2) == ESP_OK
+          && i2c_write_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, w30, 2) == ESP_OK
+          && i2c_write_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, w1e, 2) == ESP_OK;
+    }
+    s_rtc_ok = ok;
+    ESP_LOGI(TAG, "RX8130 RTC @0x%02X: %s", TAB5_RX8130_ADDR, ok ? "ok" : "not responding");
+}
+
+static inline bool bcd_valid(uint8_t v) { return (v & 0x0F) <= 9 && (v >> 4) <= 9; }
+static inline int bcd_to_int(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
+static inline uint8_t int_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 
 /* -------------------------------------------------------------------------
  * Backlight Bringup (LEDC PWM on GPIO22)
@@ -541,6 +616,7 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 
     static bool was_pressed = false;
     if (pressed && cnt > 0) {
+        if (s_touch_activity_cb) s_touch_activity_cb();
         /* The controller reports in the panel's native portrait frame
          * (tx: 0..H_RES-1, ty: 0..V_RES-1). Apply the inverse of the 90deg CW
          * rotation used in disp_flush_cb (panel_x=ly, panel_y=V_RES-1-lx):
@@ -852,6 +928,10 @@ bool bsp_tab5_init(void)
     /* 3. Initialize IO Expanders & Release Screen Reset */
     bsp_io_expanders_init();
 
+    /* 3b. Battery monitor + hardware clock (same internal bus) */
+    bsp_power_monitor_init();
+    bsp_rtc_init();
+
     /* 4. Initialize Display Pipeline & Backlight */
     esp_err_t disp_err = bsp_display_init();
     if (disp_err != ESP_OK) {
@@ -862,20 +942,110 @@ bool bsp_tab5_init(void)
     return true;
 }
 
-bool bsp_tab5_read_power(uint16_t *voltage_mv, int16_t *current_ma, uint16_t *power_mw)
+bool bsp_tab5_read_power(bsp_tab5_power_t *out)
 {
-    if (voltage_mv) *voltage_mv = 7820;
-    if (current_ma) *current_ma = -410;
-    if (power_mw) *power_mw = 3206;
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+#ifdef ESP_PLATFORM
+    if (!s_ina226_ok) return false;
+    uint8_t shunt[2], bus[2];
+    if (i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_INA226_ADDR_INTERNAL, 0x01, shunt, 2) != ESP_OK ||
+        i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_INA226_ADDR_INTERNAL, 0x02, bus, 2) != ESP_OK) {
+        return false;
+    }
+    int16_t shunt_raw = (int16_t)((shunt[0] << 8) | shunt[1]);   /* 2.5 uV / LSB */
+    uint16_t bus_raw = (uint16_t)((bus[0] << 8) | bus[1]);        /* 1.25 mV / LSB */
+
+    out->valid = true;
+    out->voltage_mv = (uint16_t)(((uint32_t)bus_raw * 5) / 4);
+    /* I = Vshunt / 5 mOhm = raw * 0.5 mA. The shunt is wired so charge current
+     * reads negative; invert for the +charge / -discharge convention. */
+    out->current_ma = -(int32_t)shunt_raw / 2;
+    int32_t abs_ma = out->current_ma < 0 ? -out->current_ma : out->current_ma;
+    out->power_mw = (uint32_t)(((uint64_t)out->voltage_mv * (uint32_t)abs_ma) / 1000);
+
+    uint8_t in = 0;
+    if (i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_INPUT_STATUS, &in, 1) == ESP_OK) {
+        out->charging = (in & PI4IO2_BIT_CHG_STAT) != 0;
+    }
     return true;
+#else
+    return false;
+#endif
 }
 
-bool bsp_tab5_read_rtc(uint8_t *hour, uint8_t *min, uint8_t *sec)
+bool bsp_tab5_rtc_get(struct tm *utc)
 {
-    if (hour) *hour = 14;
-    if (min) *min = 28;
-    if (sec) *sec = 0;
+    if (!utc) return false;
+#ifdef ESP_PLATFORM
+    if (!s_rtc_ok) return false;
+    uint8_t b[7];
+    if (i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, 0x10, b, sizeof(b)) != ESP_OK) {
+        return false;
+    }
+    uint8_t sec = b[0] & 0x7F, min = b[1] & 0x7F, hour = b[2] & 0x3F;
+    uint8_t wday = b[3], day = b[4] & 0x3F, mon = b[5] & 0x1F, year = b[6];
+    /* Validate before trusting (uninitialised chip / lost backup = garbage). */
+    if (!bcd_valid(sec) || !bcd_valid(min) || !bcd_valid(hour) || !bcd_valid(day) ||
+        !bcd_valid(mon) || !bcd_valid(year) || wday == 0 || (wday & (wday - 1)) != 0) {
+        return false;
+    }
+    memset(utc, 0, sizeof(*utc));
+    utc->tm_sec = bcd_to_int(sec);
+    utc->tm_min = bcd_to_int(min);
+    utc->tm_hour = bcd_to_int(hour);
+    utc->tm_mday = bcd_to_int(day);
+    utc->tm_mon = bcd_to_int(mon) - 1;
+    utc->tm_year = bcd_to_int(year) + 100;   /* 20xx */
+    utc->tm_wday = __builtin_ctz(wday);
+    if (utc->tm_sec > 59 || utc->tm_min > 59 || utc->tm_hour > 23 ||
+        utc->tm_mday < 1 || utc->tm_mday > 31 || utc->tm_mon < 0 || utc->tm_mon > 11) {
+        return false;
+    }
     return true;
+#else
+    return false;
+#endif
+}
+
+bool bsp_tab5_rtc_set(const struct tm *utc)
+{
+    if (!utc) return false;
+#ifdef ESP_PLATFORM
+    if (!s_rtc_ok || utc->tm_year < 100) return false;
+    const uint8_t w[8] = {
+        0x10,
+        int_to_bcd(utc->tm_sec), int_to_bcd(utc->tm_min), int_to_bcd(utc->tm_hour),
+        (uint8_t)(1u << (utc->tm_wday & 7)),
+        int_to_bcd(utc->tm_mday), int_to_bcd(utc->tm_mon + 1), int_to_bcd((utc->tm_year + 1900) % 100),
+    };
+    return i2c_write_buf(TAB5_INTERNAL_I2C_PORT, TAB5_RX8130_ADDR, w, sizeof(w)) == ESP_OK;
+#else
+    return false;
+#endif
+}
+
+const char *bsp_tab5_panel_name(void)
+{
+#ifdef ESP_PLATFORM
+    switch (s_panel_type) {
+    case TAB5_PANEL_ILI9881C: return "ILI9881C";
+    case TAB5_PANEL_ST7123:   return "ST7123";
+    case TAB5_PANEL_ST7121:   return "ST7121";
+    default:                  return "unknown";
+    }
+#else
+    return "SDL simulator";
+#endif
+}
+
+void bsp_tab5_set_touch_activity_cb(void (*cb)(void))
+{
+#ifdef ESP_PLATFORM
+    s_touch_activity_cb = cb;
+#else
+    (void)cb;
+#endif
 }
 
 void bsp_tab5_set_brightness(uint8_t percent)

@@ -43,6 +43,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
         ${CMAKE_CURRENT_SOURCE_DIR}/components/microlink
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_sysmon
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
         ${CMAKE_CURRENT_SOURCE_DIR}/components/opendev_client
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_json
@@ -79,6 +80,7 @@ else()
         components/tab5_keyboard/tab5_keyboard.c
         components/microlink/microlink.c
         components/devos_net/devos_net.c
+        components/devos_sysmon/devos_sysmon.c
         components/libssh2_port/libssh2_port.c
         components/opendev_client/opendev_client.c
         components/devos_json/devos_json.c

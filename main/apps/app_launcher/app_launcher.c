@@ -515,7 +515,7 @@ static void update_pagination_ui(void)
                 "[Tap/Click] Select & Swap Across Pages  |  [1-8] Swap Slot  |  [R] Reset Defaults  |  [Esc/Done] Exit");
         } else {
             lv_label_set_text(lbl_bottom_hint,
-                "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [PgUp/PgDn] Page Flip  |  [Fn+E] Arrange  |  [Fn+T] Theme");
+                "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page Flip  |  [Sym+E] Arrange  |  [Sym+T] Theme");
         }
     }
 }
@@ -630,32 +630,53 @@ void app_launcher_update_telemetry(void)
 
     const devos_telemetry_t *t = devos_telemetry_get();
 
-    /* System Telemetry in Top Strip */
-    char buf[128];
-    snprintf(buf, sizeof(buf), "%02d:%02d   %s", t->rtc_hour, t->rtc_min, t->rtc_date_str);
+    /* System Telemetry in Top Strip (all live: devos_sysmon) */
+    char buf[160];
+    if (t->time_valid) {
+        snprintf(buf, sizeof(buf), "%02d:%02d   %s", t->rtc_hour, t->rtc_min, t->rtc_date_str);
+    } else {
+        snprintf(buf, sizeof(buf), "--:--   Clock not set (connect to Wi-Fi to sync)");
+    }
     if (lbl_clock_date) lv_label_set_text(lbl_clock_date, buf);
 
+    char ts[48] = "", bat[72], sd[48];
     if (t->tailscale_online) {
-        snprintf(buf, sizeof(buf), "Tailscale: %s  |  Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
-                 t->tailscale_ip,
-                 t->battery_voltage_mv / 1000.0f,
-                 t->battery_power_mw / 1000.0f,
-                 t->runtime_minutes_left / 60.0f,
-                 t->sd_free_mb / 1024.0f);
-    } else {
-        snprintf(buf, sizeof(buf), "Battery: %.1fV (%.1fW, ~%.1fh left)  |  SD: %.1f GB Free",
-                 t->battery_voltage_mv / 1000.0f,
-                 t->battery_power_mw / 1000.0f,
-                 t->runtime_minutes_left / 60.0f,
-                 t->sd_free_mb / 1024.0f);
+        snprintf(ts, sizeof(ts), "Tailscale: %s  |  ", t->tailscale_ip);
     }
+    if (!t->battery_valid) {
+        snprintf(bat, sizeof(bat), "Battery: n/a");
+    } else if (!t->battery_present) {
+        snprintf(bat, sizeof(bat), "Power: USB (no battery)");
+    } else if (t->battery_charging) {
+        snprintf(bat, sizeof(bat), "Battery: %d%% (%.2fV, charging)",
+                 t->battery_percent, t->battery_voltage_mv / 1000.0f);
+    } else if (t->runtime_minutes_left > 0) {
+        snprintf(bat, sizeof(bat), "Battery: %d%% (%.2fV, %.1fW, ~%dh%02dm left)",
+                 t->battery_percent, t->battery_voltage_mv / 1000.0f,
+                 t->battery_power_mw / 1000.0f,
+                 t->runtime_minutes_left / 60, t->runtime_minutes_left % 60);
+    } else {
+        snprintf(bat, sizeof(bat), "Battery: %d%% (%.2fV, %.1fW)",
+                 t->battery_percent, t->battery_voltage_mv / 1000.0f,
+                 t->battery_power_mw / 1000.0f);
+    }
+    if (!t->sd_mounted) {
+        snprintf(sd, sizeof(sd), "SD: not inserted");
+    } else if (t->sd_total_mb == 0) {
+        snprintf(sd, sizeof(sd), "SD: reading...");
+    } else {
+        snprintf(sd, sizeof(sd), "SD: %.1f GB free of %.1f GB",
+                 t->sd_free_mb / 1024.0f, t->sd_total_mb / 1024.0f);
+    }
+    snprintf(buf, sizeof(buf), "%s%s  |  %s", ts, bat, sd);
     if (lbl_net_power) lv_label_set_text(lbl_net_power, buf);
 
-    snprintf(buf, sizeof(buf), "Memory: %.1f MB Free PSRAM, %u KB SRAM  |  CPU: Core 0: %d%% | Core 1: %d%%",
+    snprintf(buf, sizeof(buf), "Memory: %.1f MB PSRAM free, %u KB SRAM free  |  CPU: Core 0 %d%%  |  Core 1 %d%%  |  Up %luh%02lum",
              t->free_psram_kb / 1024.0f,
              (unsigned int)t->free_sram_kb,
              t->cpu_load_core0,
-             t->cpu_load_core1);
+             t->cpu_load_core1,
+             (unsigned long)(t->uptime_s / 3600), (unsigned long)((t->uptime_s / 60) % 60));
     if (lbl_mem_cpu) lv_label_set_text(lbl_mem_cpu, buf);
 
     /* Update dynamic app card telemetry lines */
@@ -1189,7 +1210,7 @@ static void launcher_init(void)
 
     lbl_bottom_hint = lv_label_create(bottom_bar);
     lv_label_set_text(lbl_bottom_hint,
-        "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [PgUp/PgDn] Page Flip  |  [Fn+E] Arrange  |  [Fn+T] Theme");
+        "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page Flip  |  [Sym+E] Arrange  |  [Sym+T] Theme");
     lv_obj_center(lbl_bottom_hint);
     lv_obj_set_style_text_font(lbl_bottom_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);

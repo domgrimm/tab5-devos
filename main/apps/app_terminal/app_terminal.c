@@ -909,8 +909,8 @@ static bool terminal_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 1. Toggle Sidebar: Fn + [ */
-    if ((modifiers & DEVOS_MOD_FN) && (key == '[')) {
+    /* 1. Toggle Sidebar: Sym + L */
+    if ((modifiers & DEVOS_MOD_FN) && (key == 'l' || key == 'L')) {
         app_terminal_toggle_sidebar();
         return true;
     }
@@ -940,7 +940,29 @@ static bool terminal_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 4. Control Sequences */
+    /* 4. Control Sequences. The keyboard reports Ctrl chords as letter +
+     * DEVOS_MOD_CTRL (the simulator may send the raw code): map to ASCII
+     * control codes so Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+B (tmux) work. */
+    if ((modifiers & DEVOS_MOD_CTRL) &&
+        ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z'))) {
+        char ch = (char)(key & 0x1F);
+        ssh_port_send(s_active_session_id, &ch, 1);
+        return true;
+    }
+    if (key == LV_KEY_ESC || key == LV_KEY_DEL) {
+        /* Esc belongs to the remote program (vim, less...) while a session is
+         * live; Sym+H returns Home. With no live session Esc falls through. */
+        ssh_session_t *sess = ssh_port_get_session(s_active_session_id);
+        if (sess && sess->state == SSH_SESSION_CONNECTED) {
+            if (key == LV_KEY_ESC) {
+                ssh_port_send(s_active_session_id, "\033", 1);
+            } else {
+                ssh_port_send(s_active_session_id, "\033[3~", 4);
+            }
+            return true;
+        }
+        return false;
+    }
     if (key == 0x03 || key == 0x04 || key == 0x1A || key == 0x0C) {
         char ch = (char)key;
         ssh_port_send(s_active_session_id, &ch, 1);
@@ -1262,7 +1284,7 @@ static void terminal_init(void)
 
     lbl_term_footer = lv_label_create(term_footer);
     lv_label_set_text(lbl_term_footer,
-                      "Connected | PTY: TIOCSWINSZ OK | Alt+1..9 Switch | Fn+[ Toggle Sidebar | Ctrl+C Interrupt");
+                      "Connected | PTY: TIOCSWINSZ OK | Alt+1..9 Switch | Sym+L Toggle Sidebar | Ctrl+C Interrupt");
     lv_obj_align(lbl_term_footer, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_text_color(lbl_term_footer, p->text_secondary, 0);
     lv_obj_set_style_text_font(lbl_term_footer, &lv_font_montserrat_12, 0);

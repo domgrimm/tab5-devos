@@ -59,7 +59,7 @@ extern "C" {
 
     /* Secondary I2C Bus (Sensors & Power) */
     #define TAB5_SENSORS_I2C_PORT   I2C_NUM_1
-    #define TAB5_INA226_ADDR        0x40
+    #define TAB5_INA226_ADDR        0x41   /* battery monitor (M5Unified) */
     #define TAB5_RTC_ADDR           0x32
     #define TAB5_GT911_ADDR         0x5D
     #define TAB5_GT911_ADDR_ALT     0x14
@@ -86,6 +86,11 @@ extern "C" {
 #define DEVOS_AGY_BRIDGE_PORT       8420
 #define DEVOS_SIM_VNC_PORT          6080
 #define DEVOS_OPENCODE_DEFAULT_PORT 4096
+
+/* --- Battery --- */
+/* Stock Tab5 NP-F550-style 2S pack: 7.4 V x 2000 mAh. Used only for the
+ * runtime estimate on the home screen. */
+#define DEVOS_BATTERY_CAPACITY_MWH  14800
 
 /* --- Applications Enumeration --- */
 typedef enum {

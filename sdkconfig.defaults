@@ -22,12 +22,23 @@ CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 # Memory Reserve (Keep >120KB internal SRAM free for mbedTLS / Wi-Fi)
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
-# Cache / perf. (The 256 KB L2 cache M5GFX uses doesn't fit alongside Wi-Fi/SSH
-# and LVGL's 256 KB static pool; it is being tested in isolation via
-# sdkconfig.displaytest -- see DEVOS_DISPLAY_TEST in the top-level CMakeLists.)
+# Cache / perf. (M5GFX's 256 KB L2 cache was tested and ruled out as a display
+# flicker cause; the flicker was the IDF < 5.5.3 DSI timing bug, see bsp_tab5.c.)
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
+
+# FAT long filenames. Without these only 8.3 names work on the SD card, so
+# bookmarks.json, known_hosts, untitled-N.md, *.diff etc. fail with
+# FR_INVALID_NAME and directory listings come back as upper-case short names.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+
+# Per-core CPU load on the home screen (idle-task run-time counters, 64-bit
+# so the microsecond counter never wraps).
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
 
 # Custom Partition Table
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -68,7 +79,10 @@ CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_UNSCII_8=y
 
 # LVGL Memory & Logging
-CONFIG_LV_MEM_SIZE_KILOBYTES=256
+# LVGL's builtin allocator pool is *static internal RAM*. main.c adds 8 MB of
+# PSRAM pools to LVGL at boot, so keep only a small fast internal pool here:
+# at 256 KB it alone left < 120 KB internal RAM for mbedTLS / SSH / Wi-Fi.
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
 CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 

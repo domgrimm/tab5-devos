@@ -4,21 +4,28 @@
 #include <string.h>
 
 static devos_theme_toggle_fn s_theme_toggle_cb = NULL;
+static devos_brightness_step_fn s_brightness_step_cb = NULL;
 
 static devos_app_descriptor_t *registered_apps[DEVOS_MAX_APPS] = {NULL};
 static int registered_count = 0;
 static devos_app_id_t current_app_id = DEVOS_APP_LAUNCHER;
 static devos_app_id_t previous_app_id = DEVOS_APP_LAUNCHER;
 
+#ifndef ESP_PLATFORM
+/* Simulator: demo values so every launcher tile and the telemetry strip have
+ * something to show on a desktop. */
 static devos_telemetry_t telemetry_data = {
-    .battery_voltage_mv     = 7820,     /* 7.82 V (NP-F550 nominal 7.4V) */
-    .battery_current_ma     = -410,     /* 410 mA discharge */
-    .battery_power_mw       = 3206,     /* 3.2 W */
-    .battery_percent        = 94,       /* 94% */
+    .battery_voltage_mv     = 7820,
+    .battery_current_ma     = -410,
+    .battery_power_mw       = 3206,
+    .battery_percent        = 94,
     .battery_charging       = false,
-    .runtime_minutes_left   = 288,      /* ~4.8 hours */
+    .runtime_minutes_left   = 288,
+    .battery_valid          = true,
+    .battery_present        = true,
 
     .wifi_connected         = true,
+    .wifi_state             = 3,
     .wifi_ssid              = "DevNet",
     .wifi_rssi              = -58,
     .local_ip               = "10.2.132.54",
@@ -30,16 +37,17 @@ static devos_telemetry_t telemetry_data = {
     .sd_mounted             = true,
     .sd_total_mb            = 31200,
     .sd_free_mb             = 29412,
-    .free_psram_kb          = 28416,    /* 28.4 MB Free PSRAM */
-    .free_sram_kb           = 428,      /* 428 KB Internal SRAM */
+    .free_psram_kb          = 28416,
+    .free_sram_kb           = 428,
 
-    .cpu_load_core0         = 4,        /* Network & Crypto core */
-    .cpu_load_core1         = 18,       /* GUI & Input core */
+    .cpu_load_core0         = 4,
+    .cpu_load_core1         = 18,
 
     .rtc_hour               = 14,
     .rtc_min                = 28,
     .rtc_sec                = 0,
     .rtc_date_str           = "Wednesday, Sep 20",
+    .time_valid             = true,
 
     .opendev_status         = "Idle",
     .opendev_model          = "Sonnet 3.7",
@@ -51,6 +59,13 @@ static devos_telemetry_t telemetry_data = {
     .agy_bridge_online      = true,
     .agy_subagents_count    = 2
 };
+#else
+/* Target: start empty. devos_sysmon fills in hardware/network data within the
+ * first second and apps update their own fields; nothing here is invented. */
+static devos_telemetry_t telemetry_data = {
+    .opendev_status         = "Offline",
+};
+#endif
 
 #ifndef ESP_PLATFORM
 #include <ifaddrs.h>
@@ -229,18 +244,23 @@ void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb)
     s_theme_toggle_cb = cb;
 }
 
+void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb)
+{
+    s_brightness_step_cb = cb;
+}
+
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 {
     /* Any keypress is activity: wakes from dim/sleep, resets idle. */
     devos_power_activity();
 
-    /* 1. Global Hotkey: Home Screen Return (Fn + H) */
+    /* 1. Global Hotkey: Home Screen Return (Sym + H) */
     if ((modifiers & DEVOS_MOD_FN) && (key == 'h' || key == 'H')) {
         devos_core_switch_app(DEVOS_APP_LAUNCHER);
         return true;
     }
 
-    /* 2. Global Hotkey: Theme Toggle (Fn + T) */
+    /* 2. Global Hotkey: Theme Toggle (Sym + T) */
     if ((modifiers & DEVOS_MOD_FN) && (key == 't' || key == 'T')) {
         if (s_theme_toggle_cb) {
             s_theme_toggle_cb();
@@ -248,7 +268,15 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 3. Global Hotkey: Switch Apps (Fn + 1 .. Fn + 8) */
+    /* 2b. Global Hotkey: Brightness (Sym + - / Sym + +) */
+    if ((modifiers & DEVOS_MOD_FN) && (key == '-' || key == '+' || key == '=')) {
+        if (s_brightness_step_cb) {
+            s_brightness_step_cb(key == '-' ? -10 : 10);
+        }
+        return true;
+    }
+
+    /* 3. Global Hotkey: Switch Apps (Sym + 1 .. Sym + 8) */
     if (modifiers & DEVOS_MOD_FN) {
         if (key >= '1' && key <= '8') {
             devos_app_id_t target = (devos_app_id_t)(key - '0');

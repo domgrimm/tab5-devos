@@ -1,3 +1,7 @@
+#ifdef ESP_PLATFORM
+#include "nvs.h"
+#define THEME_NVS_NS "devos"
+#endif
 #include "devos_theme.h"
 #include "devos_core.h"
 #include <stdio.h>
@@ -114,8 +118,18 @@ static const devos_palette_t palette_light = {
 
 void devos_theme_init(void)
 {
-    /* Dark Cyberdeck mode by default */
+    /* Dark Cyberdeck mode by default; the user's last choice wins on target. */
     current_theme = DEVOS_THEME_DARK;
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    if (nvs_open(THEME_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t v = 0;
+        if (nvs_get_u8(h, "theme", &v) == ESP_OK && v == DEVOS_THEME_LIGHT) {
+            current_theme = DEVOS_THEME_LIGHT;
+        }
+        nvs_close(h);
+    }
+#endif
     devos_core_set_theme_toggle_cb(devos_theme_toggle);
 }
 
@@ -149,6 +163,14 @@ void devos_theme_set(devos_theme_type_t type)
     if (current_theme != type) {
         current_theme = type;
         notify_listeners();
+#ifdef ESP_PLATFORM
+        nvs_handle_t h;
+        if (nvs_open(THEME_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "theme", (uint8_t)type);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+#endif
     }
 }
 
