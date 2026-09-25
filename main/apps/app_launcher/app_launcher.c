@@ -547,7 +547,7 @@ static void refresh_cards(void)
             int page_slot = (i % TILES_PER_PAGE) + 1;
             if (arrange_mode) {
                 if (selected_slot == i) {
-                    snprintf(tbuf, sizeof(tbuf), "[⇋ %d] %s", i + 1, app->name ? app->name : app->uid);
+                    snprintf(tbuf, sizeof(tbuf), "[" LV_SYMBOL_SHUFFLE " %d] %s", i + 1, app->name ? app->name : app->uid);
                 } else {
                     snprintf(tbuf, sizeof(tbuf), "[%d] %s", i + 1, app->name ? app->name : app->uid);
                 }

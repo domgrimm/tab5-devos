@@ -34,7 +34,7 @@ idf_component_register(
         tab5_keyboard
         devos_net
         devos_sysmon
-        microlink
+        devos_tailnet
         libssh2_port
         devos_vterm
         opendev_client

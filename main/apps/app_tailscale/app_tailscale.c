@@ -1,722 +1,751 @@
+/* Tailscale: status, enrolment and peers for the Tab5's tailnet client
+ * (components/devos_tailnet, MicroLink on the device).
+ *
+ * Keys: C connect/disconnect, K auth key, N device name, Up/Down or 1-9
+ * select a peer, Enter SSH to it, P ping it, Esc close/deselect.
+ */
 #include "app_tailscale.h"
-#include "microlink.h"
-#include "devos_net.h"
 #include "devos_config.h"
+#include "devos_tailnet.h"
 #include "devos_theme.h"
+#include "tab5_keyboard.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#define ROW_H   58
+#define PAD     16
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 
-/* Status Card Objects */
-static lv_obj_t *status_card = NULL;
-static lv_obj_t *lbl_title = NULL;
-static lv_obj_t *lbl_details = NULL;
-static lv_obj_t *lbl_keys = NULL;
-static lv_obj_t *btn_toggle = NULL;
-static lv_obj_t *lbl_toggle = NULL;
-static lv_obj_t *btn_ping_derp = NULL;
-static lv_obj_t *lbl_ping_derp = NULL;
-static lv_obj_t *btn_auth_key = NULL;
-static lv_obj_t *lbl_auth_key = NULL;
+static bool s_styles_ready = false;
+static lv_style_t st_bg, st_card, st_title, st_text, st_muted, st_small, st_btn, st_btn_primary, st_btn_danger,
+                  st_row, st_row_sel, st_ta, st_ta_focus, st_overlay, st_modal, st_kb, st_kb_btn, st_ok, st_warn,
+                  st_err, st_section;
 
-/* Section Header */
-static lv_obj_t *lbl_peers_h = NULL;
-static lv_obj_t *btn_refresh = NULL;
-static lv_obj_t *lbl_refresh = NULL;
+/* status card */
+static lv_obj_t *lbl_state, *lbl_line1, *lbl_line2, *lbl_msg, *btn_toggle, *lbl_toggle;
+/* peers */
+static lv_obj_t *lbl_peers_h, *list_peers, *lbl_no_peers;
+static lv_obj_t *rows[DEVOS_TS_MAX_PEERS], *row_name[DEVOS_TS_MAX_PEERS], *row_sub[DEVOS_TS_MAX_PEERS],
+                *row_ping[DEVOS_TS_MAX_PEERS];
+/* dialogs */
+static lv_obj_t *overlay, *kb, *dlg_key, *ta_key, *dlg_name, *ta_name, *dlg_forget, *s_focused_ta;
 
-/* Scrollable Peer List */
-static lv_obj_t *peer_list_scroll = NULL;
-static lv_obj_t *peer_cards[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_title_lbls[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_sub_lbls[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_tray[MICROLINK_MAX_PEERS] = {NULL};
+static int s_sel = -1;
+static uint32_t s_seen_gen = UINT32_MAX;
 
-/* Auth Modal */
-static lv_obj_t *modal_auth = NULL;
-static lv_obj_t *ta_auth_key = NULL;
-static lv_obj_t *lbl_m_title = NULL;
-static lv_obj_t *lbl_m_desc = NULL;
-static lv_obj_t *btn_enroll = NULL;
-static lv_obj_t *lbl_enroll = NULL;
-static lv_obj_t *btn_cancel = NULL;
-static lv_obj_t *lbl_cancel = NULL;
-
-/* Peer tray buttons (per-peer, for theme updates) */
-static lv_obj_t *peer_ssh_btns[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_ssh_lbls[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_ping_btns[MICROLINK_MAX_PEERS] = {NULL};
-static lv_obj_t *peer_ping_lbls[MICROLINK_MAX_PEERS] = {NULL};
-
-static int s_selected_peer = -1;
-static bool s_filter_direct_only = false;
-
-/* Forward declarations */
 static void refresh_ui(void);
-static void apply_theme(const devos_palette_t *p, void *user_data);
 
-/* --------------------------------------------------------------------------
- * Callbacks
- * -------------------------------------------------------------------------- */
-static void toggle_conn_cb(lv_event_t *e)
+/* ======================================================================== */
+/* Styles                                                                   */
+/* ======================================================================== */
+static void restyle(const devos_palette_t *p)
 {
-    LV_UNUSED(e);
-    if (microlink_get_state() == MICROLINK_STATE_CONNECTED) {
-        microlink_disconnect();
+    lv_style_set_bg_color(&st_bg, p->bg);
+    lv_style_set_bg_color(&st_card, p->surface);
+    lv_style_set_border_color(&st_card, p->surface_border);
+    lv_style_set_text_color(&st_title, p->text_primary);
+    lv_style_set_text_color(&st_text, p->text_primary);
+    lv_style_set_text_color(&st_muted, p->text_secondary);
+    lv_style_set_text_color(&st_small, p->text_muted);
+    lv_style_set_text_color(&st_section, p->accent_primary);
+    lv_style_set_bg_color(&st_btn, p->surface_active);
+    lv_style_set_border_color(&st_btn, p->surface_border);
+    lv_style_set_text_color(&st_btn, p->text_primary);
+    lv_style_set_bg_color(&st_btn_primary, p->accent_primary);
+    lv_style_set_text_color(&st_btn_primary, p->bg);
+    lv_style_set_text_color(&st_btn_danger, p->accent_danger);
+    lv_style_set_bg_color(&st_row, p->surface);
+    lv_style_set_border_color(&st_row, p->surface_border);
+    lv_style_set_border_color(&st_row_sel, p->accent_primary);
+    lv_style_set_bg_color(&st_row_sel, p->surface_active);
+    lv_style_set_bg_color(&st_ta, p->bg_alt);
+    lv_style_set_border_color(&st_ta, p->surface_border);
+    lv_style_set_text_color(&st_ta, p->text_primary);
+    lv_style_set_border_color(&st_ta_focus, p->accent_primary);
+    lv_style_set_bg_color(&st_modal, p->surface);
+    lv_style_set_border_color(&st_modal, p->accent_primary);
+    lv_style_set_bg_color(&st_kb, p->bg_alt);
+    lv_style_set_bg_color(&st_kb_btn, p->surface_active);
+    lv_style_set_text_color(&st_kb_btn, p->text_primary);
+    lv_style_set_text_color(&st_ok, p->accent_secondary);
+    lv_style_set_text_color(&st_warn, p->accent_warning);
+    lv_style_set_text_color(&st_err, p->accent_danger);
+}
+
+static void styles_init(void)
+{
+    if (s_styles_ready) return;
+    lv_style_t *all[] = { &st_bg, &st_card, &st_title, &st_text, &st_muted, &st_small, &st_btn, &st_btn_primary,
+                          &st_btn_danger, &st_row, &st_row_sel, &st_ta, &st_ta_focus, &st_overlay, &st_modal,
+                          &st_kb, &st_kb_btn, &st_ok, &st_warn, &st_err, &st_section };
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
+    lv_style_set_bg_opa(&st_bg, LV_OPA_COVER);
+    lv_style_set_radius(&st_bg, 0);
+    lv_style_set_border_width(&st_bg, 0);
+    lv_style_set_pad_all(&st_bg, PAD);
+    lv_style_set_bg_opa(&st_card, LV_OPA_COVER);
+    lv_style_set_border_width(&st_card, 1);
+    lv_style_set_radius(&st_card, 8);
+    lv_style_set_pad_all(&st_card, 14);
+    lv_style_set_text_font(&st_title, &lv_font_montserrat_20);
+    lv_style_set_text_font(&st_text, &lv_font_montserrat_14);
+    lv_style_set_text_font(&st_muted, &lv_font_montserrat_14);
+    lv_style_set_text_font(&st_small, &lv_font_montserrat_12);
+    lv_style_set_text_font(&st_section, &lv_font_montserrat_12);
+    lv_style_set_text_letter_space(&st_section, 1);
+    lv_style_set_bg_opa(&st_btn, LV_OPA_COVER);
+    lv_style_set_border_width(&st_btn, 1);
+    lv_style_set_radius(&st_btn, 6);
+    lv_style_set_shadow_width(&st_btn, 0);
+    lv_style_set_pad_hor(&st_btn, 14);
+    lv_style_set_pad_ver(&st_btn, 8);
+    lv_style_set_text_font(&st_btn, &lv_font_montserrat_14);
+    lv_style_set_border_width(&st_btn_primary, 0);
+    lv_style_set_bg_opa(&st_row, LV_OPA_COVER);
+    lv_style_set_border_width(&st_row, 1);
+    lv_style_set_radius(&st_row, 6);
+    lv_style_set_shadow_width(&st_row, 0);
+    lv_style_set_pad_hor(&st_row, 12);
+    lv_style_set_pad_ver(&st_row, 0);
+    lv_style_set_border_width(&st_row_sel, 2);
+    lv_style_set_bg_opa(&st_ta, LV_OPA_COVER);
+    lv_style_set_border_width(&st_ta, 1);
+    lv_style_set_radius(&st_ta, 6);
+    lv_style_set_pad_all(&st_ta, 8);
+    lv_style_set_text_font(&st_ta, &lv_font_montserrat_16);
+    lv_style_set_border_width(&st_ta_focus, 2);
+    lv_style_set_bg_color(&st_overlay, lv_color_black());
+    lv_style_set_bg_opa(&st_overlay, LV_OPA_50);
+    lv_style_set_border_width(&st_overlay, 0);
+    lv_style_set_radius(&st_overlay, 0);
+    lv_style_set_pad_all(&st_overlay, 0);
+    lv_style_set_bg_opa(&st_modal, LV_OPA_COVER);
+    lv_style_set_border_width(&st_modal, 1);
+    lv_style_set_radius(&st_modal, 10);
+    lv_style_set_pad_all(&st_modal, 18);
+    lv_style_set_pad_row(&st_modal, 10);
+    lv_style_set_bg_opa(&st_kb, LV_OPA_COVER);
+    lv_style_set_border_width(&st_kb, 0);
+    lv_style_set_radius(&st_kb, 0);
+    lv_style_set_bg_opa(&st_kb_btn, LV_OPA_COVER);
+    lv_style_set_radius(&st_kb_btn, 6);
+    lv_style_set_border_width(&st_kb_btn, 0);
+    lv_style_set_shadow_width(&st_kb_btn, 0);
+    lv_style_set_text_font(&st_kb_btn, &lv_font_montserrat_18);
+    lv_style_set_text_font(&st_ok, &lv_font_montserrat_14);
+    lv_style_set_text_font(&st_warn, &lv_font_montserrat_14);
+    lv_style_set_text_font(&st_err, &lv_font_montserrat_14);
+    restyle(devos_theme_get());
+    s_styles_ready = true;
+}
+
+static lv_obj_t *mk_label(lv_obj_t *parent, lv_style_t *st, const char *txt)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_add_style(l, st, 0);
+    lv_label_set_text(l, txt);
+    return l;
+}
+
+static lv_obj_t *mk_btn(lv_obj_t *parent, const char *txt, lv_style_t *extra, lv_event_cb_t cb, void *ud)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_add_style(b, &st_btn, 0);
+    if (extra) lv_obj_add_style(b, extra, 0);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, txt);
+    lv_obj_center(l);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+    return b;
+}
+
+static void set_text(lv_obj_t *lbl, const char *txt)
+{
+    if (lbl && strcmp(lv_label_get_text(lbl), txt) != 0) lv_label_set_text(lbl, txt);
+}
+
+static void set_style_one(lv_obj_t *obj, lv_style_t *want, lv_style_t *const *options, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (options[i] != want) lv_obj_remove_style(obj, options[i], 0);
+    }
+    lv_obj_add_style(obj, want, 0);
+}
+
+/* ======================================================================== */
+/* Actions                                                                  */
+/* ======================================================================== */
+static bool state_is_active(devos_ts_state_t st)
+{
+    return st == DEVOS_TS_WAIT_WIFI || st == DEVOS_TS_CONNECTING || st == DEVOS_TS_REGISTERING ||
+           st == DEVOS_TS_CONNECTED || st == DEVOS_TS_RECONNECTING;
+}
+
+static void open_key_dialog(void);
+
+static void toggle_conn(void)
+{
+    devos_ts_info_t info;
+    devos_tailnet_get_info(&info);
+    if (state_is_active(info.state)) {
+        devos_tailnet_disconnect();
+    } else if (!info.registered && !info.has_auth_key) {
+        open_key_dialog();
     } else {
-        microlink_connect();
+        devos_tailnet_connect();
     }
     refresh_ui();
 }
 
-static void ping_derp_cb(lv_event_t *e)
+static void toggle_cb(lv_event_t *e) { LV_UNUSED(e); toggle_conn(); }
+
+static void peer_ssh(int idx)
+{
+    devos_ts_peer_t p;
+    if (devos_tailnet_get_peer(idx, &p) != 0) return;
+    devos_telemetry_t t;
+    memcpy(&t, devos_telemetry_get(), sizeof(t));
+    snprintf(t.terminal_requested_host, sizeof(t.terminal_requested_host), "%s", p.ip);
+    devos_telemetry_update(&t);
+    devos_core_switch_app(DEVOS_APP_TERMINAL);
+}
+
+static void select_peer(int idx)
+{
+    s_sel = idx;
+    s_seen_gen = UINT32_MAX;
+    refresh_ui();
+    if (idx >= 0 && idx < DEVOS_TS_MAX_PEERS && rows[idx]) lv_obj_scroll_to_view(rows[idx], LV_ANIM_ON);
+}
+
+static void row_cb(lv_event_t *e) { select_peer((int)(intptr_t)lv_event_get_user_data(e)); }
+static void ssh_cb(lv_event_t *e) { peer_ssh((int)(intptr_t)lv_event_get_user_data(e)); }
+static void ping_cb(lv_event_t *e)
+{
+    devos_tailnet_ping((int)(intptr_t)lv_event_get_user_data(e));
+    refresh_ui();
+}
+
+/* ======================================================================== */
+/* Dialogs                                                                  */
+/* ======================================================================== */
+static bool dialog_open(void)
+{
+    return overlay && !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void close_dialogs(void)
+{
+    if (!overlay) return;
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_key, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_name, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_forget, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_text(ta_key, "");
+    s_focused_ta = NULL;
+}
+
+static void show_dialog(lv_obj_t *dlg, lv_obj_t *ta)
+{
+    close_dialogs();
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(dlg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(overlay);
+    s_focused_ta = ta;
+    if (ta) {
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);
+        lv_keyboard_set_textarea(kb, ta);
+    }
+    if (ta && !tab5_keyboard_is_connected()) lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void open_key_dialog(void) { show_dialog(dlg_key, ta_key); }
+
+static void open_name_dialog(void)
+{
+    char name[DEVOS_TS_HOSTNAME_MAX];
+    devos_tailnet_get_hostname(name, sizeof(name));
+    lv_textarea_set_text(ta_name, name);
+    show_dialog(dlg_name, ta_name);
+}
+
+static void key_submit(void)
+{
+    const char *k = lv_textarea_get_text(ta_key);
+    if (!k || strncmp(k, "tskey-", 6) != 0) return;     /* keep the dialog open */
+    devos_tailnet_set_auth_key(k);
+    close_dialogs();
+    devos_tailnet_connect();
+    refresh_ui();
+}
+
+static void name_submit(void)
+{
+    devos_tailnet_set_hostname(lv_textarea_get_text(ta_name));
+    close_dialogs();
+    devos_ts_info_t info;
+    devos_tailnet_get_info(&info);
+    if (state_is_active(info.state)) {                   /* reconnect under the new name */
+        devos_tailnet_disconnect();
+        devos_tailnet_connect();
+    }
+    refresh_ui();
+}
+
+static void key_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_key_dialog(); }
+static void name_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_name_dialog(); }
+static void forget_btn_cb(lv_event_t *e) { LV_UNUSED(e); show_dialog(dlg_forget, NULL); }
+static void key_ok_cb(lv_event_t *e) { LV_UNUSED(e); key_submit(); }
+static void name_ok_cb(lv_event_t *e) { LV_UNUSED(e); name_submit(); }
+static void cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_dialogs(); }
+static void forget_ok_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    int latency = 0;
-    if (microlink_ping_derp(&latency) == 0) {
-        refresh_ui();
-    }
-}
-
-static void refresh_peers_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    microlink_refresh_peers();
+    close_dialogs();
+    devos_tailnet_forget();
     refresh_ui();
 }
 
-static void peer_click_cb(lv_event_t *e)
+static void ta_click_cb(lv_event_t *e)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (s_selected_peer == idx) {
-        s_selected_peer = -1; /* Toggle off */
-    } else {
-        s_selected_peer = idx;
-    }
-    refresh_ui();
+    s_focused_ta = lv_event_get_target(e);
+    lv_keyboard_set_textarea(kb, s_focused_ta);
+    lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void open_peer_ssh(int idx)
+static void kb_event_cb(lv_event_t *e)
 {
-    microlink_status_t st;
-    if (microlink_get_status(&st) == 0 && idx >= 0 && idx < st.peer_count) {
-        /* Update telemetry with selected host and launch Terminal */
-        devos_telemetry_t t;
-        memcpy(&t, devos_telemetry_get(), sizeof(t));
-        snprintf(t.terminal_requested_host, sizeof(t.terminal_requested_host), "%s", st.peers[idx].ip);
-        devos_telemetry_update(&t);
-
-        devos_core_switch_app(DEVOS_APP_TERMINAL);
-    }
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CANCEL) { close_dialogs(); return; }
+    if (code != LV_EVENT_READY) return;
+    if (!lv_obj_has_flag(dlg_key, LV_OBJ_FLAG_HIDDEN)) key_submit();
+    else if (!lv_obj_has_flag(dlg_name, LV_OBJ_FLAG_HIDDEN)) name_submit();
 }
 
-static void peer_ssh_cb(lv_event_t *e)
+static lv_obj_t *mk_dialog(int w)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    open_peer_ssh(idx);
+    lv_obj_t *d = lv_obj_create(overlay);
+    lv_obj_remove_style_all(d);
+    lv_obj_add_style(d, &st_modal, 0);
+    lv_obj_set_size(d, w, LV_SIZE_CONTENT);
+    lv_obj_align(d, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_flex_flow(d, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(d, LV_OBJ_FLAG_HIDDEN);
+    return d;
 }
 
-static void peer_ping_cb(lv_event_t *e)
+static lv_obj_t *mk_ta(lv_obj_t *parent, const char *placeholder, int w, int max)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    int lat = 0;
-    microlink_ping_peer(idx, &lat);
-    refresh_ui();
+    lv_obj_t *ta = lv_textarea_create(parent);
+    lv_obj_add_style(ta, &st_ta, 0);
+    lv_obj_add_style(ta, &st_ta_focus, LV_STATE_FOCUSED);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_textarea_set_max_length(ta, max);
+    lv_obj_set_width(ta, w);
+    lv_obj_add_event_cb(ta, ta_click_cb, LV_EVENT_CLICKED, NULL);
+    return ta;
 }
 
-static void open_auth_modal_cb(lv_event_t *e)
+static lv_obj_t *mk_btn_row(lv_obj_t *parent)
 {
-    LV_UNUSED(e);
-    if (modal_auth) {
-        char key[MICROLINK_MAX_KEY_LEN] = {0};
-        microlink_get_auth_key(key, sizeof(key));
-        if (ta_auth_key) {
-            lv_textarea_set_text(ta_auth_key, key);
-            lv_obj_add_state(ta_auth_key, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_auth_key,
-                devos_theme_get()->accent_primary, 0);
-        }
-        lv_obj_remove_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(modal_auth);
-    }
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
 }
 
-static void close_auth_modal_cb(lv_event_t *e)
+static void build_dialogs(void)
 {
-    LV_UNUSED(e);
-    if (modal_auth) {
-        lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-    }
+    overlay = lv_obj_create(screen);
+    lv_obj_remove_style_all(overlay);
+    lv_obj_add_style(overlay, &st_overlay, 0);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_IGNORE_LAYOUT | LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(overlay, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(overlay, -PAD, -PAD);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+
+    dlg_key = mk_dialog(760);
+    lv_obj_t *t = mk_label(dlg_key, &st_title, "Tailscale auth key");
+    LV_UNUSED(t);
+    lv_obj_t *l = mk_label(dlg_key, &st_muted,
+                           "Create one at login.tailscale.com/admin/settings/keys (on any computer or phone) "
+                           "and type it here. It is used once to add this Tab5 to your tailnet and then "
+                           "erased; the device keeps its own node key.\n"
+                           "Or save the key in a file named ts_key in the SD card root and reboot.");
+    lv_obj_set_width(l, 720);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    ta_key = mk_ta(dlg_key, "tskey-auth-...", 720, DEVOS_TS_KEY_MAX - 1);
+    lv_obj_t *row = mk_btn_row(dlg_key);
+    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Save & connect", &st_btn_primary, key_ok_cb, NULL);
+
+    dlg_name = mk_dialog(560);
+    mk_label(dlg_name, &st_title, "Device name");
+    l = mk_label(dlg_name, &st_muted, "How this Tab5 appears on your tailnet (letters, digits and -).");
+    lv_obj_set_width(l, 520);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    ta_name = mk_ta(dlg_name, "devos-tab5", 520, DEVOS_TS_HOSTNAME_MAX - 1);
+    row = mk_btn_row(dlg_name);
+    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Save", &st_btn_primary, name_ok_cb, NULL);
+
+    dlg_forget = mk_dialog(600);
+    mk_label(dlg_forget, &st_title, "Forget this device?");
+    l = mk_label(dlg_forget, &st_muted,
+                 "Disconnects and erases this Tab5's Tailscale keys and cached peers. To use Tailscale "
+                 "again you will need a new auth key. Also remove the old machine from the admin console.");
+    lv_obj_set_width(l, 560);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    row = mk_btn_row(dlg_forget);
+    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    mk_btn(row, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_ok_cb, NULL);
+
+    kb = lv_keyboard_create(overlay);
+    lv_obj_add_style(kb, &st_kb, 0);
+    lv_obj_add_style(kb, &st_kb_btn, LV_PART_ITEMS);
+    lv_obj_set_size(kb, DEVOS_SCREEN_WIDTH, 280);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_CANCEL, NULL);
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void enroll_auth_key_cb(lv_event_t *e)
+/* ======================================================================== */
+/* Refresh                                                                  */
+/* ======================================================================== */
+static void fmt_ago(char *buf, size_t len, int s)
 {
-    LV_UNUSED(e);
-    if (ta_auth_key) {
-        const char *text = lv_textarea_get_text(ta_auth_key);
-        if (text && strlen(text) > 0) {
-            microlink_set_auth_key(text);
-            microlink_connect();
-        }
-    }
-    if (modal_auth) {
-        lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-    }
-    refresh_ui();
+    if (s < 0) snprintf(buf, len, "not seen yet");
+    else if (s < 90) snprintf(buf, len, "seen %ds ago", s);
+    else if (s < 5400) snprintf(buf, len, "seen %dm ago", s / 60);
+    else snprintf(buf, len, "seen %dh ago", s / 3600);
 }
 
-static void on_microlink_state_change(microlink_state_t new_state, void *user_data)
-{
-    LV_UNUSED(new_state);
-    LV_UNUSED(user_data);
-    refresh_ui();
-}
-
-/* --------------------------------------------------------------------------
- * UI Refresh
- * -------------------------------------------------------------------------- */
 static void refresh_ui(void)
 {
     if (!screen) return;
+    uint32_t gen = devos_tailnet_generation();
+    s_seen_gen = gen;
 
-    const devos_palette_t *p = devos_theme_get();
-    microlink_status_t st;
-    if (microlink_get_status(&st) != 0) return;
+    devos_ts_info_t info;
+    devos_tailnet_get_info(&info);
+    char buf[256];
 
-    /* 1. Header Card State */
-    char buf[128];
-    if (st.state == MICROLINK_STATE_CONNECTED) {
-        lv_label_set_text(lbl_title, LV_SYMBOL_BULLET " Tailscale WireGuard Mesh: CONNECTED");
-        lv_obj_set_style_text_color(lbl_title, p->accent_secondary, 0);
-        lv_label_set_text(lbl_toggle, "Disconnect");
-        lv_obj_set_style_bg_color(btn_toggle, p->surface, 0);
-        lv_obj_set_style_border_color(btn_toggle, p->accent_danger, 0);
-        lv_obj_set_style_text_color(lbl_toggle, p->accent_danger, 0);
-    } else if (st.state == MICROLINK_STATE_CONNECTING) {
-        lv_label_set_text(lbl_title, LV_SYMBOL_BULLET " Tailscale WireGuard Mesh: CONNECTING...");
-        lv_obj_set_style_text_color(lbl_title, p->accent_warning, 0);
-        lv_label_set_text(lbl_toggle, "Cancel");
-        lv_obj_set_style_bg_color(btn_toggle, p->surface, 0);
-        lv_obj_set_style_border_color(btn_toggle, p->accent_warning, 0);
-        lv_obj_set_style_text_color(lbl_toggle, p->accent_warning, 0);
+    /* State headline */
+    lv_style_t *st_opts[] = { &st_ok, &st_warn, &st_err, &st_muted };
+    lv_style_t *st = &st_muted;
+    switch (info.state) {
+    case DEVOS_TS_CONNECTED:  st = &st_ok; break;
+    case DEVOS_TS_ERROR:      st = &st_err; break;
+    case DEVOS_TS_OFF:
+    case DEVOS_TS_NEEDS_KEY:  st = &st_muted; break;
+    default:                  st = &st_warn; break;
+    }
+    snprintf(buf, sizeof(buf), LV_SYMBOL_LOOP "  Tailscale  -  %s", devos_tailnet_state_text(info.state));
+    set_text(lbl_state, buf);
+    set_style_one(lbl_state, st, st_opts, 4);
+    lv_obj_set_style_text_font(lbl_state, &lv_font_montserrat_20, 0);
+
+    set_text(lbl_toggle, state_is_active(info.state) ? LV_SYMBOL_POWER "  Disconnect"
+                         : (!info.registered && !info.has_auth_key) ? LV_SYMBOL_PLUS "  Set up"
+                                                                     : LV_SYMBOL_POWER "  Connect");
+
+    /* Line 1: this device */
+    if (info.ip[0]) {
+        snprintf(buf, sizeof(buf), "This device: %s  |  %s%s%s", info.hostname, info.ip,
+                 info.domain[0] ? "  |  MagicDNS: " : "", info.domain);
     } else {
-        lv_label_set_text(lbl_title, "- Tailscale WireGuard Mesh: DISCONNECTED");
-        lv_obj_set_style_text_color(lbl_title, p->text_muted, 0);
-        lv_label_set_text(lbl_toggle, "Connect");
-        lv_obj_set_style_bg_color(btn_toggle, p->surface_active, 0);
-        lv_obj_set_style_border_color(btn_toggle, p->accent_secondary, 0);
-        lv_obj_set_style_text_color(lbl_toggle, p->accent_secondary, 0);
+        snprintf(buf, sizeof(buf), "This device: %s  |  %s", info.hostname,
+                 info.registered ? "enrolled" : "not enrolled");
+    }
+    set_text(lbl_line1, buf);
+
+    /* Line 2: relay / peers / key */
+    char key[48] = "";
+    if (info.key_expired) {
+        snprintf(key, sizeof(key), "  |  node key EXPIRED");
+    } else if (info.key_expiry > 0) {
+        time_t tt = (time_t)info.key_expiry;
+        struct tm tm;
+        gmtime_r(&tt, &tm);
+        snprintf(key, sizeof(key), "  |  key expires %04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    }
+    if (info.state == DEVOS_TS_CONNECTED || info.state == DEVOS_TS_RECONNECTING) {
+        snprintf(buf, sizeof(buf), "Relay: %s%s  |  Peers: %d (%d direct)%s", info.derp[0] ? info.derp : "-",
+                 info.derp_connected ? "" : " (not connected)", info.peer_count, info.peers_direct, key);
+    } else if (info.state == DEVOS_TS_NEEDS_KEY) {
+        snprintf(buf, sizeof(buf), "Add this Tab5 to your tailnet with an auth key: tap Set up.");
+    } else if (info.state == DEVOS_TS_OFF) {
+        snprintf(buf, sizeof(buf), "Tailscale is off. Local network connections work as normal.");
+    } else {
+        snprintf(buf, sizeof(buf), "Working in the background; you can keep using the Tab5.");
+    }
+    set_text(lbl_line2, buf);
+
+    /* Message: error / login URL */
+    if (info.last_error[0]) {
+        snprintf(buf, sizeof(buf), "%s%s%s", info.last_error, info.login_url[0] ? "\nLogin URL: " : "",
+                 info.login_url);
+        set_text(lbl_msg, buf);
+        lv_obj_remove_flag(lbl_msg, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(lbl_msg, LV_OBJ_FLAG_HIDDEN);
     }
 
-    snprintf(buf, sizeof(buf), "Node IP: %s  |  Relay: %s %dms  |  MagicDNS: %s",
-             st.state == MICROLINK_STATE_CONNECTED ? st.assigned_ip : "None",
-             st.derp_relay_name, st.derp_ping_ms, st.tailnet_domain);
-    lv_label_set_text(lbl_details, buf);
-
-    snprintf(buf, sizeof(buf), "Auth: Persistent Private Key (NVS)  |  MTU: %d  |  Rx: %.1f MB | Tx: %.1f MB",
-             st.mtu, st.total_rx_bytes / 1048576.0f, st.total_tx_bytes / 1048576.0f);
-    lv_label_set_text(lbl_keys, buf);
-
-    /* 2. Peers Header */
-    int online_count = 0;
-    for (int i = 0; i < st.peer_count; i++) {
-        if (st.peers[i].is_online) online_count++;
+    /* Peers */
+    int n = devos_tailnet_peer_count();
+    if (s_sel >= n) s_sel = n - 1;
+    snprintf(buf, sizeof(buf), "PEERS (%d)", n);
+    set_text(lbl_peers_h, buf);
+    if (n == 0) {
+        set_text(lbl_no_peers, info.state == DEVOS_TS_CONNECTED ? "No other devices on this tailnet yet."
+                               : "Peers appear here once connected.");
+        lv_obj_remove_flag(lbl_no_peers, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(lbl_no_peers, LV_OBJ_FLAG_HIDDEN);
     }
-    snprintf(buf, sizeof(buf), "ACTIVE TAILNET PEERS (%d Online)", online_count);
-    lv_label_set_text(lbl_peers_h, buf);
-
-    /* 3. Peer Cards */
-    int card_y = 0;
-    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
-        if (!peer_cards[i]) continue;
-
-        if (i >= st.peer_count) {
-            lv_obj_add_flag(peer_cards[i], LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < DEVOS_TS_MAX_PEERS; i++) {
+        devos_ts_peer_t p;
+        if (i >= n || devos_tailnet_get_peer(i, &p) != 0) {
+            lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
+        lv_obj_remove_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
+        if (i == s_sel) lv_obj_add_style(rows[i], &st_row_sel, 0);
+        else lv_obj_remove_style(rows[i], &st_row_sel, 0);
 
-        lv_obj_remove_flag(peer_cards[i], LV_OBJ_FLAG_HIDDEN);
-        microlink_peer_t *peer = &st.peers[i];
+        snprintf(buf, sizeof(buf), "%d  %s   %s", i + 1, p.name[0] ? p.name : p.fqdn, p.ip);
+        set_text(row_name[i], buf);
+        char ago[32];
+        fmt_ago(ago, sizeof(ago), p.last_seen_s);
+        snprintf(buf, sizeof(buf), "%s  |  %s  |  %s", p.direct ? "direct" : "via relay", ago, p.fqdn);
+        set_text(row_sub[i], buf);
+        lv_style_t *sub_opts[] = { &st_ok, &st_small };
+        set_style_one(row_sub[i], p.direct ? &st_ok : &st_small, sub_opts, 2);
+        lv_obj_set_style_text_font(row_sub[i], &lv_font_montserrat_12, 0);
 
-        /* Title Line */
-        snprintf(buf, sizeof(buf), "%s [%d] %s (%s) - %s",
-                 peer->is_online ? LV_SYMBOL_BULLET : "-",
-                 i + 1,
-                 peer->name,
-                 peer->ip,
-                 peer->os_desc);
-        lv_label_set_text(peer_title_lbls[i], buf);
-        lv_obj_set_style_text_color(peer_title_lbls[i],
-                                    peer->is_online ? p->text_primary : p->text_muted, 0);
-
-        /* Subtitle Line */
-        char sub_buf[128];
-        snprintf(sub_buf, sizeof(sub_buf), "%s (%dms)  |  Rx: %u KB, Tx: %u KB  |  %s",
-                 peer->is_direct ? "Direct P2P" : "DERP Relay",
-                 peer->ping_ms,
-                 (unsigned int)(peer->rx_bytes / 1024),
-                 (unsigned int)(peer->tx_bytes / 1024),
-                 peer->fqdn);
-        lv_label_set_text(peer_sub_lbls[i], sub_buf);
-        lv_obj_set_style_text_color(peer_sub_lbls[i],
-                                    peer->is_direct ? p->accent_secondary : p->accent_warning, 0);
-
-        /* Card positioning and selection expansion */
-        bool is_sel = (s_selected_peer == i);
-        int h = is_sel ? 96 : 56;
-        lv_obj_set_size(peer_cards[i], DEVOS_SCREEN_WIDTH - 36, h);
-        lv_obj_set_pos(peer_cards[i], 0, card_y);
-        card_y += h + 8;
-
-        if (is_sel) {
-            lv_obj_set_style_border_color(peer_cards[i], p->accent_warning, 0);
-            lv_obj_set_style_border_width(peer_cards[i], 2, 0);
-            lv_obj_set_style_bg_color(peer_cards[i], p->surface_active, 0);
-            if (peer_tray[i]) {
-                lv_obj_remove_flag(peer_tray[i], LV_OBJ_FLAG_HIDDEN);
-            }
-        } else {
-            lv_obj_set_style_border_color(peer_cards[i], p->surface_border, 0);
-            lv_obj_set_style_border_width(peer_cards[i], 1, 0);
-            lv_obj_set_style_bg_color(peer_cards[i], p->surface, 0);
-            if (peer_tray[i]) {
-                lv_obj_add_flag(peer_tray[i], LV_OBJ_FLAG_HIDDEN);
-            }
-        }
+        if (p.ping_ms >= 0) snprintf(buf, sizeof(buf), "%d ms", p.ping_ms);
+        else if (p.ping_ms == -2) snprintf(buf, sizeof(buf), "timeout");
+        else if (p.ping_ms == -3) snprintf(buf, sizeof(buf), "pinging...");
+        else buf[0] = '\0';
+        set_text(row_ping[i], buf);
+        lv_style_t *ping_opts[] = { &st_ok, &st_err, &st_muted };
+        set_style_one(row_ping[i], p.ping_ms >= 0 ? &st_ok : p.ping_ms == -2 ? &st_err : &st_muted, ping_opts, 3);
     }
 }
 
-/* --------------------------------------------------------------------------
- * App Initialization
- * -------------------------------------------------------------------------- */
-static void tailscale_init(void)
+static void poll_cb(lv_timer_t *t)
 {
-    const devos_palette_t *p = devos_theme_get();
-
-    /* Initialize MicroLink Engine */
-    microlink_init(NULL);
-    microlink_add_state_listener(on_microlink_state_change, NULL);
-
-    screen = lv_obj_create(lv_screen_active());
-    app_descriptor.screen = screen;
-    lv_obj_set_size(screen, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(screen, 0, DEVOS_TOP_BAR_HEIGHT);
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-    lv_obj_set_style_radius(screen, 0, 0);
-    lv_obj_set_style_border_width(screen, 0, 0);
-    lv_obj_set_style_pad_all(screen, 16, 0);
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
-
-    /* 1. Status Card (y: 0, height: 96) */
-    status_card = lv_obj_create(screen);
-    lv_obj_set_size(status_card, DEVOS_SCREEN_WIDTH - 32, 96);
-    lv_obj_set_pos(status_card, 0, 0);
-    lv_obj_set_style_bg_color(status_card, p->surface, 0);
-    lv_obj_set_style_border_color(status_card, p->surface_border, 0);
-    lv_obj_set_style_border_width(status_card, 1, 0);
-    lv_obj_set_style_radius(status_card, 6, 0);
-    lv_obj_set_style_pad_all(status_card, 12, 0);
-    lv_obj_clear_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    lbl_title = lv_label_create(status_card);
-    lv_label_set_text(lbl_title, LV_SYMBOL_BULLET " Tailscale WireGuard Mesh: CONNECTED");
-    lv_obj_set_pos(lbl_title, 0, 0);
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_title, p->accent_secondary, 0);
-
-    lbl_details = lv_label_create(status_card);
-    lv_obj_set_pos(lbl_details, 0, 26);
-    lv_obj_set_style_text_font(lbl_details, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_details, p->text_primary, 0);
-
-    lbl_keys = lv_label_create(status_card);
-    lv_obj_set_pos(lbl_keys, 0, 48);
-    lv_obj_set_style_text_font(lbl_keys, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
-
-    /* Action Buttons inside Status Card */
-    btn_toggle = lv_button_create(status_card);
-    lv_obj_set_size(btn_toggle, 105, 30);
-    lv_obj_align(btn_toggle, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_obj_set_style_radius(btn_toggle, 4, 0);
-    lv_obj_set_style_border_width(btn_toggle, 1, 0);
-    lv_obj_add_event_cb(btn_toggle, toggle_conn_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_toggle = lv_label_create(btn_toggle);
-    lv_label_set_text(lbl_toggle, "Disconnect");
-    lv_obj_center(lbl_toggle);
-    lv_obj_set_style_text_font(lbl_toggle, &lv_font_montserrat_12, 0);
-
-    btn_ping_derp = lv_button_create(status_card);
-    lv_obj_set_size(btn_ping_derp, 110, 30);
-    lv_obj_align_to(btn_ping_derp, btn_toggle, LV_ALIGN_OUT_LEFT_MID, -10, 0);
-    lv_obj_set_style_bg_color(btn_ping_derp, p->surface, 0);
-    lv_obj_set_style_border_color(btn_ping_derp, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_ping_derp, 1, 0);
-    lv_obj_set_style_radius(btn_ping_derp, 4, 0);
-    lv_obj_add_event_cb(btn_ping_derp, ping_derp_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_ping_derp = lv_label_create(btn_ping_derp);
-    lv_label_set_text(lbl_ping_derp, LV_SYMBOL_REFRESH " Ping DERP");
-    lv_obj_center(lbl_ping_derp);
-    lv_obj_set_style_text_font(lbl_ping_derp, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_ping_derp, p->text_primary, 0);
-
-    btn_auth_key = lv_button_create(status_card);
-    lv_obj_set_size(btn_auth_key, 105, 30);
-    lv_obj_align_to(btn_auth_key, btn_ping_derp, LV_ALIGN_OUT_LEFT_MID, -10, 0);
-    lv_obj_set_style_bg_color(btn_auth_key, p->surface, 0);
-    lv_obj_set_style_border_color(btn_auth_key, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_auth_key, 1, 0);
-    lv_obj_set_style_radius(btn_auth_key, 4, 0);
-    lv_obj_add_event_cb(btn_auth_key, open_auth_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_auth_key = lv_label_create(btn_auth_key);
-    lv_label_set_text(lbl_auth_key, LV_SYMBOL_SETTINGS " Auth Key");
-    lv_obj_center(lbl_auth_key);
-    lv_obj_set_style_text_font(lbl_auth_key, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_auth_key, p->text_primary, 0);
-
-    /* 2. Peers Section Header (y: 104) */
-    lbl_peers_h = lv_label_create(screen);
-    lv_label_set_text(lbl_peers_h, "ACTIVE TAILNET PEERS (6 Online)");
-    lv_obj_set_pos(lbl_peers_h, 2, 106);
-    lv_obj_set_style_text_font(lbl_peers_h, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_peers_h, p->accent_primary, 0);
-
-    btn_refresh = lv_button_create(screen);
-    lv_obj_set_size(btn_refresh, 95, 24);
-    lv_obj_set_pos(btn_refresh, DEVOS_SCREEN_WIDTH - 32 - 95, 102);
-    lv_obj_set_style_bg_color(btn_refresh, p->surface, 0);
-    lv_obj_set_style_border_color(btn_refresh, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_refresh, 1, 0);
-    lv_obj_set_style_radius(btn_refresh, 4, 0);
-    lv_obj_add_event_cb(btn_refresh, refresh_peers_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_refresh = lv_label_create(btn_refresh);
-    lv_label_set_text(lbl_refresh, LV_SYMBOL_REFRESH " Refresh");
-    lv_obj_center(lbl_refresh);
-    lv_obj_set_style_text_font(lbl_refresh, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_refresh, p->text_primary, 0);
-
-    /* 3. Scrollable Peer List (y: 132, height: 500) */
-    peer_list_scroll = lv_obj_create(screen);
-    lv_obj_set_size(peer_list_scroll, DEVOS_SCREEN_WIDTH - 28, DEVOS_CONTENT_HEIGHT - 138);
-    lv_obj_set_pos(peer_list_scroll, 0, 132);
-    lv_obj_set_style_bg_color(peer_list_scroll, p->bg, 0);
-    lv_obj_set_style_border_width(peer_list_scroll, 0, 0);
-    lv_obj_set_style_pad_all(peer_list_scroll, 0, 0);
-
-    microlink_status_t st;
-    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
-        peer_cards[i] = lv_button_create(peer_list_scroll);
-        lv_obj_set_size(peer_cards[i], DEVOS_SCREEN_WIDTH - 36, 56);
-        lv_obj_set_style_bg_color(peer_cards[i], p->surface, 0);
-        lv_obj_set_style_border_color(peer_cards[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(peer_cards[i], 1, 0);
-        lv_obj_set_style_radius(peer_cards[i], 4, 0);
-        lv_obj_set_style_pad_left(peer_cards[i], 12, 0);
-        lv_obj_set_style_pad_right(peer_cards[i], 12, 0);
-        lv_obj_set_style_pad_top(peer_cards[i], 8, 0);
-        lv_obj_set_style_pad_bottom(peer_cards[i], 8, 0);
-        lv_obj_add_event_cb(peer_cards[i], peer_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        peer_title_lbls[i] = lv_label_create(peer_cards[i]);
-        lv_obj_set_pos(peer_title_lbls[i], 0, 0);
-        lv_obj_set_style_text_font(peer_title_lbls[i], &lv_font_montserrat_14, 0);
-
-        peer_sub_lbls[i] = lv_label_create(peer_cards[i]);
-        lv_obj_set_pos(peer_sub_lbls[i], 0, 22);
-        lv_obj_set_style_text_font(peer_sub_lbls[i], &lv_font_montserrat_12, 0);
-
-        /* Action Tray (hidden unless selected) */
-        peer_tray[i] = lv_obj_create(peer_cards[i]);
-        lv_obj_set_size(peer_tray[i], 320, 32);
-        lv_obj_set_pos(peer_tray[i], 0, 48);
-        lv_obj_set_style_bg_color(peer_tray[i], p->surface_active, 0);
-        lv_obj_set_style_border_width(peer_tray[i], 0, 0);
-        lv_obj_set_style_pad_all(peer_tray[i], 0, 0);
-        lv_obj_clear_flag(peer_tray[i], LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(peer_tray[i], LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_t *btn_ssh = peer_ssh_btns[i] = lv_button_create(peer_tray[i]);
-        lv_obj_set_size(btn_ssh, 110, 28);
-        lv_obj_set_pos(btn_ssh, 0, 2);
-        lv_obj_set_style_bg_color(btn_ssh, p->accent_primary, 0);
-        lv_obj_set_style_radius(btn_ssh, 4, 0);
-        lv_obj_add_event_cb(btn_ssh, peer_ssh_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        lv_obj_t *lbl_ssh = peer_ssh_lbls[i] = lv_label_create(btn_ssh);
-        lv_label_set_text(lbl_ssh, LV_SYMBOL_POWER " SSH Shell");
-        lv_obj_center(lbl_ssh);
-        lv_obj_set_style_text_color(lbl_ssh,
-            devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
-        lv_obj_set_style_text_font(lbl_ssh, &lv_font_montserrat_12, 0);
-
-        lv_obj_t *btn_ping = peer_ping_btns[i] = lv_button_create(peer_tray[i]);
-        lv_obj_set_size(btn_ping, 90, 28);
-        lv_obj_set_pos(btn_ping, 118, 2);
-        lv_obj_set_style_bg_color(btn_ping, p->surface, 0);
-        lv_obj_set_style_border_color(btn_ping, p->surface_border, 0);
-        lv_obj_set_style_border_width(btn_ping, 1, 0);
-        lv_obj_set_style_radius(btn_ping, 4, 0);
-        lv_obj_add_event_cb(btn_ping, peer_ping_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        lv_obj_t *lbl_ping = peer_ping_lbls[i] = lv_label_create(btn_ping);
-        lv_label_set_text(lbl_ping, LV_SYMBOL_SHUFFLE " Ping");
-        lv_obj_center(lbl_ping);
-        lv_obj_set_style_text_color(lbl_ping, p->text_primary, 0);
-        lv_obj_set_style_text_font(lbl_ping, &lv_font_montserrat_12, 0);
-    }
-
-    /* 4. Auth Key Modal Dialog */
-    modal_auth = lv_obj_create(screen);
-    lv_obj_set_size(modal_auth, 540, 200);
-    lv_obj_align(modal_auth, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(modal_auth, p->surface, 0);
-    lv_obj_set_style_border_color(modal_auth, p->accent_primary, 0);
-    lv_obj_set_style_border_width(modal_auth, 2, 0);
-    lv_obj_set_style_radius(modal_auth, 8, 0);
-    lv_obj_set_style_pad_all(modal_auth, 16, 0);
-    lv_obj_clear_flag(modal_auth, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-
-    lbl_m_title = lv_label_create(modal_auth);
-    lv_label_set_text(lbl_m_title, LV_SYMBOL_SETTINGS " Tailscale Auth Key Configuration");
-    lv_obj_set_pos(lbl_m_title, 0, 0);
-    lv_obj_set_style_text_font(lbl_m_title, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_m_title, p->accent_primary, 0);
-
-    lbl_m_desc = lv_label_create(modal_auth);
-    lv_label_set_text(lbl_m_desc, "Enter an ephemeral or pre-authenticated key (tskey-auth-...):");
-    lv_obj_set_pos(lbl_m_desc, 0, 26);
-    lv_obj_set_style_text_font(lbl_m_desc, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_m_desc, p->text_secondary, 0);
-
-    ta_auth_key = lv_textarea_create(modal_auth);
-    lv_textarea_set_placeholder_text(ta_auth_key, "tskey-auth-k1234567890abcdef...");
-    lv_textarea_set_one_line(ta_auth_key, true);
-    lv_obj_set_size(ta_auth_key, 508, 36);
-    lv_obj_set_pos(ta_auth_key, 0, 50);
-    lv_obj_set_style_bg_color(ta_auth_key, p->bg_alt, 0);
-    lv_obj_set_style_border_color(ta_auth_key, p->surface_border, 0);
-    lv_obj_set_style_border_width(ta_auth_key, 1, 0);
-    lv_obj_set_style_radius(ta_auth_key, 4, 0);
-    lv_obj_set_style_pad_all(ta_auth_key, 8, 0);
-    lv_obj_set_style_text_color(ta_auth_key, p->text_primary, 0);
-
-    btn_enroll = lv_button_create(modal_auth);
-    lv_obj_set_size(btn_enroll, 130, 34);
-    lv_obj_set_pos(btn_enroll, 240, 110);
-    lv_obj_set_style_bg_color(btn_enroll, p->accent_primary, 0);
-    lv_obj_set_style_radius(btn_enroll, 4, 0);
-    lv_obj_add_event_cb(btn_enroll, enroll_auth_key_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_enroll = lv_label_create(btn_enroll);
-    lv_label_set_text(lbl_enroll, LV_SYMBOL_OK " Enroll Node");
-    lv_obj_center(lbl_enroll);
-    lv_obj_set_style_text_color(lbl_enroll,
-        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
-    lv_obj_set_style_text_font(lbl_enroll, &lv_font_montserrat_12, 0);
-
-    btn_cancel = lv_button_create(modal_auth);
-    lv_obj_set_size(btn_cancel, 110, 34);
-    lv_obj_set_pos(btn_cancel, 380, 110);
-    lv_obj_set_style_bg_color(btn_cancel, p->surface, 0);
-    lv_obj_set_style_border_color(btn_cancel, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_cancel, 1, 0);
-    lv_obj_set_style_radius(btn_cancel, 4, 0);
-    lv_obj_add_event_cb(btn_cancel, close_auth_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_cancel = lv_label_create(btn_cancel);
-    lv_label_set_text(lbl_cancel, "Cancel");
-    lv_obj_center(lbl_cancel);
-    lv_obj_set_style_text_color(lbl_cancel, p->text_primary, 0);
-    lv_obj_set_style_text_font(lbl_cancel, &lv_font_montserrat_12, 0);
-
-    /* Theme updates */
-    devos_theme_add_listener(apply_theme, NULL);
-
-    refresh_ui();
+    LV_UNUSED(t);
+    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
+    if (devos_tailnet_generation() != s_seen_gen) refresh_ui();
 }
 
+/* ======================================================================== */
+/* Build                                                                    */
+/* ======================================================================== */
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
-    if (!screen) return;
-    /* ponytail: black on neon cyan (dark) / white on cobalt (light) */
-    lv_color_t on_accent = devos_theme_is_dark() ? lv_color_black() : lv_color_white();
+    if (!s_styles_ready) return;
+    restyle(p);
+    lv_obj_report_style_change(NULL);
+}
 
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-    lv_obj_set_style_bg_color(status_card, p->surface, 0);
-    lv_obj_set_style_border_color(status_card, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_details, p->text_primary, 0);
-    lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
+static void tailscale_init(void)
+{
+    styles_init();
 
-    /* Status action buttons */
-    if (btn_ping_derp) {
-        lv_obj_set_style_bg_color(btn_ping_derp, p->surface, 0);
-        lv_obj_set_style_border_color(btn_ping_derp, p->surface_border, 0);
-    }
-    if (lbl_ping_derp) lv_obj_set_style_text_color(lbl_ping_derp, p->text_primary, 0);
-    if (btn_auth_key) {
-        lv_obj_set_style_bg_color(btn_auth_key, p->surface, 0);
-        lv_obj_set_style_border_color(btn_auth_key, p->surface_border, 0);
-    }
-    if (lbl_auth_key) lv_obj_set_style_text_color(lbl_auth_key, p->text_primary, 0);
+    screen = lv_obj_create(lv_screen_active());
+    app_descriptor.screen = screen;
+    lv_obj_remove_style_all(screen);
+    lv_obj_add_style(screen, &st_bg, 0);
+    lv_obj_set_size(screen, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(screen, 0, DEVOS_TOP_BAR_HEIGHT);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_set_style_text_color(lbl_peers_h, p->accent_primary, 0);
-    lv_obj_set_style_bg_color(btn_refresh, p->surface, 0);
-    lv_obj_set_style_border_color(btn_refresh, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_refresh, p->text_primary, 0);
+    const int w = DEVOS_SCREEN_WIDTH - 2 * PAD;
 
-    /* Peer list container + action trays */
-    if (peer_list_scroll) lv_obj_set_style_bg_color(peer_list_scroll, p->bg, 0);
-    for (int i = 0; i < MICROLINK_MAX_PEERS; i++) {
-        if (peer_tray[i]) lv_obj_set_style_bg_color(peer_tray[i], p->surface_active, 0);
-        if (peer_ssh_btns[i]) {
-            lv_obj_set_style_bg_color(peer_ssh_btns[i], p->accent_primary, 0);
-        }
-        if (peer_ssh_lbls[i]) {
-            lv_obj_set_style_text_color(peer_ssh_lbls[i], on_accent, 0);
-        }
-        if (peer_ping_btns[i]) {
-            lv_obj_set_style_bg_color(peer_ping_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(peer_ping_btns[i], p->surface_border, 0);
-        }
-        if (peer_ping_lbls[i]) {
-            lv_obj_set_style_text_color(peer_ping_lbls[i], p->text_primary, 0);
-        }
+    /* Status card */
+    lv_obj_t *card = lv_obj_create(screen);
+    lv_obj_remove_style_all(card);
+    lv_obj_add_style(card, &st_card, 0);
+    lv_obj_set_size(card, w, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *top = lv_obj_create(card);
+    lv_obj_remove_style_all(top);
+    lv_obj_set_size(top, lv_pct(100), 40);
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    lbl_state = mk_label(top, &st_title, "Tailscale");
+    lv_obj_align(lbl_state, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_t *btns = lv_obj_create(top);
+    lv_obj_remove_style_all(btns);
+    lv_obj_set_size(btns, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btns, 8, 0);
+    lv_obj_align(btns, LV_ALIGN_RIGHT_MID, 0, 0);
+    mk_btn(btns, LV_SYMBOL_EDIT "  Auth key", NULL, key_btn_cb, NULL);
+    mk_btn(btns, LV_SYMBOL_SETTINGS "  Device name", NULL, name_btn_cb, NULL);
+    mk_btn(btns, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_btn_cb, NULL);
+    btn_toggle = mk_btn(btns, LV_SYMBOL_POWER "  Connect", &st_btn_primary, toggle_cb, NULL);
+    lbl_toggle = lv_obj_get_child(btn_toggle, 0);
+
+    lbl_line1 = mk_label(card, &st_text, "");
+    lbl_line2 = mk_label(card, &st_muted, "");
+    lbl_msg = mk_label(card, &st_err, "");
+    lv_obj_set_width(lbl_msg, lv_pct(100));
+    lv_label_set_long_mode(lbl_msg, LV_LABEL_LONG_WRAP);
+
+    /* Peers */
+    lv_obj_t *head = lv_obj_create(screen);
+    lv_obj_remove_style_all(head);
+    lv_obj_set_size(head, w, 30);
+    lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+    lbl_peers_h = mk_label(head, &st_section, "PEERS");
+    lv_obj_align(lbl_peers_h, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_t *hint = mk_label(head, &st_small, "Up/Down select  |  Enter SSH  |  P ping  |  C connect");
+    lv_obj_align(hint, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    list_peers = lv_obj_create(screen);
+    lv_obj_remove_style_all(list_peers);
+    lv_obj_set_width(list_peers, w);
+    lv_obj_set_flex_grow(list_peers, 1);
+    lv_obj_set_flex_flow(list_peers, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list_peers, 6, 0);
+    lv_obj_set_scroll_dir(list_peers, LV_DIR_VER);
+
+    lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(screen, 10, 0);
+
+    lbl_no_peers = mk_label(list_peers, &st_muted, "");
+    for (int i = 0; i < DEVOS_TS_MAX_PEERS; i++) {
+        lv_obj_t *r = rows[i] = lv_button_create(list_peers);
+        lv_obj_remove_style_all(r);
+        lv_obj_add_style(r, &st_row, 0);
+        lv_obj_set_size(r, lv_pct(100), ROW_H);
+        lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(r, row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        row_name[i] = mk_label(r, &st_text, "");
+        lv_obj_align(row_name[i], LV_ALIGN_TOP_LEFT, 0, 9);
+        row_sub[i] = mk_label(r, &st_small, "");
+        lv_obj_align(row_sub[i], LV_ALIGN_TOP_LEFT, 0, 31);
+        lv_obj_t *b_ssh = mk_btn(r, LV_SYMBOL_POWER "  SSH", &st_btn_primary, ssh_cb, (void *)(intptr_t)i);
+        lv_obj_align(b_ssh, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_t *b_ping = mk_btn(r, "Ping", NULL, ping_cb, (void *)(intptr_t)i);
+        lv_obj_align_to(b_ping, b_ssh, LV_ALIGN_OUT_LEFT_MID, -8, 0);
+        row_ping[i] = mk_label(r, &st_muted, "");
+        lv_obj_align(row_ping[i], LV_ALIGN_RIGHT_MID, -210, 0);
+        lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Auth modal */
-    if (modal_auth) {
-        lv_obj_set_style_bg_color(modal_auth, p->surface, 0);
-        lv_obj_set_style_border_color(modal_auth, p->accent_primary, 0);
-    }
-    if (lbl_m_title) lv_obj_set_style_text_color(lbl_m_title, p->accent_primary, 0);
-    if (lbl_m_desc) lv_obj_set_style_text_color(lbl_m_desc, p->text_secondary, 0);
-    if (ta_auth_key) {
-        lv_obj_set_style_bg_color(ta_auth_key, p->bg_alt, 0);
-        lv_obj_set_style_border_color(ta_auth_key, p->surface_border, 0);
-        lv_obj_set_style_text_color(ta_auth_key, p->text_primary, 0);
-    }
-    if (btn_enroll) lv_obj_set_style_bg_color(btn_enroll, p->accent_primary, 0);
-    if (lbl_enroll) lv_obj_set_style_text_color(lbl_enroll, on_accent, 0);
-    if (btn_cancel) {
-        lv_obj_set_style_bg_color(btn_cancel, p->surface, 0);
-        lv_obj_set_style_border_color(btn_cancel, p->surface_border, 0);
-    }
-    if (lbl_cancel) lv_obj_set_style_text_color(lbl_cancel, p->text_primary, 0);
-
+    build_dialogs();
+    devos_theme_add_listener(apply_theme, NULL);
+    lv_timer_create(poll_cb, 500, NULL);
     refresh_ui();
 }
 
 static void tailscale_show(void)
 {
-    s_selected_peer = -1;
+    s_seen_gen = UINT32_MAX;
     refresh_ui();
 }
 
 static void tailscale_hide(void)
 {
-    if (modal_auth) {
-        lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-    }
+    close_dialogs();
 }
 
-static bool tailscale_handle_key(uint32_t key, uint8_t modifiers)
+/* ======================================================================== */
+/* Keyboard                                                                 */
+/* ======================================================================== */
+static bool dialog_key(uint32_t key, uint8_t mods)
 {
-    /* If modal is open, capture ALL keystrokes for the auth key field
-       (same pattern as terminal Quick Connect modal) */
-    if (modal_auth && !lv_obj_has_flag(modal_auth, LV_OBJ_FLAG_HIDDEN)) {
-        if (key == LV_KEY_ESC) {
-            lv_obj_add_flag(modal_auth, LV_OBJ_FLAG_HIDDEN);
-            return true;
-        }
-        if (key == '\r' || key == '\n') {
-            enroll_auth_key_cb(NULL);
-            return true;
-        }
-        if (key == '\b' || key == 0x7F) {
-            if (ta_auth_key) lv_textarea_delete_char(ta_auth_key);
-            return true;
-        }
-        if (key == LV_KEY_LEFT) {
-            if (ta_auth_key) lv_textarea_cursor_left(ta_auth_key);
-            return true;
-        }
-        if (key == LV_KEY_RIGHT) {
-            if (ta_auth_key) lv_textarea_cursor_right(ta_auth_key);
-            return true;
-        }
-        if (key >= 32 && key <= 126) {
-            if (ta_auth_key) lv_textarea_add_char(ta_auth_key, (char)key);
-            return true;
-        }
-        /* Absorb all other keys so the screen behind never receives them */
+    if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    if (key == LV_KEY_ESC) { close_dialogs(); return true; }
+    if (!lv_obj_has_flag(dlg_forget, LV_OBJ_FLAG_HIDDEN)) {
+        if (key == 'y' || key == 'Y') forget_ok_cb(NULL);
+        else if (key == 'n' || key == 'N') close_dialogs();
         return true;
     }
-
-    if (key == 'c' || key == 'C') {
-        toggle_conn_cb(NULL);
+    if (key == '\r' || key == '\n') {
+        if (!lv_obj_has_flag(dlg_key, LV_OBJ_FLAG_HIDDEN)) key_submit();
+        else name_submit();
         return true;
     }
+    if (!s_focused_ta) return true;
+    if (key == '\b') lv_textarea_delete_char(s_focused_ta);
+    else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(s_focused_ta);
+    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(s_focused_ta);
+    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(s_focused_ta);
+    else if (key >= 32 && key <= 126 && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN))) {
+        lv_textarea_add_char(s_focused_ta, (char)key);
+    }
+    return true;
+}
 
-    if (key == 'p' || key == 'P') {
-        ping_derp_cb(NULL);
+static bool tailscale_handle_key(uint32_t key, uint8_t mods)
+{
+    if (dialog_open()) return dialog_key(key, mods);
+    if (mods & (DEVOS_MOD_FN | DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) return false;
+
+    int n = devos_tailnet_peer_count();
+    switch (key) {
+    case 'c': case 'C': toggle_conn(); return true;
+    case 'k': case 'K': open_key_dialog(); return true;
+    case 'n': case 'N': open_name_dialog(); return true;
+    case 'p': case 'P':
+        if (s_sel >= 0) { devos_tailnet_ping(s_sel); refresh_ui(); }
+        return true;
+    case LV_KEY_DOWN:
+        if (n > 0) select_peer(s_sel < 0 ? 0 : (s_sel + 1 < n ? s_sel + 1 : s_sel));
+        return true;
+    case LV_KEY_UP:
+        if (n > 0) select_peer(s_sel <= 0 ? 0 : s_sel - 1);
+        return true;
+    case '\r': case '\n':
+        if (s_sel >= 0) { peer_ssh(s_sel); return true; }
+        return false;
+    case LV_KEY_ESC:
+        if (s_sel >= 0) { select_peer(-1); return true; }
+        return false;
+    default:
+        break;
+    }
+    if (key >= '1' && key <= '9' && (int)(key - '1') < n) {
+        select_peer((int)(key - '1'));
         return true;
     }
-
-    if (key == 'r' || key == 'R') {
-        refresh_peers_cb(NULL);
-        return true;
-    }
-
-    if (modifiers == DEVOS_MOD_NONE && key >= '1' && key <= '9') {
-        int idx = key - '1';
-        microlink_status_t st;
-        if (microlink_get_status(&st) == 0 && idx < st.peer_count) {
-            s_selected_peer = (s_selected_peer == idx) ? -1 : idx;
-            refresh_ui();
-            return true;
-        }
-    }
-
-    if ((key == LV_KEY_ENTER || key == '\r' || key == '\n') && s_selected_peer >= 0) {
-        open_peer_ssh(s_selected_peer);
-        return true;
-    }
-
-    if (key == LV_KEY_ESC && s_selected_peer >= 0) {
-        s_selected_peer = -1;
-        refresh_ui();
-        return true;
-    }
-
     return false;
 }
 
 static int tailscale_telemetry_lines(char lines[3][64])
 {
-    microlink_status_t st;
-    if (microlink_get_status(&st) != 0 ||
-        st.state != MICROLINK_STATE_CONNECTED) {
-        snprintf(lines[0], sizeof(lines[0]), "* Disconnected");
-        snprintf(lines[1], sizeof(lines[1]), "* Mesh inactive");
-        snprintf(lines[2], sizeof(lines[2]), "* Direct LAN routing");
+    devos_ts_info_t info;
+    devos_tailnet_get_info(&info);
+    if (info.state != DEVOS_TS_CONNECTED) {
+        snprintf(lines[0], sizeof(lines[0]), "* %s", devos_tailnet_state_text(info.state));
+        snprintf(lines[1], sizeof(lines[1]), "* %s", info.registered ? info.hostname : "Not enrolled");
+        snprintf(lines[2], sizeof(lines[2]), "* LAN routing only");
         return 3;
     }
-    int online = 0;
-    for (int i = 0; i < st.peer_count; i++) {
-        if (st.peers[i].is_online) online++;
-    }
-    snprintf(lines[0], sizeof(lines[0]), "* Peers: %d online", online);
-    snprintf(lines[1], sizeof(lines[1]), "* DERP: %s", st.derp_relay_name);
-    snprintf(lines[2], sizeof(lines[2]), "* IP: %s", st.assigned_ip);
+    snprintf(lines[0], sizeof(lines[0]), "* Peers: %d (%d direct)", info.peer_count, info.peers_direct);
+    snprintf(lines[1], sizeof(lines[1]), "* Relay: %s", info.derp[0] ? info.derp : "-");
+    snprintf(lines[2], sizeof(lines[2]), "* IP: %s", info.ip);
     return 3;
 }
 
@@ -727,14 +756,13 @@ devos_app_descriptor_t *app_tailscale_get_descriptor(void)
     app_descriptor.icon = LV_SYMBOL_LOOP;
     app_descriptor.category = "network";
     app_descriptor.name = "Tailscale";
-    app_descriptor.title = "Tailscale Mesh";
-    app_descriptor.subtitle = "WireGuard Private Network";
+    app_descriptor.title = "Tailscale";
+    app_descriptor.subtitle = "Private network (MicroLink)";
     app_descriptor.screen = screen;
     app_descriptor.init = tailscale_init;
     app_descriptor.show = tailscale_show;
     app_descriptor.hide = tailscale_hide;
     app_descriptor.handle_key = tailscale_handle_key;
     app_descriptor.get_telemetry_lines = tailscale_telemetry_lines;
-
     return &app_descriptor;
 }

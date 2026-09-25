@@ -10,7 +10,7 @@
 #include "tab5_keyboard.h"
 #include "devos_net.h"
 #include "devos_sysmon.h"
-#include "microlink.h"
+#include "devos_tailnet.h"
 #include "libssh2_port.h"
 
 /* Apps */
@@ -265,6 +265,10 @@ static void devos_system_bringup(void)
     /* 6. Network & Transparent Socket Routing bring-up */
     printf("[devOS] 6/8 Initializing Network Stack...\n");
     devos_net_init();
+
+    /* 6a. Tailscale (MicroLink): connects in the background once Wi-Fi is up
+     * if this device is enrolled and auto-connect is on. */
+    devos_tailnet_init();
 
     /* 6b. System monitor: live battery/Wi-Fi/SD/memory/CPU telemetry and the
      * wall clock (RTC at boot, NTP once online). */

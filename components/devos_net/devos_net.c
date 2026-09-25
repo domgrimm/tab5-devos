@@ -1,5 +1,5 @@
 #include "devos_net.h"
-#include "microlink.h"
+#include "devos_tailnet.h"
 #include "devos_config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -988,8 +988,8 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
         return 0;
     }
 
-    /* 2. MagicDNS lookup via MicroLink (only while the tailnet is up). */
-    if (microlink_resolve(hostname, out_ip, out_len) == 0) {
+    /* 2. MagicDNS lookup on the tailnet (only while it is up). */
+    if (devos_tailnet_resolve(hostname, out_ip, out_len) == 0) {
         return 0;
     }
 
@@ -1013,7 +1013,7 @@ int devos_net_socket_connect(const char *host, int port, int timeout_ms)
 {
     if (!host || port <= 0 || port > 65535) return -1;
 
-    char resolved_ip[MICROLINK_MAX_IP_LEN];
+    char resolved_ip[46];
     if (devos_net_resolve(host, resolved_ip, sizeof(resolved_ip)) != 0) {
         return -1;
     }
@@ -1154,7 +1154,7 @@ int devos_net_socket_connect_start(const char *host, int port)
 {
     if (!host || port <= 0 || port > 65535) return -1;
 
-    char resolved_ip[MICROLINK_MAX_IP_LEN];
+    char resolved_ip[46];
     if (devos_net_resolve(host, resolved_ip, sizeof(resolved_ip)) != 0) {
         return -1;
     }

@@ -127,3 +127,19 @@ CONFIG_DEVOS_ENABLE_WIFI=y
 # Compiler options - avoid treating format warnings as errors for third-party libraries on ESP32-P4
 CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
 
+
+# Tailscale (components/microlink, MicroLink v2). The ts2021 control channel is
+# Noise_IK with ChaCha20-Poly1305 + HKDF from mbedTLS. WireGuard, DERP, STUN,
+# DISCO and the control connection each hold sockets, alongside SSH sessions.
+CONFIG_MBEDTLS_CHACHA20_C=y
+CONFIG_MBEDTLS_POLY1305_C=y
+CONFIG_MBEDTLS_CHACHAPOLY_C=y
+CONFIG_MBEDTLS_HKDF_C=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SO_RCVBUF=y
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_ML_MAX_PEERS=32
+# Cellular, WiFi/cellular switching and the HTTP config server stay off
+# (devOS owns Wi-Fi and has its own UI).
+CONFIG_ML_ENABLE_CELLULAR=n
+CONFIG_ML_ENABLE_CONFIG_HTTPD=n
