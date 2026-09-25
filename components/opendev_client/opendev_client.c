@@ -10,18 +10,21 @@
 #include "devos_json.h"
 #include "devos_net.h"
 #include "devos_config.h"
+#include "devos_conn.h"
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
+#include "esp_mac.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -35,24 +38,33 @@
 
 #define REST_TIMEOUT_MS   6000
 #define SSE_BUF_MAX       (192 * 1024)      /* one event can carry a whole tool output */
-#define CONNECT_GIVEUP_TICKS 100            /* 10 s at 100 ms poll */
-#define RETRY_TICKS       30                /* 3 s between link attempts */
 #define REFETCH_DEBOUNCE_TICKS 5            /* 500 ms coalescing */
 #define MSG_LIMIT         40
 #define ROLE_MAP_MAX      64
 #define SESSIONS_PATH     "/session?roots=true&limit=40"
 
 /* ------------------------------------------------------------------ config */
+/* The server is a URL: http://host:4096 for `opencode serve`, or an
+ * OpenChamber URL such as https://dev-server.tail1234.ts.net. OpenChamber is
+ * detected by probing /auth/session; its OpenCode API lives under /api and
+ * needs a trusted-device token (oc_client_...) obtained once with the UI
+ * password. Only the token is stored, never the password. */
 typedef struct {
+    char url[OPENDEV_URL_MAX];
     char host[OPENDEV_HOST_MAX];
     int port;
+    bool tls;
+    char base[64];                  /* path prefix from the URL, usually "" */
     opendev_mode_t mode;
-    char token[OPENDEV_TOKEN_MAX];
+    char token[OPENDEV_TOKEN_MAX];  /* OpenChamber client token */
 } opendev_config_t;
 
 static opendev_config_t s_cfg = {
+    .url = "http://10.2.132.54:4096",
     .host = "10.2.132.54",
     .port = 4096,
+    .tls = false,
+    .base = "",
     .mode = OPENDEV_MODE_CODE,
     .token = "",
 };
@@ -66,7 +78,7 @@ static int s_block_count = 0;
 static uint32_t s_rev_counter = 0;
 static opendev_permission_t s_perm;
 static opendev_status_t s_status = OPENDEV_DOWN;
-static char s_status_text[128] = "Offline";
+static char s_status_text[160] = "Offline";
 static uint32_t s_gen = 0, s_blocks_gen = 0, s_diff_gen = 0;
 static EXT_RAM_BSS_ATTR char s_diff[OPENDEV_DIFF_MAX] = "";
 static EXT_RAM_BSS_ATTR opendev_diff_file_t s_diff_files[OPENDEV_DIFF_FILES];
@@ -74,28 +86,18 @@ static int s_diff_file_count = 0;
 static bool s_diff_requested = false;       /* user asked for the diff of this session */
 static char s_pending_select[OPENDEV_ID_MAX] = "";
 static char *s_pending_send = NULL;         /* prompt waiting for a new session */
+static char *s_pending_password = NULL;     /* used by the next login, then wiped */
 static int s_inflight = 0;
 static int s_msg_inflight = 0;               /* message loads in flight */
 
 static EXT_RAM_BSS_ATTR struct { char msg[OPENDEV_ID_MAX]; uint8_t role; } s_roles[ROLE_MAP_MAX];
 static int s_role_next = 0;
 
-/* SSE link */
-static int s_sse_fd = -1;
-static int s_connect_ticks = 0;
-static int s_retry_ticks = 0;
-static char *s_sse_buf = NULL;
-static size_t s_sse_len = 0;
-static bool s_sse_skip = false;              /* dropping an oversized event */
-static char s_hdr_buf[1024];
-static size_t s_hdr_len = 0;
-static bool s_want_link = false;
-static bool s_chunked = false;               /* SSE body is chunk-encoded */
-static char s_chunk_hdr[16];
-static size_t s_chunk_hdr_len = 0;
-static long s_chunk_left = 0;
+/* Event-stream link (owned by the SSE thread; these two are the controls) */
+static volatile uint32_t s_link_gen = 0;    /* bump = reconnect with the current config */
+static volatile bool s_link_want = false;
 
-/* Deferred refetch flags (set by SSE, executed in poll) */
+/* Deferred refetch flags (set by events, executed in poll) */
 static bool s_want_sessions = false;
 static bool s_want_messages = false;
 static int s_refetch_ticks = 0;
@@ -136,12 +138,40 @@ static int active_index(void)
     return -1;
 }
 
+/* The SSE thread reads the config while the UI may change it. */
+#ifdef ESP_PLATFORM
+static SemaphoreHandle_t s_cfg_mx;
+static void cfg_lock(void) { if (s_cfg_mx) xSemaphoreTake(s_cfg_mx, portMAX_DELAY); }
+static void cfg_unlock(void) { if (s_cfg_mx) xSemaphoreGive(s_cfg_mx); }
+#else
+static pthread_mutex_t s_cfg_mx = PTHREAD_MUTEX_INITIALIZER;
+static void cfg_lock(void) { pthread_mutex_lock(&s_cfg_mx); }
+static void cfg_unlock(void) { pthread_mutex_unlock(&s_cfg_mx); }
+#endif
+
+/* Fill host/port/tls/base from cfg->url. */
+static int cfg_apply_url(opendev_config_t *c, const char *url)
+{
+    char host[OPENDEV_HOST_MAX], path[64];
+    int port = 0;
+    bool tls = false;
+    if (devos_url_parse(url, host, sizeof(host), &port, &tls, path, sizeof(path)) != 0) return -1;
+    snprintf(c->host, sizeof(c->host), "%s", host);
+    c->port = port;
+    c->tls = tls;
+    snprintf(c->base, sizeof(c->base), "%s", path);
+    if (tls && port == 443) snprintf(c->url, sizeof(c->url), "https://%.95s%.50s", host, path);
+    else snprintf(c->url, sizeof(c->url), "%s://%.95s:%d%.40s", tls ? "https" : "http", host, port, path);
+    return 0;
+}
+
 /* ------------------------------------------------------------ persistence */
 static void config_save(void)
 {
 #ifdef ESP_PLATFORM
     nvs_handle_t h;
     if (nvs_open("opendev", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "url", s_cfg.url);
         nvs_set_str(h, "host", s_cfg.host);
         nvs_set_u16(h, "port16", (uint16_t)s_cfg.port);
         nvs_set_u8(h, "mode", (uint8_t)s_cfg.mode);
@@ -152,8 +182,8 @@ static void config_save(void)
 #else
     FILE *f = fopen(OPENDEV_NVS_FILE, "w");
     if (f) {
-        fprintf(f, "{\n  \"host\": \"%s\",\n  \"port\": %d,\n  \"mode\": %d,\n  \"token\": \"%s\"\n}\n",
-                s_cfg.host, s_cfg.port, (int)s_cfg.mode, s_cfg.token);
+        fprintf(f, "{\n  \"url\": \"%s\",\n  \"mode\": %d,\n  \"token\": \"%s\"\n}\n", s_cfg.url, (int)s_cfg.mode,
+                s_cfg.token);
         fclose(f);
     }
 #endif
@@ -161,39 +191,42 @@ static void config_save(void)
 
 static void config_load(void)
 {
+    char url[OPENDEV_URL_MAX] = "";
+    char host[OPENDEV_HOST_MAX] = "";
+    int port = 0;
 #ifdef ESP_PLATFORM
     nvs_handle_t h;
     if (nvs_open("opendev", NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(s_cfg.host);
-        nvs_get_str(h, "host", s_cfg.host, &len);
+        size_t len = sizeof(url);
+        if (nvs_get_str(h, "url", url, &len) != ESP_OK) url[0] = '\0';
+        len = sizeof(host);
+        if (nvs_get_str(h, "host", host, &len) != ESP_OK) host[0] = '\0';
         uint16_t p16 = 0;
-        if (nvs_get_u16(h, "port16", &p16) == ESP_OK && p16) s_cfg.port = p16;
+        if (nvs_get_u16(h, "port16", &p16) == ESP_OK) port = p16;
         uint8_t m = 0;
         if (nvs_get_u8(h, "mode", &m) == ESP_OK && m <= OPENDEV_MODE_CHAMBER) s_cfg.mode = (opendev_mode_t)m;
         len = sizeof(s_cfg.token);
-        nvs_get_str(h, "token", s_cfg.token, &len);
+        if (nvs_get_str(h, "token", s_cfg.token, &len) != ESP_OK) s_cfg.token[0] = '\0';
         nvs_close(h);
     }
 #else
     FILE *f = fopen(OPENDEV_NVS_FILE, "r");
     if (f) {
-        char buf[256];
+        char buf[320], val[256];
+        int ival = 0;
         while (fgets(buf, sizeof(buf), f)) {
-            char val[128];
-            int ival = 0;
-            if (sscanf(buf, " \"host\": \"%127[^\"]\"", val) == 1) {
-                snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", val);
-            } else if (sscanf(buf, " \"port\": %d", &ival) == 1 && ival > 0 && ival < 65536) {
-                s_cfg.port = ival;
-            } else if (sscanf(buf, " \"mode\": %d", &ival) == 1 && (ival == 0 || ival == 1)) {
-                s_cfg.mode = (opendev_mode_t)ival;
-            } else if (sscanf(buf, " \"token\": \"%127[^\"]\"", val) == 1) {
-                snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", val);
-            }
+            if (sscanf(buf, " \"url\": \"%255[^\"]\"", val) == 1) snprintf(url, sizeof(url), "%s", val);
+            else if (sscanf(buf, " \"host\": \"%63[^\"]\"", val) == 1) snprintf(host, sizeof(host), "%s", val);
+            else if (sscanf(buf, " \"port\": %d", &ival) == 1) port = ival;
+            else if (sscanf(buf, " \"mode\": %d", &ival) == 1 && (ival == 0 || ival == 1)) s_cfg.mode = (opendev_mode_t)ival;
+            else if (sscanf(buf, " \"token\": \"%127[^\"]\"", val) == 1) snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", val);
         }
         fclose(f);
     }
 #endif
+    /* older configs stored host + port only */
+    if (!url[0] && host[0]) snprintf(url, sizeof(url), "http://%s:%d", host, port > 0 ? port : 4096);
+    if (url[0]) cfg_apply_url(&s_cfg, url);
 }
 
 /* ------------------------------------------------------------ JSON helpers */
@@ -259,13 +292,17 @@ static char *json_str_dup(const char *p, const char *end, const char *key)
 
 /* ================================================================== jobs */
 typedef enum {
-    JOB_SESSIONS, JOB_MESSAGES, JOB_NEW_SESSION, JOB_SEND, JOB_ABORT, JOB_PERM, JOB_PERM_V2, JOB_DIFF
+    JOB_SESSIONS, JOB_MESSAGES, JOB_NEW_SESSION, JOB_SEND, JOB_ABORT, JOB_PERM, JOB_PERM_V2, JOB_DIFF,
+    JOB_PROBE,          /* GET /auth/session: OpenChamber or plain OpenCode? */
+    JOB_LOGIN,          /* POST /auth/session with the password */
+    JOB_EVENT,          /* from the SSE thread: one event (resp = data JSON, NULL = resync) */
+    JOB_LINK,           /* from the SSE thread: link state change (status, err) */
 } job_kind_t;
 
 typedef struct job {
     job_kind_t kind;
     char method[8];
-    char path[224];
+    char path[256];
     char *body;
     char sid[OPENDEV_ID_MAX];
     char aux[OPENDEV_ID_MAX];
@@ -274,59 +311,80 @@ typedef struct job {
     int rc, status;
     char *resp;
     size_t resp_len;
+    char *hdrs;             /* response headers (login: Set-Cookie) */
+    char err[128];
 } job_t;
 
 static void job_free(job_t *j)
 {
     if (!j) return;
+    if (j->body && j->kind == JOB_LOGIN) memset(j->body, 0, strlen(j->body));   /* holds the password */
     free(j->body);
     free(j->resp);
+    free(j->hdrs);
     free(j);
 }
 
+static int auth_header(const opendev_config_t *c, char *out, size_t n)
+{
+    if (!c->token[0]) { out[0] = '\0'; return 0; }
+    if (strncmp(c->token, "cookie:", 7) == 0) return snprintf(out, n, "Cookie: %s\r\n", c->token + 7);
+    return snprintf(out, n, "Authorization: Bearer %s\r\n", c->token);
+}
+
+static void host_header(const opendev_config_t *c, char *out, size_t n)
+{
+    if ((c->tls && c->port == 443) || (!c->tls && c->port == 80)) snprintf(out, n, "%.90s", c->host);
+    else snprintf(out, n, "%.80s:%d", c->host, c->port);
+}
+
 /* Minimal HTTP/1.1 client (worker thread only): Connection: close, read to
- * EOF, then split headers and de-chunk in place. */
+ * EOF, then split headers and de-chunk in place. Plain TCP or TLS. */
 static void http_run(job_t *j)
 {
     j->rc = -1;
     j->status = 0;
     j->resp = BIG_ALLOC(j->cap);
-    if (!j->resp) return;
+    if (!j->resp) { snprintf(j->err, sizeof(j->err), "Out of memory"); return; }
     j->resp[0] = '\0';
 
-    int fd = devos_net_socket_connect(j->cfg.host, j->cfg.port, REST_TIMEOUT_MS);
-    if (fd < 0) return;
+    devos_conn_t *c = devos_conn_open(j->cfg.host, j->cfg.port, j->cfg.tls, REST_TIMEOUT_MS, j->err, sizeof(j->err));
+    if (!c) return;
     size_t blen = j->body ? strlen(j->body) : 0;
-    char req[640];
+    char auth[200], hosth[96], req[900];
+    auth_header(&j->cfg, auth, sizeof(auth));
+    host_header(&j->cfg, hosth, sizeof(hosth));
     int hlen = snprintf(req, sizeof(req),
-                        "%s %s HTTP/1.1\r\nHost: %s:%d\r\nAccept: application/json\r\n"
-                        "Content-Type: application/json\r\nContent-Length: %u\r\n%s%s%s"
-                        "Connection: close\r\n\r\n",
-                        j->method, j->path, j->cfg.host, j->cfg.port, (unsigned)blen,
-                        j->cfg.token[0] ? "Authorization: Bearer " : "", j->cfg.token,
-                        j->cfg.token[0] ? "\r\n" : "");
-    if (hlen <= 0 || (size_t)hlen >= sizeof(req) || devos_net_socket_send_all(fd, req, (size_t)hlen) != 0 ||
-        (blen && devos_net_socket_send_all(fd, j->body, blen) != 0)) {
-        devos_net_socket_close(fd);
+                        "%s %s HTTP/1.1\r\nHost: %s\r\nAccept: application/json\r\nUser-Agent: devOS-Tab5\r\n"
+                        "Content-Type: application/json\r\nContent-Length: %u\r\n%sConnection: close\r\n\r\n",
+                        j->method, j->path, hosth, (unsigned)blen, auth);
+    if (hlen <= 0 || (size_t)hlen >= sizeof(req) || devos_conn_write_all(c, req, (size_t)hlen) != 0 ||
+        (blen && devos_conn_write_all(c, j->body, blen) != 0)) {
+        snprintf(j->err, sizeof(j->err), "Request failed");
+        devos_conn_close(c);
         return;
     }
     size_t total = 0;
     for (;;) {
         size_t room = j->cap - 1 - total;
         if (room == 0) break;
-        int n = devos_net_socket_recv(fd, j->resp + total, room > 16384 ? 16384 : room, REST_TIMEOUT_MS);
+        int n = devos_conn_read(c, j->resp + total, room > 16384 ? 16384 : room, REST_TIMEOUT_MS);
         if (n <= 0) break;
         total += (size_t)n;
     }
-    devos_net_socket_close(fd);
+    devos_conn_close(c);
     j->resp[total] = '\0';
 
     int status = 0;
-    if (sscanf(j->resp, "HTTP/%*d.%*d %d", &status) != 1 && sscanf(j->resp, "HTTP/%*d %d", &status) != 1) return;
+    if (sscanf(j->resp, "HTTP/%*d.%*d %d", &status) != 1 && sscanf(j->resp, "HTTP/%*d %d", &status) != 1) {
+        snprintf(j->err, sizeof(j->err), total ? "Not an HTTP server" : "No response");
+        return;
+    }
     j->status = status;
     char *hdr_end = strstr(j->resp, "\r\n\r\n");
     if (!hdr_end) return;
     *hdr_end = '\0';
+    j->hdrs = strdup(j->resp);
     bool chunked = ci_contains(j->resp, "transfer-encoding: chunked");
     char *body = hdr_end + 4;
     char *end = j->resp + total;
@@ -354,16 +412,23 @@ static void http_run(job_t *j)
     j->rc = 0;
 }
 
-/* ---- job queues ---- */
+/* ---- queues: REST jobs in, results (and SSE events) out ---- */
+#define QDEPTH 64
 #ifdef ESP_PLATFORM
 static QueueHandle_t s_jobq, s_resq;
 
 static bool job_submit(job_t *j) { return xQueueSend(s_jobq, &j, 0) == pdTRUE; }
+static void post_result(job_t *j)
+{
+    while (xQueueSend(s_resq, &j, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    }
+}
 static job_t *result_take(void)
 {
     job_t *j = NULL;
     return xQueueReceive(s_resq, &j, 0) == pdTRUE ? j : NULL;
 }
+static void sleep_ms(int ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
 
 static void worker_task(void *arg)
 {
@@ -372,32 +437,19 @@ static void worker_task(void *arg)
         job_t *j = NULL;
         if (xQueueReceive(s_jobq, &j, portMAX_DELAY) != pdTRUE || !j) continue;
         http_run(j);
-        while (xQueueSend(s_resq, &j, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        }
-    }
-}
-
-static void worker_start(void)
-{
-    s_jobq = xQueueCreate(16, sizeof(job_t *));
-    s_resq = xQueueCreate(16, sizeof(job_t *));
-    /* Pure network I/O (no flash writes), so the stack can live in PSRAM. */
-    if (xTaskCreatePinnedToCoreWithCaps(worker_task, "opendev", 8192, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO,
-                                        MALLOC_CAP_SPIRAM) != pdPASS) {
-        xTaskCreatePinnedToCore(worker_task, "opendev", 8192, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO);
+        post_result(j);
     }
 }
 #else
-#define QCAP 16
-typedef struct { job_t *items[QCAP]; int head, count; } jq_t;
+typedef struct { job_t *items[QDEPTH]; int head, count; } jq_t;
 static jq_t s_jq, s_rq;
 static pthread_mutex_t s_qmx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_qcv = PTHREAD_COND_INITIALIZER;
 
 static bool jq_push(jq_t *q, job_t *j)
 {
-    if (q->count >= QCAP) return false;
-    q->items[(q->head + q->count++) % QCAP] = j;
+    if (q->count >= QDEPTH) return false;
+    q->items[(q->head + q->count++) % QDEPTH] = j;
     return true;
 }
 
@@ -405,9 +457,15 @@ static job_t *jq_pop(jq_t *q)
 {
     if (!q->count) return NULL;
     job_t *j = q->items[q->head];
-    q->head = (q->head + 1) % QCAP;
+    q->head = (q->head + 1) % QDEPTH;
     q->count--;
     return j;
+}
+
+static void sleep_ms(int ms)
+{
+    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
 }
 
 static bool job_submit(job_t *j)
@@ -417,6 +475,17 @@ static bool job_submit(job_t *j)
     pthread_cond_broadcast(&s_qcv);
     pthread_mutex_unlock(&s_qmx);
     return ok;
+}
+
+static void post_result(job_t *j)
+{
+    for (;;) {
+        pthread_mutex_lock(&s_qmx);
+        bool ok = jq_push(&s_rq, j);
+        pthread_mutex_unlock(&s_qmx);
+        if (ok) return;
+        sleep_ms(50);
+    }
 }
 
 static job_t *result_take(void)
@@ -436,23 +505,9 @@ static void *worker_thread(void *arg)
         job_t *j = jq_pop(&s_jq);
         pthread_mutex_unlock(&s_qmx);
         http_run(j);
-        pthread_mutex_lock(&s_qmx);
-        while (!jq_push(&s_rq, j)) {
-            pthread_mutex_unlock(&s_qmx);
-            struct timespec ts = { 0, 50 * 1000 * 1000 };
-            nanosleep(&ts, NULL);
-            pthread_mutex_lock(&s_qmx);
-        }
-        pthread_mutex_unlock(&s_qmx);
+        post_result(j);
     }
     return NULL;
-}
-
-static void worker_start(void)
-{
-    pthread_t th;
-    pthread_create(&th, NULL, worker_thread, NULL);
-    pthread_detach(th);
 }
 #endif
 
@@ -463,7 +518,9 @@ static int enqueue(job_kind_t kind, const char *method, const char *path, const 
     if (!j) return -1;
     j->kind = kind;
     snprintf(j->method, sizeof(j->method), "%s", method);
-    snprintf(j->path, sizeof(j->path), "%s", path);
+    /* OpenChamber proxies the OpenCode API under /api; its own auth routes are not */
+    bool api = kind != JOB_PROBE && kind != JOB_LOGIN && s_cfg.mode == OPENDEV_MODE_CHAMBER;
+    snprintf(j->path, sizeof(j->path), "%s%s%s", s_cfg.base, api ? "/api" : "", path);
     j->body = body ? strdup(body) : NULL;
     snprintf(j->sid, sizeof(j->sid), "%s", sid ? sid : "");
     snprintf(j->aux, sizeof(j->aux), "%s", aux ? aux : "");
@@ -1073,8 +1130,46 @@ static void on_sse_event(const char *data, size_t dlen)
     }
 }
 
-/* Complete events end with a blank line; OpenCode sends one `data:` line per
- * event (JSON with "type"). Multi-line data is joined per the SSE spec. */
+/* ============================================================ SSE link
+ * One thread keeps GET /event open (plain or TLS, blocking reads with a
+ * timeout) and hands every complete event to the UI thread as a JOB_EVENT
+ * result. OpenCode sends one `data:` line (JSON with "type") per event,
+ * usually over a chunked response. */
+static struct {
+    char *buf;
+    size_t len;
+    bool skip;                              /* dropping an oversized event */
+    bool chunked;
+    char chunk_hdr[16];
+    size_t chunk_hdr_len;
+    long chunk_left;
+} S;
+
+static void post_link(opendev_status_t st, const char *text)
+{
+    job_t *j = calloc(1, sizeof(job_t));
+    if (!j) return;
+    j->kind = JOB_LINK;
+    j->status = (int)st;
+    snprintf(j->err, sizeof(j->err), "%s", text ? text : "");
+    post_result(j);
+}
+
+static void post_event(const char *data, size_t len)
+{
+    job_t *j = calloc(1, sizeof(job_t));
+    if (!j) return;
+    j->kind = JOB_EVENT;
+    if (data) {
+        j->resp = BIG_ALLOC(len + 1);
+        if (!j->resp) { free(j); return; }
+        memcpy(j->resp, data, len);
+        j->resp[len] = '\0';
+        j->resp_len = len;
+    }
+    post_result(j);
+}
+
 static void sse_dispatch(char *ev, size_t len)
 {
     char *data = NULL;
@@ -1093,82 +1188,216 @@ static void sse_dispatch(char *ev, size_t len)
                 data = v;
                 dlen = vl;
             } else {
-                /* rare: join in place (the data only shrinks by the prefix) */
-                data[dlen++] = '\n';
+                data[dlen++] = '\n';            /* SSE multi-line data: join */
                 memmove(data + dlen, v, vl);
                 dlen += vl;
             }
         }
         ln = eol + 1;
     }
-    if (data && dlen) {
-        data[dlen] = '\0';
-        on_sse_event(data, dlen);
-    }
+    if (data && dlen) post_event(data, dlen);
 }
 
 static void sse_feed(const char *buf, size_t len)
 {
-    if (!s_sse_buf || len == 0) return;
     for (size_t i = 0; i < len;) {
-        size_t room = SSE_BUF_MAX - 1 - s_sse_len;
+        size_t room = SSE_BUF_MAX - 1 - S.len;
         size_t take = len - i < room ? len - i : room;
-        memcpy(s_sse_buf + s_sse_len, buf + i, take);
-        s_sse_len += take;
-        s_sse_buf[s_sse_len] = '\0';
+        memcpy(S.buf + S.len, buf + i, take);
+        S.len += take;
+        S.buf[S.len] = '\0';
         i += take;
         for (;;) {
-            char *term = strstr(s_sse_buf, "\n\n");
-            char *crlf = strstr(s_sse_buf, "\r\n\r\n");
+            char *term = strstr(S.buf, "\n\n");
+            char *crlf = strstr(S.buf, "\r\n\r\n");
             size_t tl = 2;
             if (crlf && (!term || crlf < term)) { term = crlf; tl = 4; }
             if (!term) break;
-            size_t evlen = (size_t)(term - s_sse_buf);
-            if (!s_sse_skip) sse_dispatch(s_sse_buf, evlen);
-            s_sse_skip = false;
+            size_t evlen = (size_t)(term - S.buf);
+            if (!S.skip) sse_dispatch(S.buf, evlen);
+            S.skip = false;
             size_t used = evlen + tl;
-            memmove(s_sse_buf, s_sse_buf + used, s_sse_len - used + 1);
-            s_sse_len -= used;
+            memmove(S.buf, S.buf + used, S.len - used + 1);
+            S.len -= used;
         }
-        if (s_sse_len >= SSE_BUF_MAX - 1) {
-            /* An event bigger than the buffer: drop it and refetch instead. */
-            s_sse_len = 0;
-            s_sse_buf[0] = '\0';
-            s_sse_skip = true;
-            if (s_active_id[0]) s_want_messages = true;
+        if (S.len >= SSE_BUF_MAX - 1) {
+            /* An event bigger than the buffer: drop it; the UI refetches. */
+            S.len = 0;
+            S.buf[0] = '\0';
+            S.skip = true;
+            post_event(NULL, 0);
         }
     }
 }
 
-/* De-chunk the SSE body when the server used Transfer-Encoding: chunked. */
 static void sse_body(const char *buf, size_t len)
 {
-    if (!s_chunked) { sse_feed(buf, len); return; }
+    if (!S.chunked) { sse_feed(buf, len); return; }
     size_t i = 0;
     while (i < len) {
-        if (s_chunk_left > 0) {
-            size_t take = (size_t)s_chunk_left < len - i ? (size_t)s_chunk_left : len - i;
+        if (S.chunk_left > 0) {
+            size_t take = (size_t)S.chunk_left < len - i ? (size_t)S.chunk_left : len - i;
             sse_feed(buf + i, take);
-            s_chunk_left -= (long)take;
+            S.chunk_left -= (long)take;
             i += take;
-            if (s_chunk_left == 0) s_chunk_left = -2;          /* expect CRLF */
+            if (S.chunk_left == 0) S.chunk_left = -2;          /* expect CRLF */
             continue;
         }
-        if (s_chunk_left < 0) {                                /* skip CRLF after data */
-            if (buf[i] == '\n') s_chunk_left = 0;
+        if (S.chunk_left < 0) {                                /* skip CRLF after data */
+            if (buf[i] == '\n') S.chunk_left = 0;
             i++;
             continue;
         }
         char c = buf[i++];
         if (c == '\n') {
-            s_chunk_hdr[s_chunk_hdr_len] = '\0';
-            s_chunk_left = strtol(s_chunk_hdr, NULL, 16);
-            s_chunk_hdr_len = 0;
-            if (s_chunk_left == 0) s_chunk_left = -2;
-        } else if (c != '\r' && s_chunk_hdr_len < sizeof(s_chunk_hdr) - 1) {
-            s_chunk_hdr[s_chunk_hdr_len++] = c;
+            S.chunk_hdr[S.chunk_hdr_len] = '\0';
+            S.chunk_left = strtol(S.chunk_hdr, NULL, 16);
+            S.chunk_hdr_len = 0;
+            if (S.chunk_left == 0) S.chunk_left = -2;
+        } else if (c != '\r' && S.chunk_hdr_len < sizeof(S.chunk_hdr) - 1) {
+            S.chunk_hdr[S.chunk_hdr_len++] = c;
         }
     }
+}
+
+/* Sleep up to ms (forever if < 0), returning early when a relink is asked. */
+static void link_wait(uint32_t gen, int ms)
+{
+    for (int t = 0; (ms < 0 || t < ms) && gen == s_link_gen; t += 100) sleep_ms(100);
+}
+
+static void sse_run(void)
+{
+    static EXT_RAM_BSS_ATTR char rb[4096];
+    char err[128], hdr[2048];
+    for (;;) {
+        if (!s_link_want) { sleep_ms(200); continue; }
+        uint32_t gen = s_link_gen;
+        opendev_config_t cfg;
+        cfg_lock();
+        cfg = s_cfg;
+        cfg_unlock();
+
+        char t[160];
+        snprintf(t, sizeof(t), "Connecting to %.100s...", cfg.host);
+        post_link(OPENDEV_CONNECTING, t);
+        devos_conn_t *c = devos_conn_open(cfg.host, cfg.port, cfg.tls, REST_TIMEOUT_MS, err, sizeof(err));
+        if (!c) {
+            post_link(OPENDEV_DOWN, err);
+            link_wait(gen, 3000);
+            continue;
+        }
+        char auth[200], hosth[96], req[700];
+        auth_header(&cfg, auth, sizeof(auth));
+        host_header(&cfg, hosth, sizeof(hosth));
+        int hlen = snprintf(req, sizeof(req),
+                            "GET %s%s/event HTTP/1.1\r\nHost: %s\r\nAccept: text/event-stream\r\n"
+                            "Cache-Control: no-cache\r\nUser-Agent: devOS-Tab5\r\n%sConnection: keep-alive\r\n\r\n",
+                            cfg.base, cfg.mode == OPENDEV_MODE_CHAMBER ? "/api" : "", hosth, auth);
+        if (hlen <= 0 || devos_conn_write_all(c, req, (size_t)hlen) != 0) {
+            devos_conn_close(c);
+            post_link(OPENDEV_DOWN, "Could not subscribe to events");
+            link_wait(gen, 3000);
+            continue;
+        }
+
+        /* response headers */
+        size_t hl = 0;
+        char *eoh = NULL;
+        for (int waited = 0; !eoh && waited < 10000 && gen == s_link_gen;) {
+            int n = devos_conn_read(c, hdr + hl, sizeof(hdr) - 1 - hl, 500);
+            if (n == DEVOS_CONN_TIMEOUT) { waited += 500; continue; }
+            if (n <= 0) break;
+            hl += (size_t)n;
+            hdr[hl] = '\0';
+            eoh = strstr(hdr, "\r\n\r\n");
+            if (!eoh && hl >= sizeof(hdr) - 1) break;
+        }
+        if (!eoh) {
+            devos_conn_close(c);
+            if (gen == s_link_gen) post_link(OPENDEV_DOWN, "No response from the server");
+            link_wait(gen, 3000);
+            continue;
+        }
+        int code = 0;
+        sscanf(hdr, "HTTP/%*d.%*d %d", &code);
+        if (code == 401 || code == 403) {
+            devos_conn_close(c);
+            post_link(OPENDEV_LOGIN, cfg.mode == OPENDEV_MODE_CHAMBER
+                                         ? (cfg.token[0] ? "Sign-in expired: enter the OpenChamber password"
+                                                         : "Enter the OpenChamber password")
+                                         : "Server needs a password");
+            link_wait(gen, -1);                             /* until the user signs in */
+            continue;
+        }
+        if (code != 200) {
+            devos_conn_close(c);
+            snprintf(t, sizeof(t), "Event stream: HTTP %d", code);
+            post_link(OPENDEV_DOWN, t);
+            link_wait(gen, 5000);
+            continue;
+        }
+        *eoh = '\0';
+        if (!ci_contains(hdr, "text/event-stream")) {
+            devos_conn_close(c);
+            post_link(OPENDEV_DOWN, "Not an OpenCode event stream (check the URL)");
+            link_wait(gen, -1);
+            continue;
+        }
+        S.chunked = ci_contains(hdr, "transfer-encoding: chunked");
+        S.chunk_left = 0;
+        S.chunk_hdr_len = 0;
+        S.len = 0;
+        S.skip = false;
+        S.buf[0] = '\0';
+        post_link(OPENDEV_UP, cfg.tls ? "Live (TLS)" : "Live");
+        size_t extra = hl - (size_t)(eoh + 4 - hdr);
+        if (extra) sse_body(eoh + 4, extra);
+
+        while (gen == s_link_gen && s_link_want) {
+            int n = devos_conn_read(c, rb, sizeof(rb), 1000);
+            if (n > 0) { sse_body(rb, (size_t)n); continue; }
+            if (n == DEVOS_CONN_TIMEOUT) continue;
+            post_link(OPENDEV_DOWN, n == 0 ? "Server closed the event stream" : "Event stream lost");
+            break;
+        }
+        devos_conn_close(c);
+        if (gen == s_link_gen && s_link_want) link_wait(gen, 2000);
+    }
+}
+
+#ifdef ESP_PLATFORM
+static void sse_task(void *arg)
+{
+    (void)arg;
+    sse_run();
+}
+#else
+static void *sse_thread(void *arg)
+{
+    (void)arg;
+    sse_run();
+    return NULL;
+}
+#endif
+
+static void workers_start(void)
+{
+    if (!S.buf) S.buf = BIG_ALLOC(SSE_BUF_MAX);
+#ifdef ESP_PLATFORM
+    s_cfg_mx = xSemaphoreCreateMutex();
+    s_jobq = xQueueCreate(QDEPTH, sizeof(job_t *));
+    s_resq = xQueueCreate(QDEPTH, sizeof(job_t *));
+    /* Internal-RAM stacks: TLS handshakes use the crypto accelerators. */
+    xTaskCreatePinnedToCore(worker_task, "opendev", 10240, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO);
+    xTaskCreatePinnedToCore(sse_task, "opendev_sse", 10240, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO);
+#else
+    pthread_t th;
+    pthread_create(&th, NULL, worker_thread, NULL);
+    pthread_detach(th);
+    pthread_create(&th, NULL, sse_thread, NULL);
+    pthread_detach(th);
+#endif
 }
 
 /* ============================================================ results */
@@ -1292,10 +1521,33 @@ static void handle_messages(job_t *j)
 }
 
 static void send_prompt(const char *sid, const char *text);
+static void link_result(job_t *j);
+static void probe_result(job_t *j);
+static void login_result(job_t *j);
 
 static void handle_result(job_t *j)
 {
+    if (j->rc == 0 && j->status == 401 && j->kind != JOB_PROBE && j->kind != JOB_LOGIN && j->kind != JOB_LINK &&
+        j->kind != JOB_EVENT) {
+        s_link_want = false;
+        set_status(OPENDEV_LOGIN, s_cfg.mode == OPENDEV_MODE_CHAMBER ? "Sign-in expired: enter the OpenChamber password"
+                                                                      : "Server needs a password");
+        return;
+    }
     switch (j->kind) {
+    case JOB_EVENT:
+        if (j->resp) on_sse_event(j->resp, j->resp_len);
+        else if (s_active_id[0]) s_want_messages = true;
+        break;
+    case JOB_LINK:
+        link_result(j);
+        break;
+    case JOB_PROBE:
+        probe_result(j);
+        break;
+    case JOB_LOGIN:
+        login_result(j);
+        break;
     case JOB_SESSIONS:
         handle_sessions(j);
         break;
@@ -1367,42 +1619,185 @@ static void handle_result(job_t *j)
 }
 
 /* ============================================================ public API */
+static void clear_store(void)
+{
+    s_session_count = 0;
+    s_active_id[0] = '\0';
+    s_block_count = 0;
+    s_diff[0] = '\0';
+    s_diff_file_count = 0;
+    s_perm.active = false;
+    bump_blocks();
+    s_diff_gen++;
+}
+
+/* (Re)start the event stream with the current config. */
+static void relink(void)
+{
+    s_link_want = true;
+    s_link_gen++;
+    bump();
+}
+
+static void start_probe(void)
+{
+    s_link_want = false;
+    s_link_gen++;                               /* drop any current stream */
+    char t[160];
+    snprintf(t, sizeof(t), "Checking %.120s ...", s_cfg.url);
+    set_status(OPENDEV_CONNECTING, t);
+    enqueue(JOB_PROBE, "GET", "/auth/session", NULL, NULL, NULL, 8192);
+}
+
 void opendev_client_init(void)
 {
     config_load();
-    if (!s_sse_buf) s_sse_buf = BIG_ALLOC(SSE_BUF_MAX);
-    worker_start();
-    s_want_link = true;
-    set_status(OPENDEV_DOWN, "Offline");
+    workers_start();
+    start_probe();          /* OpenChamber or opencode serve? password needed? */
 }
 
 int opendev_client_reconnect(void)
 {
-    if (s_sse_fd >= 0) {
-        devos_net_socket_close(s_sse_fd);
-        s_sse_fd = -1;
-    }
-    s_retry_ticks = RETRY_TICKS;
-    s_want_link = true;
-    set_status(OPENDEV_DOWN, "Reconnecting...");
+    start_probe();
     return 0;
 }
 
-static void link_drop(const char *why)
+/* Device identity for OpenChamber's trusted-device list. */
+static void device_key(char *out, size_t n)
 {
-    if (s_sse_fd >= 0) devos_net_socket_close(s_sse_fd);
-    s_sse_fd = -1;
-    set_status(OPENDEV_DOWN, why);
+#ifdef ESP_PLATFORM
+    uint8_t mac[6] = { 0 };
+    esp_efuse_mac_get_default(mac);
+    snprintf(out, n, "devos-tab5-%02x%02x%02x%02x", mac[2], mac[3], mac[4], mac[5]);
+#else
+    snprintf(out, n, "devos-tab5-simulator");
+#endif
+}
+
+static int start_login(const char *password)
+{
+    if (!password || !*password) return -1;
+    size_t cap = strlen(password) * 6 + 512;
+    char *esc = malloc(strlen(password) * 6 + 8), *body = malloc(cap);
+    if (!esc || !body) { free(esc); free(body); return -1; }
+    devos_json_escape(password, esc, strlen(password) * 6 + 8);
+    char key[48];
+    device_key(key, sizeof(key));
+    snprintf(body, cap,
+             "{\"password\":\"%s\",\"trustDevice\":true,\"issueClientToken\":true,\"clientLabel\":\"devOS Tab5\","
+             "\"clientKind\":\"devos-tab5\",\"deviceName\":\"Tab5\",\"devicePlatform\":\"devOS\","
+             "\"deviceModel\":\"M5Stack Tab5 (ESP32-P4)\",\"appVersion\":\"%s\",\"dedupeKey\":\"%s\"}",
+             esc, DEVOS_VERSION_STR, key);
+    memset(esc, 0, strlen(esc));
+    free(esc);
+    set_status(OPENDEV_CONNECTING, "Signing in...");
+    int rc = enqueue(JOB_LOGIN, "POST", "/auth/session", body, NULL, NULL, 8192);
+    memset(body, 0, strlen(body));
+    free(body);
+    return rc;
+}
+
+static void link_result(job_t *j)
+{
+    opendev_status_t st = (opendev_status_t)j->status;
+    if (st == OPENDEV_LOGIN) s_link_want = false;
+    set_status(st, j->err);
+    if (st == OPENDEV_UP) {
+        opendev_client_refresh_sessions();
+        if (s_active_id[0]) s_want_messages = true;    /* catch up on what we missed */
+    }
+}
+
+static void probe_result(job_t *j)
+{
+    if (j->rc != 0) {
+        char t[160];
+        snprintf(t, sizeof(t), "%s", j->err[0] ? j->err : "Server unreachable");
+        set_status(OPENDEV_DOWN, t);
+        free(s_pending_password);
+        s_pending_password = NULL;
+        return;
+    }
+    bool chamber = (j->status == 200 || j->status == 401) && strstr(j->resp, "\"authenticated\"");
+    if (!chamber) {
+        /* plain `opencode serve` */
+        s_cfg.mode = OPENDEV_MODE_CODE;
+        config_save();
+        free(s_pending_password);
+        s_pending_password = NULL;
+        relink();
+        return;
+    }
+    s_cfg.mode = OPENDEV_MODE_CHAMBER;
+    config_save();
+    if (strstr(j->resp, "\"authenticated\":true") && s_cfg.token[0]) {
+        relink();
+    } else if (s_pending_password) {
+        start_login(s_pending_password);
+        memset(s_pending_password, 0, strlen(s_pending_password));
+        free(s_pending_password);
+        s_pending_password = NULL;
+    } else if (strstr(j->resp, "\"authenticated\":true")) {
+        relink();                               /* OpenChamber without a password */
+    } else {
+        set_status(OPENDEV_LOGIN, s_cfg.token[0] ? "Sign-in expired: enter the OpenChamber password"
+                                                 : "Enter the OpenChamber password");
+    }
+}
+
+static void login_result(job_t *j)
+{
+    if (j->rc != 0) {
+        set_status(OPENDEV_LOGIN, j->err[0] ? j->err : "Server unreachable");
+        return;
+    }
+    if (j->status == 401) { set_status(OPENDEV_LOGIN, "Wrong password"); return; }
+    if (j->status == 429) { set_status(OPENDEV_LOGIN, "Too many attempts: wait a minute and try again"); return; }
+    if (j->status == 403) { set_status(OPENDEV_LOGIN, "Password sign-in is disabled on this route"); return; }
+    if (j->status != 200) {
+        char t[64];
+        snprintf(t, sizeof(t), "Sign-in failed (HTTP %d)", j->status);
+        set_status(OPENDEV_LOGIN, t);
+        return;
+    }
+    char token[OPENDEV_TOKEN_MAX] = "";
+    if (json_str(j->resp, j->resp + j->resp_len, "clientToken", token, sizeof(token)) != 0 || !token[0]) {
+        /* older OpenChamber: fall back to the session cookie */
+        const char *h = j->hdrs ? j->hdrs : "";
+        for (const char *p = h; (p = strstr(p, "\n")) != NULL; p++) {
+            if (strncasecmp(p + 1, "set-cookie:", 11) == 0) {
+                const char *v = p + 12;
+                while (*v == ' ') v++;
+                if (strncmp(v, "oc_ui_session", 13) == 0) {
+                    size_t n = strcspn(v, ";\r\n");
+                    snprintf(token, sizeof(token), "cookie:%.*s", (int)(n < 110 ? n : 110), v);
+                    break;
+                }
+            }
+        }
+    }
+    if (!token[0]) {
+        set_status(OPENDEV_LOGIN, "Signed in, but the server issued no device token");
+        return;
+    }
+    cfg_lock();
+    snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
+    cfg_unlock();
+    config_save();
+    set_status(OPENDEV_CONNECTING, "Signed in");
+    relink();
 }
 
 void opendev_client_poll(void)
 {
-    /* finished REST jobs */
-    for (int n = 0; n < 8; n++) {
+    /* finished REST jobs and events from the stream */
+    for (int n = 0; n < QDEPTH; n++) {
         job_t *j = result_take();
         if (!j) break;
-        if (s_inflight > 0) s_inflight--;
-        if (j->kind == JOB_MESSAGES && s_msg_inflight > 0) s_msg_inflight--;
+        if (j->kind != JOB_EVENT && j->kind != JOB_LINK) {
+            if (s_inflight > 0) s_inflight--;
+            if (j->kind == JOB_MESSAGES && s_msg_inflight > 0) s_msg_inflight--;
+        }
         handle_result(j);
         job_free(j);
         bump();
@@ -1424,110 +1819,6 @@ void opendev_client_poll(void)
             }
         }
     }
-
-    if (!s_want_link) {
-        if (s_sse_fd >= 0) link_drop("Offline");
-        return;
-    }
-
-    if (s_sse_fd < 0) {
-        if (++s_retry_ticks < RETRY_TICKS) return;
-        s_retry_ticks = 0;
-        s_sse_fd = devos_net_socket_connect_start(s_cfg.host, s_cfg.port);
-        s_connect_ticks = 0;
-        s_hdr_len = 0;
-        char t[128];
-        if (s_sse_fd < 0) {
-            snprintf(t, sizeof(t), "No route to %s:%d", s_cfg.host, s_cfg.port);
-            set_status(OPENDEV_DOWN, t);
-            return;
-        }
-        snprintf(t, sizeof(t), "Connecting %s:%d...", s_cfg.host, s_cfg.port);
-        set_status(OPENDEV_CONNECTING, t);
-        return;
-    }
-
-    if (s_status == OPENDEV_CONNECTING && s_hdr_len == 0 && s_connect_ticks >= 0) {
-        int r = devos_net_socket_connect_wait(s_sse_fd, 0);
-        if (r > 0) {
-            if (++s_connect_ticks > CONNECT_GIVEUP_TICKS) link_drop("Connect timeout");
-            return;
-        }
-        if (r < 0) {
-            char t[128];
-            snprintf(t, sizeof(t), "Refused by %s:%d", s_cfg.host, s_cfg.port);
-            link_drop(t);
-            return;
-        }
-        char req[512];
-        int hlen = snprintf(req, sizeof(req),
-                            "GET /event HTTP/1.1\r\nHost: %s:%d\r\nAccept: text/event-stream\r\n"
-                            "Cache-Control: no-cache\r\n%s%s%sConnection: keep-alive\r\n\r\n",
-                            s_cfg.host, s_cfg.port, s_cfg.token[0] ? "Authorization: Bearer " : "", s_cfg.token,
-                            s_cfg.token[0] ? "\r\n" : "");
-        if (hlen <= 0 || devos_net_socket_send_all(s_sse_fd, req, (size_t)hlen) != 0) {
-            link_drop("Subscribe failed");
-            return;
-        }
-        s_connect_ticks = -1;                   /* now waiting for headers */
-    }
-
-    static EXT_RAM_BSS_ATTR char chunk[4096];
-    for (int it = 0; it < 16; it++) {
-        int n = devos_net_socket_recv(s_sse_fd, chunk, sizeof(chunk) - 1, 1);
-        if (n == 0) { link_drop("Server closed the event stream"); break; }
-        if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR && errno != ENOTCONN &&
-                errno != EINPROGRESS) {
-                link_drop("Event stream lost");
-            }
-            break;
-        }
-        if (s_status == OPENDEV_CONNECTING) {
-            size_t take = (size_t)n;
-            if (s_hdr_len + take >= sizeof(s_hdr_buf)) take = sizeof(s_hdr_buf) - 1 - s_hdr_len;
-            memcpy(s_hdr_buf + s_hdr_len, chunk, take);
-            s_hdr_len += take;
-            s_hdr_buf[s_hdr_len] = '\0';
-            char *eoh = strstr(s_hdr_buf, "\r\n\r\n");
-            if (!eoh) {
-                if (s_hdr_len >= sizeof(s_hdr_buf) - 1) { link_drop("Bad response headers"); return; }
-                continue;
-            }
-            int code = 0;
-            if (sscanf(s_hdr_buf, "HTTP/%*d.%*d %d", &code) != 1) code = 0;
-            if (code != 200) {
-                char t[64];
-                snprintf(t, sizeof(t), code == 401 ? "Unauthorized (check the token)" : "Server HTTP %d", code);
-                link_drop(t);
-                return;
-            }
-            *eoh = '\0';
-            s_chunked = ci_contains(s_hdr_buf, "transfer-encoding: chunked");
-            s_chunk_left = 0;
-            s_chunk_hdr_len = 0;
-            size_t hused = (size_t)(eoh - s_hdr_buf) + 4;
-            size_t extra = s_hdr_len - hused;
-            set_status(OPENDEV_UP, "Live");
-            s_sse_len = 0;
-            s_sse_skip = false;
-            if (s_sse_buf) s_sse_buf[0] = '\0';
-            opendev_client_refresh_sessions();
-            if (s_active_id[0]) s_want_messages = true;    /* catch up on what we missed */
-            if (take < (size_t)n) {
-                /* header buffer filled mid-read: pass the remainder on */
-                sse_body(s_hdr_buf + hused, extra);
-                sse_body(chunk + take, (size_t)n - take);
-            } else if (extra) {
-                sse_body(s_hdr_buf + hused, extra);
-            }
-        } else {
-            sse_body(chunk, (size_t)n);
-        }
-    }
-    if (s_status == OPENDEV_CONNECTING && s_sse_fd >= 0 && s_connect_ticks < 0) {
-        if (--s_connect_ticks < -(CONNECT_GIVEUP_TICKS)) link_drop("No response from server");
-    }
 }
 
 opendev_status_t opendev_client_status(void) { return s_status; }
@@ -1537,6 +1828,7 @@ uint32_t opendev_client_blocks_generation(void) { return s_blocks_gen; }
 uint32_t opendev_client_diff_generation(void) { return s_diff_gen; }
 bool opendev_client_loading(void) { return s_inflight > 0; }
 bool opendev_client_messages_loading(void) { return s_msg_inflight > 0; }
+bool opendev_client_needs_login(void) { return s_status == OPENDEV_LOGIN; }
 
 void opendev_client_get_config(char *host, size_t host_len, int *port, opendev_mode_t *mode, char *token,
                                size_t token_len)
@@ -1547,53 +1839,79 @@ void opendev_client_get_config(char *host, size_t host_len, int *port, opendev_m
     if (token && token_len) snprintf(token, token_len, "%s", s_cfg.token);
 }
 
-static void relink(void)
+void opendev_client_get_url(char *out, size_t len)
 {
-    if (s_sse_fd >= 0) {
-        devos_net_socket_close(s_sse_fd);
-        s_sse_fd = -1;
+    if (out && len) snprintf(out, len, "%s", s_cfg.url);
+}
+
+static int connect_url_ex(const char *url, const char *password, const char *token)
+{
+    opendev_config_t c = s_cfg;
+    if (!url || cfg_apply_url(&c, url) != 0) return -1;
+    bool same = strcmp(c.url, s_cfg.url) == 0;
+    cfg_lock();
+    s_cfg = c;
+    if (!same) s_cfg.token[0] = '\0';           /* tokens belong to one server */
+    if (token && *token) {
+        snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
+        s_cfg.mode = OPENDEV_MODE_CHAMBER;
     }
-    s_retry_ticks = RETRY_TICKS;
-    s_session_count = 0;
-    s_active_id[0] = '\0';
-    s_block_count = 0;
-    s_diff[0] = '\0';
-    s_diff_file_count = 0;
-    s_perm.active = false;
-    bump_blocks();
-    s_diff_gen++;
+    cfg_unlock();
+    config_save();
+    if (!same) clear_store();
+    free(s_pending_password);
+    s_pending_password = (password && *password) ? strdup(password) : NULL;
+    start_probe();
+    return 0;
+}
+
+int opendev_client_connect_url(const char *url, const char *password)
+{
+    return connect_url_ex(url, password, NULL);
+}
+
+int opendev_client_login(const char *password)
+{
+    return start_login(password);
+}
+
+int opendev_client_sign_out(void)
+{
+    cfg_lock();
+    s_cfg.token[0] = '\0';
+    cfg_unlock();
+    config_save();
+    clear_store();
+    start_probe();
+    return 0;
 }
 
 int opendev_client_set_server(const char *host, int port)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
-    snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
-    s_cfg.port = port;
-    s_cfg.mode = OPENDEV_MODE_CODE;
-    s_cfg.token[0] = '\0';
-    config_save();
-    relink();
-    return 0;
+    char url[OPENDEV_URL_MAX];
+    if (strstr(host, "://")) snprintf(url, sizeof(url), "%s", host);
+    else snprintf(url, sizeof(url), "http://%s:%d", host, port);
+    return opendev_client_connect_url(url, NULL);
 }
 
 int opendev_client_set_chamber(const char *host, int port, const char *token)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
-    snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
-    s_cfg.port = port;
-    s_cfg.mode = OPENDEV_MODE_CHAMBER;
-    snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token ? token : "");
-    config_save();
-    relink();
-    return 0;
+    char url[OPENDEV_URL_MAX];
+    if (strstr(host, "://")) snprintf(url, sizeof(url), "%s", host);
+    else snprintf(url, sizeof(url), "http://%s:%d", host, port);
+    return connect_url_ex(url, NULL, token);
 }
 
 int opendev_client_set_mode(opendev_mode_t mode)
 {
     if (mode != OPENDEV_MODE_CODE && mode != OPENDEV_MODE_CHAMBER) return -1;
+    cfg_lock();
     s_cfg.mode = mode;
+    cfg_unlock();
     config_save();
-    bump();
+    relink();
     return 0;
 }
 
@@ -1616,31 +1934,13 @@ static void url_decode(char *s)
 
 int opendev_client_pair(const char *uri)
 {
-    /* openchamber://connect?host=H&port=P&token=T (p= accepted for token);
-     * also openchamber://host:port?token=T */
+    /* openchamber://connect?url=U&token=T (or host=H&port=P; p= accepted for token) */
     if (!uri || strncmp(uri, "openchamber://", 14) != 0) return -1;
-    const char *rest = uri + 14;
-    const char *q = strchr(rest, '?');
-    char host[OPENDEV_HOST_MAX] = "";
+    const char *q = strchr(uri, '?');
+    char url[OPENDEV_URL_MAX] = "", host[OPENDEV_HOST_MAX] = "", token[OPENDEV_TOKEN_MAX] = "";
     int port = 0;
-    char token[OPENDEV_TOKEN_MAX] = "";
-    size_t auth_len = q ? (size_t)(q - rest) : strlen(rest);
-    if (auth_len > 0 && auth_len < 64) {
-        char auth[64];
-        memcpy(auth, rest, auth_len);
-        auth[auth_len] = '\0';
-        if (auth[auth_len - 1] == '/') auth[auth_len - 1] = '\0';
-        if (strcmp(auth, "connect") != 0 && auth[0] != '\0') {
-            char *colon = strchr(auth, ':');
-            if (colon) {
-                *colon = '\0';
-                port = atoi(colon + 1);
-            }
-            snprintf(host, sizeof(host), "%s", auth);
-        }
-    }
     if (q) {
-        char query[256];
+        char query[400];
         snprintf(query, sizeof(query), "%s", q + 1);
         char *save = NULL;
         for (char *pair = strtok_r(query, "&", &save); pair; pair = strtok_r(NULL, "&", &save)) {
@@ -1649,19 +1949,15 @@ int opendev_client_pair(const char *uri)
             *eq = '\0';
             url_decode(pair);
             url_decode(eq + 1);
-            if (strcmp(pair, "host") == 0) snprintf(host, sizeof(host), "%s", eq + 1);
+            if (strcmp(pair, "url") == 0) snprintf(url, sizeof(url), "%s", eq + 1);
+            else if (strcmp(pair, "host") == 0) snprintf(host, sizeof(host), "%s", eq + 1);
             else if (strcmp(pair, "port") == 0) port = atoi(eq + 1);
             else if (strcmp(pair, "token") == 0 || strcmp(pair, "p") == 0) snprintf(token, sizeof(token), "%s", eq + 1);
         }
     }
-    if (!token[0]) return -1;
-    snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
-    if (host[0]) snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
-    if (port > 0 && port < 65536) s_cfg.port = port;
-    s_cfg.mode = OPENDEV_MODE_CHAMBER;
-    config_save();
-    relink();
-    return 0;
+    if (!url[0] && host[0]) snprintf(url, sizeof(url), "http://%s:%d", host, port > 0 ? port : 80);
+    if (!url[0] || !token[0]) return -1;
+    return connect_url_ex(url, NULL, token);
 }
 
 int opendev_client_session_count(void) { return s_session_count; }
