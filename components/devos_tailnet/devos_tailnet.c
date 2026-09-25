@@ -624,6 +624,11 @@ int devos_tailnet_ping(int peer_index)
     return 0;
 }
 
+void devos_tailnet_housekeeping(void)
+{
+    ml_peer_nvs_flush_if_idle(20000);
+}
+
 #else
 /* ========================================================================
  * Simulator: mirror the host's tailscale (tools/sim/tailscale_live.py)
@@ -840,6 +845,8 @@ static void *sim_ping_thread(void *arg)
     free(ip);
     return NULL;
 }
+
+void devos_tailnet_housekeeping(void) {}
 
 int devos_tailnet_ping(int peer_index)
 {

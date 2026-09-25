@@ -76,6 +76,7 @@ static void gui_task(void *arg)
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
+            devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
             /* A new OTA image that has run the UI for 15 s is good: cancel
              * the bootloader's pending rollback. */
             if (sim_seconds == 15) devos_ota_mark_boot_ok();
@@ -444,6 +445,7 @@ int main(int argc, char **argv)
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
+            devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
             last_telemetry_tick = now;
         }
 

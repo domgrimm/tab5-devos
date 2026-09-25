@@ -13,6 +13,9 @@
  * Reference: microlink v1 microlink_peer_registry.c
  */
 
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "microlink_internal.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -67,6 +70,13 @@ static void load_table(void) {
     }
 }
 
+/* devOS: peers are saved to RAM and written to flash once they settle
+ * (ml_peer_nvs_flush_if_idle, called from the UI core), instead of one
+ * whole-table flash write per peer on every boot from the WG task. */
+static bool s_dirty = false;
+static int64_t s_dirty_us = 0;
+static SemaphoreHandle_t s_mx = NULL;
+
 static esp_err_t flush_table(void) {
     if (!s_table) return ESP_ERR_INVALID_STATE;
 
@@ -99,6 +109,7 @@ esp_err_t ml_peer_nvs_init(void) {
 
 void ml_peer_nvs_deinit(void) {
     if (!s_initialized) return;
+    if (s_dirty) ml_peer_nvs_flush_if_idle(0);
     nvs_close(s_nvs);
     s_initialized = false;
     if (s_table) {
@@ -109,6 +120,8 @@ void ml_peer_nvs_deinit(void) {
 
 esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
     if (!s_initialized || !peer || !s_table) return ESP_ERR_INVALID_STATE;
+    if (!s_mx) s_mx = xSemaphoreCreateMutex();
+    if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
 
     /* Advance LRU clock */
     s_table->lru_clock++;
@@ -171,12 +184,22 @@ esp_err_t ml_peer_nvs_save(const ml_peer_t *peer) {
         slot = lru_idx;
     }
 
-    esp_err_t err = flush_table();
-    if (err == ESP_OK) {
-        ESP_LOGD(TAG, "Saved peer %s (slot=%d/%d)",
-                 entry.hostname_short, slot, s_table->count);
-    }
+    s_dirty = true;
+    s_dirty_us = esp_timer_get_time();
+    if (s_mx) xSemaphoreGive(s_mx);
+    ESP_LOGD(TAG, "Saved peer %s (slot=%d/%d, flash write deferred)",
+             entry.hostname_short, slot, s_table->count);
+    return ESP_OK;
+}
 
+esp_err_t ml_peer_nvs_flush_if_idle(int idle_ms) {
+    if (!s_initialized || !s_dirty || !s_table) return ESP_OK;
+    if (esp_timer_get_time() - s_dirty_us < (int64_t)idle_ms * 1000) return ESP_OK;
+    if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY);
+    s_dirty = false;
+    esp_err_t err = flush_table();
+    if (s_mx) xSemaphoreGive(s_mx);
+    ESP_LOGI(TAG, "Peer cache written (%d peers)", s_table->count);
     return err;
 }
 
