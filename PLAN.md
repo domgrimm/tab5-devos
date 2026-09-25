@@ -542,11 +542,12 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 3. (was: Terminal) done.
 > 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
 >    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
-> 5. OpenCode SSE likely never dispatches (expects `event:` lines); diff pane shows raw JSON;
->    REST calls block the UI up to 4 s.
+> 5. (was: OpenCode) done: SSE parsed from `data:` JSON (`type`/`properties`, chunked), streamed
+>    parts + deltas applied incrementally, REST on a background worker, unified diffs from
+>    `/session/:id/diff`. Agent questions are only announced (answer on the computer).
 > 6. Antigravity bridge real mode is a stub (prompts/permissions not forwarded); WS client
 >    breaks on frames > 8 KB and sends empty PONGs.
-> 7. Camera/QR: no camera driver (grey frames); "Simulate QR" ships on hardware and overwrites pairing.
+> 7. Camera/QR: no camera driver (grey frames). ("Simulate QR" is now simulator-only.)
 > 8. Secrets (Tailscale key, tokens, PSK, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
 > 9. Missing: command palette, keyboard RGB, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
 

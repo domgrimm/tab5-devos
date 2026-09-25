@@ -257,6 +257,7 @@ static lv_obj_t *chat_card(const devos_palette_t *p, lv_color_t border)
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_radius(card, 6, 0);
     lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     return card;
 }
 
@@ -278,77 +279,348 @@ static void toggle_think_cb(lv_event_t *e)
     refresh_all();
 }
 
-static void render_diff_view(const char *raw_diff, const devos_palette_t *p)
+/* ---- monospace diff view: a tall object that draws only visible lines ---- */
+#define CV_LINE_H    16
+#define CV_MAX_LINES 6000
+
+typedef struct {
+    lv_obj_t *scroll;       /* scrollable container */
+    lv_obj_t *view;         /* drawn by cv_draw_cb */
+    const char *text;
+    int *off;               /* line start offsets */
+    int n;
+} code_view_t;
+
+static code_view_t s_cv_pane, s_cv_full;
+static lv_obj_t *modal_diff = NULL, *lbl_diff_title = NULL;
+static EXT_RAM_BSS_ATTR char s_diff_display[OPENDEV_DIFF_MAX + 2048];
+
+static void cv_draw_cb(lv_event_t *e)
 {
-    if (!diff_scroll) return;
-    lv_obj_clean(diff_scroll);
-    if (!raw_diff || !*raw_diff || strcmp(raw_diff, "(no changes)") == 0 ||
-        strcmp(raw_diff, "(diff unavailable)") == 0) {
-        lv_obj_t *lbl = lv_label_create(diff_scroll);
-        lv_label_set_text(lbl, (raw_diff && *raw_diff) ? raw_diff : "(no changes)");
-        lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        return;
-    }
-
-    const char *line = raw_diff;
-    while (*line) {
-        const char *next = strchr(line, '\n');
-        size_t len = next ? (size_t)(next - line) : strlen(line);
-        if (len > 0) {
-            char line_buf[256];
-            size_t take = len < sizeof(line_buf) - 1 ? len : sizeof(line_buf) - 1;
-            memcpy(line_buf, line, take);
-            line_buf[take] = '\0';
-
-            lv_obj_t *lbl = lv_label_create(diff_scroll);
-            lv_label_set_text(lbl, line_buf);
-            lv_obj_set_width(lbl, lv_pct(100));
-            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_font(lbl, &lv_font_nimbus_mono_14, 0);
-
-            if (line_buf[0] == '+' && line_buf[1] != '+') {
-                lv_obj_set_style_text_color(lbl, p->accent_secondary, 0);
-            } else if (line_buf[0] == '-' && line_buf[1] != '-') {
-                lv_obj_set_style_text_color(lbl, p->accent_danger, 0);
-            } else if (line_buf[0] == '@' && line_buf[1] == '@') {
-                lv_obj_set_style_text_color(lbl, p->accent_primary, 0);
-            } else if (strncmp(line_buf, "diff ", 5) == 0 ||
-                       strncmp(line_buf, "index ", 6) == 0 ||
-                       strncmp(line_buf, "---", 3) == 0 ||
-                       strncmp(line_buf, "+++", 3) == 0) {
-                lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
-            } else {
-                lv_obj_set_style_text_color(lbl, p->text_primary, 0);
-            }
+    code_view_t *cv = lv_event_get_user_data(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+    if (!cv->text || cv->n == 0) return;
+    const devos_palette_t *p = devos_theme_get();
+    lv_area_t a;
+    lv_obj_get_coords(cv->view, &a);
+    const lv_area_t *clip = &layer->_clip_area;
+    int r0 = (clip->y1 - a.y1) / CV_LINE_H, r1 = (clip->y2 - a.y1) / CV_LINE_H;
+    if (r0 < 0) r0 = 0;
+    if (r1 >= cv->n) r1 = cv->n - 1;
+    lv_draw_label_dsc_t ld;
+    lv_draw_label_dsc_init(&ld);
+    ld.font = &lv_font_nimbus_mono_14;
+    ld.flag = LV_TEXT_FLAG_EXPAND;
+    ld.text_local = 1;
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_opa = LV_OPA_20;
+    char line[300];
+    for (int r = r0; r <= r1; r++) {
+        const char *s = cv->text + cv->off[r];
+        const char *nl = strchr(s, '\n');
+        size_t len = nl ? (size_t)(nl - s) : strlen(s);
+        if (len > sizeof(line) - 1) len = sizeof(line) - 1;
+        for (size_t i = 0; i < len; i++) line[i] = (s[i] == '\t' || (unsigned char)s[i] < 32) ? ' ' : s[i];
+        line[len] = '\0';
+        lv_color_t col = p->text_primary;
+        bool band = false;
+        if (line[0] == '+' && line[1] != '+') { col = p->accent_secondary; band = true; }
+        else if (line[0] == '-' && line[1] != '-') { col = p->accent_danger; band = true; }
+        else if (line[0] == '@' && line[1] == '@') col = p->accent_primary;
+        else if (!strncmp(line, "diff ", 5) || !strncmp(line, "---", 3) || !strncmp(line, "+++", 3) ||
+                 !strncmp(line, "index ", 6)) col = p->text_secondary;
+        int y = a.y1 + r * CV_LINE_H;
+        if (band) {
+            rd.bg_color = col;
+            lv_area_t br = { a.x1, y, a.x2, y + CV_LINE_H - 1 };
+            lv_draw_rect(layer, &rd, &br);
         }
-        line = next ? next + 1 : line + len;
+        ld.color = col;
+        ld.text = line;
+        lv_area_t tr = { a.x1 + 4, y, a.x1 + 12 + (int32_t)len * 8, y + CV_LINE_H - 1 };
+        lv_draw_label(layer, &ld, &tr);
     }
 }
 
-static void refresh_all(void)
+static void cv_set(code_view_t *cv, const char *text)
 {
-    if (!screen) return;
+    if (!cv->view) return;
+    if (!cv->off) cv->off = malloc(sizeof(int) * CV_MAX_LINES);
+    cv->text = text;
+    cv->n = 0;
+    int longest = 0;
+    if (text && *text && cv->off) {
+        cv->off[cv->n++] = 0;
+        const char *line = text;
+        for (const char *q = text; *q && cv->n < CV_MAX_LINES; q++) {
+            if (*q == '\n') {
+                if ((int)(q - line) > longest) longest = (int)(q - line);
+                line = q + 1;
+                if (q[1]) cv->off[cv->n++] = (int)(q + 1 - text);
+            }
+        }
+        if ((int)strlen(line) > longest) longest = (int)strlen(line);
+    }
+    if (longest > 299) longest = 299;
+    int w = lv_obj_get_content_width(cv->scroll);
+    int want = longest * 8 + 16;
+    lv_obj_set_size(cv->view, want > w ? want : w, cv->n * CV_LINE_H + 8);
+    lv_obj_scroll_to(cv->scroll, 0, 0, LV_ANIM_OFF);
+    lv_obj_invalidate(cv->view);
+}
+
+static void cv_create(code_view_t *cv, lv_obj_t *scroll)
+{
+    cv->scroll = scroll;
+    lv_obj_set_scroll_dir(scroll, LV_DIR_ALL);
+    lv_obj_set_style_pad_all(scroll, 0, 0);
+    cv->view = lv_obj_create(scroll);
+    lv_obj_remove_style_all(cv->view);
+    lv_obj_add_flag(cv->view, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_remove_flag(cv->view, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(cv->view, 10, 10);
+    lv_obj_add_event_cb(cv->view, cv_draw_cb, LV_EVENT_DRAW_MAIN, cv);
+}
+
+/* Summary of changed files on top of the unified diff. */
+static const char *diff_display_text(void)
+{
+    const char *dt = opendev_client_diff_text();
+    int nf = opendev_client_diff_file_count();
+    if (!dt || !*dt) return "No diff yet: press Diff.";
+    if (nf == 0) return dt;
+    int add = 0, del = 0;
+    for (int i = 0; i < nf; i++) {
+        add += opendev_client_diff_file(i)->additions;
+        del += opendev_client_diff_file(i)->deletions;
+    }
+    int n = snprintf(s_diff_display, sizeof(s_diff_display), "%d file%s changed, +%d -%d\n", nf, nf == 1 ? "" : "s",
+                     add, del);
+    for (int i = 0; i < nf && n < (int)sizeof(s_diff_display) - 200; i++) {
+        const opendev_diff_file_t *f = opendev_client_diff_file(i);
+        n += snprintf(s_diff_display + n, sizeof(s_diff_display) - (size_t)n, "  +%-4d -%-4d %s\n", f->additions,
+                      f->deletions, f->path);
+    }
+    snprintf(s_diff_display + n, sizeof(s_diff_display) - (size_t)n, "\n%s", dt);
+    return s_diff_display;
+}
+
+static void diff_full_close(void)
+{
+    if (modal_diff) lv_obj_add_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void diff_full_open(void)
+{
+    if (!modal_diff) return;
+    int nf = opendev_client_diff_file_count();
+    char t[80];
+    snprintf(t, sizeof(t), "Diff  -  %d file%s  (Esc to close, arrows scroll)", nf, nf == 1 ? "" : "s");
+    lv_label_set_text(lbl_diff_title, t);
+    lv_obj_remove_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal_diff);
+    lv_obj_update_layout(modal_diff);
+    cv_set(&s_cv_full, diff_display_text());
+}
+
+static void diff_pane_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    diff_full_open();
+}
+
+static void diff_close_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    diff_full_close();
+}
+
+static void build_diff_modal(const devos_palette_t *p)
+{
+    modal_diff = lv_obj_create(screen);
+    lv_obj_set_size(modal_diff, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(modal_diff, 0, 0);
+    lv_obj_set_style_bg_color(modal_diff, p->bg, 0);
+    lv_obj_set_style_radius(modal_diff, 0, 0);
+    lv_obj_set_style_border_width(modal_diff, 0, 0);
+    lv_obj_set_style_pad_all(modal_diff, 8, 0);
+    lv_obj_remove_flag(modal_diff, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+    lbl_diff_title = lv_label_create(modal_diff);
+    lv_obj_set_pos(lbl_diff_title, 4, 6);
+    lv_obj_set_style_text_font(lbl_diff_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_diff_title, p->text_primary, 0);
+    lv_obj_t *b = lv_button_create(modal_diff);
+    lv_obj_set_size(b, 110, 32);
+    lv_obj_align(b, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(b, p->surface_active, 0);
+    lv_obj_add_event_cb(b, diff_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, LV_SYMBOL_CLOSE " Close");
+    lv_obj_center(l);
+    lv_obj_set_style_text_color(l, p->text_primary, 0);
+    lv_obj_t *sc = lv_obj_create(modal_diff);
+    lv_obj_set_pos(sc, 0, 40);
+    lv_obj_set_size(sc, DEVOS_SCREEN_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 56);
+    lv_obj_set_style_bg_color(sc, p->code_bg, 0);
+    lv_obj_set_style_border_color(sc, p->surface_border, 0);
+    lv_obj_set_style_border_width(sc, 1, 0);
+    lv_obj_set_style_radius(sc, 4, 0);
+    cv_create(&s_cv_full, sc);
+}
+
+/* ---- chat ---- */
+static int s_rendered_count = -1;
+static uint32_t s_rendered_revs[OPENDEV_MAX_BLOCKS];
+static lv_obj_t *s_last_card = NULL;        /* card of the last block (non-thinking) */
+static uint32_t s_seen_blocks_gen = UINT32_MAX, s_seen_diff_gen = UINT32_MAX;
+
+static void fill_block_card(lv_obj_t *card, const opendev_block_t *b, const devos_palette_t *p)
+{
+    lv_obj_clean(card);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    if (b->kind == OPENDEV_KIND_TOOL) {
+        chat_text(card, b->text, p->accent_secondary, &lv_font_nimbus_mono_14);
+    } else if (b->role == OPENDEV_ROLE_USER) {
+        chat_text(card, b->text, p->text_primary, &lv_font_montserrat_14);
+    } else {
+        /* agent output renders through the shared markdown engine; absolute
+         * blocks need a measured inner container + explicit card height */
+        lv_obj_update_layout(card);
+        lv_obj_t *inner = lv_obj_create(card);
+        lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(inner, 0, 0);
+        lv_obj_set_style_pad_all(inner, 0, 0);
+        lv_obj_remove_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_update_layout(inner);
+        int endy = devos_md_render(inner, b->text);
+        if (endy <= 0) {
+            lv_obj_delete(inner);
+            chat_text(card, b->text, p->text_primary, &lv_font_montserrat_14);
+        } else {
+            lv_obj_set_height(inner, endy);
+            lv_obj_set_height(card, endy + 20);
+        }
+    }
+}
+
+static lv_obj_t *new_block_card(const opendev_block_t *b, const devos_palette_t *p)
+{
+    lv_obj_t *card;
+    if (b->kind == OPENDEV_KIND_TOOL) {
+        card = chat_card(p, p->tool_card_border);
+        lv_obj_set_style_bg_color(card, p->tool_card_bg, 0);
+    } else if (b->role == OPENDEV_ROLE_USER) {
+        card = chat_card(p, p->accent_primary);
+        lv_obj_set_style_bg_color(card, p->surface_active, 0);
+    } else {
+        card = chat_card(p, p->surface_border);
+    }
+    fill_block_card(card, b, p);
+    return card;
+}
+
+static void refresh_chat(bool force)
+{
+    if (!chat_scroll) return;
+    const devos_palette_t *p = devos_theme_get();
+    int nb = opendev_client_block_count();
+    bool near_bottom = lv_obj_get_scroll_bottom(chat_scroll) < 48;
+
+    /* Streaming: only the last block changed -> re-render just that card. */
+    if (!force && nb > 0 && nb == s_rendered_count && s_last_card) {
+        bool only_last = true;
+        for (int i = 0; i < nb - 1 && only_last; i++) {
+            if (opendev_client_block(i)->rev != s_rendered_revs[i]) only_last = false;
+        }
+        const opendev_block_t *last = opendev_client_block(nb - 1);
+        if (only_last && last->kind != OPENDEV_KIND_THINK) {
+            if (last->rev != s_rendered_revs[nb - 1]) {
+                fill_block_card(s_last_card, last, p);
+                s_rendered_revs[nb - 1] = last->rev;
+                if (near_bottom) {
+                    lv_obj_update_layout(chat_scroll);
+                    lv_obj_scroll_to_y(chat_scroll, LV_COORD_MAX, LV_ANIM_OFF);
+                }
+            }
+            return;
+        }
+    }
+
+    bool first = s_rendered_count <= 0;
+    lv_obj_clean(chat_scroll);
+    s_last_card = NULL;
+    for (int i = 0; i < nb;) {
+        const opendev_block_t *b = opendev_client_block(i);
+        if (b->kind == OPENDEV_KIND_THINK) {
+            /* consecutive thinking blocks collapse into one card */
+            lv_obj_t *box = chat_card(p, p->thinking_border);
+            lv_obj_set_style_bg_color(box, p->thinking_bg, 0);
+            lv_obj_add_event_cb(box, toggle_think_cb, LV_EVENT_CLICKED, NULL);
+            lv_obj_t *arrow = lv_label_create(box);
+            lv_label_set_text(arrow, think_expanded ? LV_SYMBOL_DOWN " Thinking" : LV_SYMBOL_RIGHT " Thinking (tap to expand)");
+            lv_obj_set_style_text_color(arrow, p->accent_primary, 0);
+            lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
+            lv_obj_t *body = NULL;
+            if (think_expanded) {
+                body = lv_obj_create(box);
+                lv_obj_set_size(body, lv_pct(100), LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(body, 0, 0);
+                lv_obj_set_style_pad_all(body, 0, 0);
+                lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_y(body, 22);
+            }
+            while (i < nb && opendev_client_block(i)->kind == OPENDEV_KIND_THINK) {
+                if (body) chat_text(body, opendev_client_block(i)->text, p->text_secondary, &lv_font_montserrat_12);
+                s_rendered_revs[i] = opendev_client_block(i)->rev;
+                i++;
+            }
+            continue;
+        }
+        lv_obj_t *card = new_block_card(b, p);
+        s_rendered_revs[i] = b->rev;
+        if (i == nb - 1) s_last_card = card;
+        i++;
+    }
+    if (nb == 0) {
+        lv_obj_t *card = chat_card(p, p->surface_border);
+        const char *hint;
+        if (opendev_client_messages_loading() && opendev_client_active() >= 0) hint = "Loading messages...";
+        else if (opendev_client_status() == OPENDEV_UP)
+            hint = opendev_client_active() >= 0 ? "No messages yet: type below and press Enter."
+                                                : "Connected. Pick a session or press + New, then type below.";
+        else hint = "No server link. Tap the server row or Connect, or start "
+                    "`opencode serve --port 4096 --hostname 0.0.0.0` on your computer.";
+        chat_text(card, hint, p->text_secondary, &lv_font_montserrat_14);
+    }
+    s_rendered_count = nb;
+    if (near_bottom || first) {
+        lv_obj_update_layout(chat_scroll);
+        lv_obj_scroll_to_y(chat_scroll, LV_COORD_MAX, LV_ANIM_OFF);
+    }
+}
+
+static void refresh_meta(void)
+{
     const devos_palette_t *p = devos_theme_get();
     char host[OPENDEV_HOST_MAX];
     int port = 0;
     opendev_mode_t mode = OPENDEV_MODE_CODE;
     opendev_client_get_config(host, sizeof(host), &port, &mode, NULL, 0);
 
-    /* Left: status */
-    char buf[160];
-    snprintf(buf, sizeof(buf), "%s:%d%s", host, port,
-             mode == OPENDEV_MODE_CHAMBER ? " [chamber]" : "");
-    if (lbl_target) lv_label_set_text(lbl_target, buf);
+    char buf[200];
+    snprintf(buf, sizeof(buf), "%s:%d%s", host, port, mode == OPENDEV_MODE_CHAMBER ? " [chamber]" : "");
+    if (lbl_target && strcmp(lv_label_get_text(lbl_target), buf) != 0) lv_label_set_text(lbl_target, buf);
     if (lbl_status) {
-        lv_label_set_text(lbl_status, opendev_client_status_text());
+        snprintf(buf, sizeof(buf), "%s%s", opendev_client_status_text(), opendev_client_loading() ? "  (loading)" : "");
+        if (strcmp(lv_label_get_text(lbl_status), buf) != 0) lv_label_set_text(lbl_status, buf);
         lv_obj_set_style_text_color(lbl_status,
-            opendev_client_status() == OPENDEV_UP ? p->accent_secondary
-                                                  : p->text_secondary,
-            0);
+                                    opendev_client_status() == OPENDEV_UP ? p->accent_secondary : p->text_secondary, 0);
     }
 
-    /* Left: sessions */
     int n = opendev_client_session_count();
     int active = opendev_client_active();
     for (int i = 0; i < OPENDEV_SESS_BTNS; i++) {
@@ -360,10 +632,9 @@ static void refresh_all(void)
         lv_obj_remove_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(sess_btns[i], 4, 178 + i * 52);
         const opendev_session_t *s = opendev_client_session(i);
-        snprintf(buf, sizeof(buf), "%s%s\n%.12s%s", s->busy ? LV_SYMBOL_BULLET " " : "",
-                 s->title[0] ? s->title : "(untitled)", s->id,
-                 i == active ? "  [active]" : "");
-        lv_label_set_text(sess_lbls[i], buf);
+        snprintf(buf, sizeof(buf), "%s%s\n%s", s->busy ? LV_SYMBOL_BULLET " " : "", s->title[0] ? s->title : "(untitled)",
+                 i == active ? "active" : "");
+        if (strcmp(lv_label_get_text(sess_lbls[i]), buf) != 0) lv_label_set_text(sess_lbls[i], buf);
         if (i == active) {
             lv_obj_set_style_bg_color(sess_btns[i], p->surface_active, 0);
             lv_obj_set_style_border_color(sess_btns[i], p->accent_primary, 0);
@@ -375,124 +646,48 @@ static void refresh_all(void)
         }
     }
 
-    /* Center: chat blocks in natural order with collapsible thinking traces */
-    if (chat_scroll) {
-        lv_obj_clean(chat_scroll);
-        int nb = opendev_client_block_count();
-        for (int i = 0; i < nb;) {
-            const opendev_block_t *b = opendev_client_block(i);
-            if (!b) { i++; continue; }
-            if (b->kind == OPENDEV_KIND_THINK) {
-                lv_obj_t *box = chat_card(p, p->thinking_border);
-                lv_obj_set_style_bg_color(box, p->thinking_bg, 0);
-                lv_obj_add_event_cb(box, toggle_think_cb, LV_EVENT_CLICKED, NULL);
-                lv_obj_t *arrow = lv_label_create(box);
-                lv_label_set_text(arrow, think_expanded
-                                  ? LV_SYMBOL_DOWN " Thinking Trace"
-                                  : LV_SYMBOL_RIGHT " Thinking Trace (collapsed)");
-                lv_obj_set_style_text_color(arrow, p->accent_primary, 0);
-                lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
-                if (think_expanded) {
-                    lv_obj_t *body = lv_obj_create(box);
-                    lv_obj_set_size(body, lv_pct(100), LV_SIZE_CONTENT);
-                    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_border_width(body, 0, 0);
-                    lv_obj_set_style_pad_all(body, 0, 0);
-                    while (i < nb && opendev_client_block(i) &&
-                           opendev_client_block(i)->kind == OPENDEV_KIND_THINK) {
-                        chat_text(body, opendev_client_block(i)->text,
-                                  p->text_secondary, &lv_font_montserrat_12);
-                        i++;
-                    }
-                } else {
-                    while (i < nb && opendev_client_block(i) &&
-                           opendev_client_block(i)->kind == OPENDEV_KIND_THINK) {
-                        i++;
-                    }
-                }
-                continue;
-            }
-            if (b->kind == OPENDEV_KIND_TOOL) {
-                lv_obj_t *card = chat_card(p, p->tool_card_border);
-                lv_obj_set_style_bg_color(card, p->tool_card_bg, 0);
-                chat_text(card, b->text, p->accent_secondary,
-                          &lv_font_montserrat_12);
-            } else {
-                bool user = b->role == OPENDEV_ROLE_USER;
-                lv_obj_t *card = chat_card(p, user ? p->accent_primary
-                                                   : p->surface_border);
-                if (user) {
-                    lv_obj_set_style_bg_color(card, p->surface_active, 0);
-                    chat_text(card, b->text, p->text_primary,
-                              &lv_font_montserrat_14);
-                } else {
-                    /* ponytail: agent output renders through the shared
-                     * markdown engine; absolute blocks need a measured
-                     * inner container + explicit card height */
-                    lv_obj_update_layout(card);
-                    lv_obj_t *inner = lv_obj_create(card);
-                    lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
-                    lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_border_width(inner, 0, 0);
-                    lv_obj_set_style_pad_all(inner, 0, 0);
-                    lv_obj_update_layout(inner);
-                    int endy = devos_md_render(inner, b->text);
-                    if (endy <= 0) {
-                        lv_obj_delete(inner);
-                        chat_text(card, b->text, p->text_primary,
-                                  &lv_font_montserrat_14);
-                    } else {
-                        lv_obj_set_height(inner, endy);
-                        lv_obj_set_height(card, endy + 20);
-                    }
-                }
-            }
-            i++;
-        }
-        if (nb == 0) {
-            lv_obj_t *card = chat_card(p, p->surface_border);
-            const char *hint =
-                opendev_client_status() == OPENDEV_UP
-                ? "Connected. Pick a session or press + New, then type below."
-                : "No server link. Tap the server row or Connect, "
-                  "or start `opencode serve --port 4096 --hostname 0.0.0.0`.";
-            chat_text(card, hint, p->text_secondary, &lv_font_montserrat_14);
-        }
-        lv_obj_scroll_to_y(chat_scroll, LV_COORD_MAX, LV_ANIM_OFF);
-    }
-
-    /* Right: session info + diff */
     if (lbl_info) {
-        int ai = opendev_client_active();
-        const opendev_session_t *s =
-            ai >= 0 ? opendev_client_session(ai) : NULL;
+        const opendev_session_t *s = active >= 0 ? opendev_client_session(active) : NULL;
         if (s) {
-            snprintf(buf, sizeof(buf), "ID: %s\nModel: %s\nState: %s",
-                     s->id, s->model[0] ? s->model : "-",
-                     s->busy ? "busy" : "idle");
-            if (s->busy) {
-                strncat(buf, " ", sizeof(buf) - strlen(buf) - 1);
-                strncat(buf, LV_SYMBOL_BULLET, sizeof(buf) - strlen(buf) - 1);
-            }
+            snprintf(buf, sizeof(buf), "%s\nModel: %s\nState: %s%s", s->title[0] ? s->title : s->id,
+                     s->model[0] ? s->model : "-", s->busy ? "working " : "idle", s->busy ? LV_SYMBOL_BULLET : "");
         } else {
             snprintf(buf, sizeof(buf), "No session selected");
         }
-        lv_label_set_text(lbl_info, buf);
+        if (strcmp(lv_label_get_text(lbl_info), buf) != 0) lv_label_set_text(lbl_info, buf);
     }
-    render_diff_view(opendev_client_diff_text(), p);
 
-    /* Permission modal */
     opendev_permission_t perm;
     if (opendev_client_permission_pending(&perm)) {
         if (modal_perm) {
-            snprintf(buf, sizeof(buf), "Approve tool?\n%s", perm.text);
+            snprintf(buf, sizeof(buf), "The agent wants to run:\n%s", perm.text);
             lv_label_set_text(lbl_perm_desc, buf);
-            lv_obj_remove_flag(modal_perm, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(modal_perm);
+            if (lv_obj_has_flag(modal_perm, LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_remove_flag(modal_perm, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(modal_perm);
+            }
         }
     } else if (modal_perm) {
         lv_obj_add_flag(modal_perm, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void refresh_diff(bool force)
+{
+    uint32_t g = opendev_client_diff_generation();
+    if (!force && g == s_seen_diff_gen) return;
+    s_seen_diff_gen = g;
+    cv_set(&s_cv_pane, diff_display_text());
+    if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) cv_set(&s_cv_full, diff_display_text());
+}
+
+static void refresh_all(void)
+{
+    if (!screen) return;
+    refresh_meta();
+    s_seen_blocks_gen = opendev_client_blocks_generation();
+    refresh_chat(true);
+    refresh_diff(true);
 }
 
 /* ---------------------------------------------------------------- events */
@@ -627,7 +822,7 @@ static void save_diff_cb(lv_event_t *e)
     const opendev_session_t *s = opendev_client_session(active);
     if (!s) return;
     const char *dt = opendev_client_diff_text();
-    if (!dt || !*dt || strcmp(dt, "(diff unavailable)") == 0) {
+    if (!dt || !*dt || dt[0] == '(' || strncmp(dt, "Loading", 7) == 0) {
         if (lbl_info) lv_label_set_text(lbl_info, "(No diff to save - fetch diff first)");
         return;
     }
@@ -775,6 +970,8 @@ static void scan_qr_btn_cb(lv_event_t *e)
 static void poll_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
+    /* Keep the event stream and REST results flowing in the background. */
+    opendev_client_poll();
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
 
     if (s_qr_ready) {
@@ -808,25 +1005,53 @@ static void poll_cb(lv_timer_t *t)
         }
     }
 
-    opendev_client_poll();
+    /* UI refresh (rate-limited: streaming can bump the store many times a
+     * second; only the last chat card is re-rendered while it streams). */
+    static uint32_t last_ui = 0;
     uint32_t g = opendev_client_generation();
-    if (g != s_seen_gen) {
+    if (g != s_seen_gen && lv_tick_elaps(last_ui) >= 150) {
         s_seen_gen = g;
-        refresh_all();
+        last_ui = lv_tick_get();
+        refresh_meta();
+        uint32_t bg = opendev_client_blocks_generation();
+        if (bg != s_seen_blocks_gen) {
+            s_seen_blocks_gen = bg;
+            refresh_chat(false);
+        }
+        refresh_diff(false);
     }
 }
 
 /* ----------------------------------------------------------------- input */
 static bool modal_open(void)
 {
-    return (modal_perm && !lv_obj_has_flag(modal_perm, LV_OBJ_FLAG_HIDDEN)) ||
+    return (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) ||
+           (modal_perm && !lv_obj_has_flag(modal_perm, LV_OBJ_FLAG_HIDDEN)) ||
            (modal_srv && !lv_obj_has_flag(modal_srv, LV_OBJ_FLAG_HIDDEN)) ||
            (modal_cam && !lv_obj_has_flag(modal_cam, LV_OBJ_FLAG_HIDDEN));
 }
 
 static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
 {
+    /* Full-screen diff: Esc closes, arrows / PgUp / PgDn scroll */
+    if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_t *sc = s_cv_full.scroll;
+        int page = lv_obj_get_height(sc) - 2 * CV_LINE_H;
+        if (key == LV_KEY_ESC || key == 'q' || key == 'Q') diff_full_close();
+        else if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(sc, 0, -3 * CV_LINE_H, LV_ANIM_OFF);
+        else if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(sc, 0, 3 * CV_LINE_H, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGDN || key == ' ') lv_obj_scroll_by_bounded(sc, 0, -page, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGUP) lv_obj_scroll_by_bounded(sc, 0, page, LV_ANIM_OFF);
+        else if (key == LV_KEY_RIGHT) lv_obj_scroll_by_bounded(sc, -80, 0, LV_ANIM_OFF);
+        else if (key == LV_KEY_LEFT) lv_obj_scroll_by_bounded(sc, 80, 0, LV_ANIM_OFF);
+        return true;
+    }
     if (modifiers & DEVOS_MOD_FN) {
+        if (key == 'd' || key == 'D') {             /* Sym+D: fetch + show the diff */
+            opendev_client_fetch_diff();
+            diff_full_open();
+            return true;
+        }
         if (key == 'f' || key == 'F') {
             devos_agent_viewport_toggle_focus(viewport);
             return true;
@@ -882,10 +1107,12 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
             cam_cancel_cb(NULL);
             return true;
         }
+#ifndef ESP_PLATFORM
         if (key == '\r' || key == '\n' || key == 's' || key == 'S') {
             cam_test_cb(NULL);
             return true;
         }
+#endif
         return true;
     }
 
@@ -1094,6 +1321,9 @@ static void opendev_init(void)
     lv_obj_set_style_bg_color(chat_scroll, p->bg, 0);
     lv_obj_set_style_border_width(chat_scroll, 0, 0);
     lv_obj_set_style_pad_all(chat_scroll, 8, 0);
+    lv_obj_set_flex_flow(chat_scroll, LV_FLEX_FLOW_COLUMN);     /* cards stack (they overlapped at y=0) */
+    lv_obj_set_style_pad_row(chat_scroll, 8, 0);
+    lv_obj_set_scroll_dir(chat_scroll, LV_DIR_VER);
 
     /* Center: input bar */
     input_bar = lv_obj_create(center_panel);
@@ -1210,13 +1440,12 @@ static void opendev_init(void)
     diff_scroll = lv_obj_create(right_panel);
     lv_obj_set_pos(diff_scroll, 4, 140);
     lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28, DEVOS_CONTENT_HEIGHT - 146);
-    lv_obj_set_flex_flow(diff_scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
     lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
     lv_obj_set_style_border_width(diff_scroll, 1, 0);
     lv_obj_set_style_radius(diff_scroll, 4, 0);
-    lv_obj_set_style_pad_all(diff_scroll, 6, 0);
-    lv_obj_set_style_pad_gap(diff_scroll, 2, 0);
+    cv_create(&s_cv_pane, diff_scroll);
+    lv_obj_add_event_cb(diff_scroll, diff_pane_click_cb, LV_EVENT_CLICKED, NULL);   /* tap: full screen */
 
     /* Permission modal */
     modal_perm = lv_obj_create(screen);
@@ -1227,6 +1456,7 @@ static void opendev_init(void)
     lv_obj_set_style_border_width(modal_perm, 2, 0);
     lv_obj_set_style_radius(modal_perm, 8, 0);
     lv_obj_set_style_pad_all(modal_perm, 16, 0);
+    lv_obj_remove_flag(modal_perm, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(modal_perm, LV_OBJ_FLAG_HIDDEN);
 
     lbl_perm_title = lv_label_create(modal_perm);
@@ -1423,6 +1653,13 @@ static void opendev_init(void)
     lv_obj_center(lbl_cam_cancel);
     lv_obj_set_style_text_color(lbl_cam_cancel, p->text_primary, 0);
 
+#ifdef ESP_PLATFORM
+    /* Test hook for the desktop simulator only: on hardware it would
+     * overwrite the real pairing. */
+    lv_obj_add_flag(btn_cam_test, LV_OBJ_FLAG_HIDDEN);
+#endif
+
+    build_diff_modal(p);
     devos_theme_add_listener(apply_theme, NULL);
     poll_timer = lv_timer_create(poll_cb, 100, NULL);
     refresh_all();
@@ -1438,6 +1675,7 @@ static void opendev_show(void)
 
 static void opendev_hide(void)
 {
+    diff_full_close();
     bsp_tab5_camera_stop_qr_scanner();
     bsp_tab5_camera_stop();
     if (modal_perm) lv_obj_add_flag(modal_perm, LV_OBJ_FLAG_HIDDEN);
