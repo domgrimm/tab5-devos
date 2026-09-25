@@ -35,8 +35,9 @@ typedef struct {
     char token[AGY_TOKEN_MAX];
 } agy_config_t;
 
+/* no default host: the user picks the computer running the bridge */
 static agy_config_t s_cfg = {
-    .host = "100.77.11.92",
+    .host = "",
     .port = 8420,
     .token = "",
 };
@@ -782,11 +783,18 @@ void agy_client_init(void)
     rx_reset();
     s_want = true;
     s_retry = WS_RETRY_TICKS;
-    set_status(AGY_DOWN, "Offline");
+    set_status(AGY_DOWN, s_cfg.host[0] ? "Offline" : "Not set up");
 }
+
+bool agy_client_configured(void) { return s_cfg.host[0] != '\0'; }
 
 void agy_client_poll(void)
 {
+    if (!s_cfg.host[0]) {
+        if (s_fd >= 0) link_down(NULL);
+        set_status(AGY_DOWN, "Not set up");
+        return;
+    }
     if (!s_want) {
         if (s_fd >= 0) link_down(NULL);
         return;

@@ -119,6 +119,8 @@ void agy_client_get_config(char *host, size_t host_len, int *port,
                            char *token, size_t token_len);
 int agy_client_set_server(const char *host, int port);
 int agy_client_set_token(const char *token);
+/* False until the user has entered a bridge address (there is no default). */
+bool agy_client_configured(void);
 
 /* Conversation */
 int agy_client_send(const char *text, const char *command);

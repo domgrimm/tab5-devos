@@ -22,6 +22,8 @@ conversation's own folder. Sessions run with --remote-control, so what the
 Tab5 does is live on the website too, and a conversation moved on from the
 website refreshes on the Tab5. Prompts are shared with agy's up-arrow history.
 
+Setup and options: see README.md next to this file.
+
 Run (from your project folder, which agy should already trust):
     python3 tools/agy_bridge/bridge_server.py --psk <secret>
     python3 tools/agy_bridge/bridge_server.py --workspace ~/dev/app --resume
@@ -475,7 +477,12 @@ class Bridge:
             asyncio.create_task(self.demo_turn(full))
             return
         if not self.proc or self.proc.returncode is not None:
-            await self.start_agy()
+            try:
+                await self.start_agy()
+            except OSError as e:                    # agy missing, folder gone...
+                log("could not start agy:", e)
+                await self.emit({"type": "ERROR", "message": f"Couldn't start agy on the computer: {e}"})
+                return
         await self.status(True)
         line = json.dumps({"event": "user", "message": {"content": full}}) + "\n"
         self.proc.stdin.write(line.encode())
@@ -759,6 +766,30 @@ class Bridge:
         await self.status(False)
 
 
+async def reachable_addresses():
+    """Names/IPs the Tab5 can use to reach this computer (best effort)."""
+    out = []
+    try:
+        p = await asyncio.create_subprocess_exec("tailscale", "status", "--self", "--json",
+                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        raw, _ = await asyncio.wait_for(p.communicate(), 5)
+        me = json.loads(raw or b"{}").get("Self") or {}
+        if me.get("DNSName"):
+            out.append(me["DNSName"].rstrip("."))
+        out += [ip for ip in me.get("TailscaleIPs") or [] if "." in ip]
+    except (OSError, ValueError, asyncio.TimeoutError):
+        pass
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))              # picks the LAN interface; sends nothing
+            out.append(s.getsockname()[0])
+    except OSError:
+        pass
+    out.append(socket.gethostname())
+    return list(dict.fromkeys(a for a in out if a))
+
+
 async def remote_control_instance():
     """This machine's name on antigravity.google.com ("" if not registered)."""
     try:
@@ -796,6 +827,8 @@ async def main():
     if args.no_psk and args.host not in ("127.0.0.1", "localhost", "::1"):
         sys.exit("--no-psk is only allowed with --host 127.0.0.1")
 
+    if not args.demo and not Path(args.workspace).expanduser().is_dir():
+        sys.exit(f"--workspace {args.workspace}: no such folder (use your project's folder)")
     bridge = Bridge(args)
     bridge.set_workspace(bridge.default_workspace)
     if not args.demo:
@@ -818,10 +851,19 @@ async def main():
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
+    listening = False
     try:
         async with serve(bridge.on_ws, args.host, args.port, max_size=4 * 1024 * 1024, ping_interval=20):
+            listening = True
             log(f"listening on ws://{args.host}:{args.port}/ws  workspace={bridge.workspace}  "
                 f"model={bridge.model or 'default'}  demo={args.demo}")
+            if args.host in ("127.0.0.1", "localhost", "::1"):
+                log("only this computer can connect (--host 127.0.0.1); use the default host for the Tab5")
+            else:
+                log("On the Tab5: Antigravity > Set up connection, then enter")
+                log("  address:  " + "  or  ".join(await reachable_addresses()))
+                log(f"  port:     {args.port}")
+                log(f"  token:    {args.psk or '(leave empty)'}")
             if not args.demo and bridge.conversation_id:
                 await bridge.start_agy()
                 await bridge.scan_artifacts()
@@ -829,6 +871,11 @@ async def main():
             await stop.wait()
             if watcher:
                 watcher.cancel()
+    except OSError as e:
+        if listening:
+            raise
+        log(f"can't listen on {args.host}:{args.port}: {e.strerror} "
+            "(is another bridge already running? pick another --port)")
     finally:
         bridge.stopping = True
         await bridge.stop_agy()
