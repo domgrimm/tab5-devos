@@ -18,3 +18,4 @@ managed_components/
 __pycache__/
 *.py[cod]
 .venv/
+ota_out/

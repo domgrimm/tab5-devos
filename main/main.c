@@ -76,6 +76,9 @@ static void gui_task(void *arg)
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             app_launcher_update_telemetry();
+            /* A new OTA image that has run the UI for 15 s is good: cancel
+             * the bootloader's pending rollback. */
+            if (sim_seconds == 15) devos_ota_mark_boot_ok();
             if (sim_seconds % 3 == 0) {
                 printf("[devOS] GUI loop running, uptime: %lu s, free heap: %lu B\n",
                        (unsigned long)sim_seconds, (unsigned long)esp_get_free_heap_size());

@@ -540,7 +540,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 2. Tailscale: no interactive (browser) login yet, auth key only; DERP TLS certificates are not
 >    verified by MicroLink (traffic is WireGuard-encrypted end to end regardless).
 > 3. (was: Terminal) done.
-> 4. OTA: flashing is a no-op (DEVOS_OTA_HTTPS undefined), no checksum, blocks the UI, allows downgrades.
+> 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
+>    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
 > 5. OpenCode SSE likely never dispatches (expects `event:` lines); diff pane shows raw JSON;
 >    REST calls block the UI up to 4 s.
 > 6. Antigravity bridge real mode is a stub (prompts/permissions not forwarded); WS client

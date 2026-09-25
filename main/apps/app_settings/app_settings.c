@@ -75,7 +75,8 @@ static devos_wifi_saved_t s_saved[DEVOS_WIFI_MAX_SAVED];
 static int s_saved_count = 0;
 
 /* ---- password / add-network dialog ---- */
-static lv_obj_t *overlay, *modal, *lbl_modal_title, *ta_ssid, *ta_pass, *cb_show, *kb;
+static lv_obj_t *overlay, *modal, *lbl_modal_title, *ta_ssid, *ta_pass, *cb_show, *kb, *lbl_modal_ok;
+static enum { MODAL_WIFI, MODAL_FEED } s_modal_mode = MODAL_WIFI;
 static lv_obj_t *s_focused_ta = NULL;
 static bool s_modal_hidden_net = false;
 static char s_modal_ssid[33];
@@ -84,7 +85,7 @@ static char s_modal_ssid[33];
 static lv_obj_t *theme_switch, *slider_bright, *lbl_bright, *dd_dim, *dd_sleep;
 static lv_obj_t *lbl_bat_pct, *bar_bat, *lbl_bat_status, *lbl_bat_detail, *lbl_pwr_state;
 static lv_obj_t *lbl_clock_big, *lbl_clock_date, *lbl_clock_src, *dd_tz;
-static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn;
+static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, *btn_ota, *bar_ota, *lbl_feed;
 
 static const uint32_t s_dim_opts_s[] = { 30, 60, 120, 300, 600, 0 };
 static const char *s_dim_opts_txt = "30 seconds\n1 minute\n2 minutes\n5 minutes\n10 minutes\nNever";
@@ -629,6 +630,14 @@ static void close_modal(void)
 
 static void submit_modal(void)
 {
+    if (s_modal_mode == MODAL_FEED) {
+        if (devos_ota_set_feed(lv_textarea_get_text(ta_pass)) != 0) {
+            set_text(lbl_modal_title, "Enter a full URL, e.g. http://host:8090/devos-manifest.json");
+            return;
+        }
+        close_modal();
+        return;
+    }
     const char *ssid = s_modal_hidden_net ? lv_textarea_get_text(ta_ssid) : s_modal_ssid;
     const char *pass = lv_textarea_get_text(ta_pass);
     if (!ssid || !ssid[0]) {
@@ -678,8 +687,13 @@ static void show_pw_cb(lv_event_t *e)
 
 static void open_modal(const char *ssid, bool hidden_net)
 {
+    s_modal_mode = MODAL_WIFI;
     s_modal_hidden_net = hidden_net;
     snprintf(s_modal_ssid, sizeof(s_modal_ssid), "%s", ssid);
+    lv_obj_remove_flag(cb_show, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_max_length(ta_pass, 64);
+    lv_textarea_set_placeholder_text(ta_pass, "Password (leave empty for an open network)");
+    lv_label_set_text(lbl_modal_ok, LV_SYMBOL_OK "  Connect");
     char title[64];
     if (hidden_net) {
         snprintf(title, sizeof(title), "Add a network");
@@ -701,6 +715,27 @@ static void open_modal(const char *ssid, bool hidden_net)
         lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
     }
     focus_ta(hidden_net ? ta_ssid : ta_pass);
+}
+
+static void open_feed_modal(void)
+{
+    s_modal_mode = MODAL_FEED;
+    s_modal_hidden_net = false;
+    lv_label_set_text(lbl_modal_title, "Firmware update feed (manifest URL)");
+    lv_obj_add_flag(ta_ssid, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(cb_show, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_password_mode(ta_pass, false);
+    lv_textarea_set_max_length(ta_pass, DEVOS_OTA_FEED_MAX - 1);
+    lv_textarea_set_placeholder_text(ta_pass, "http://host:8090/devos-manifest.json");
+    char feed[DEVOS_OTA_FEED_MAX];
+    devos_ota_get_feed(feed, sizeof(feed));
+    lv_textarea_set_text(ta_pass, feed);
+    lv_label_set_text(lbl_modal_ok, LV_SYMBOL_OK "  Save");
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(overlay);
+    if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    focus_ta(ta_pass);
 }
 
 static void build_modal(void)
@@ -759,7 +794,7 @@ static void build_modal(void)
     lv_obj_set_flex_grow(cb_show, 1);
 
     mk_btn(row, "Cancel", NULL, modal_cancel_cb, NULL, NULL);
-    mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, modal_connect_cb, NULL, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, modal_connect_cb, NULL, &lbl_modal_ok);
 
     kb = lv_keyboard_create(overlay);
     lv_obj_add_style(kb, &st_kb, 0);
@@ -1130,12 +1165,15 @@ static void refresh_time(void)
 static void ota_check_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (devos_ota_has_update()) {
-        devos_ota_apply();
-        return;
-    }
-    set_text(lbl_ota, "Checking feed...");
-    devos_ota_check();
+    if (devos_ota_busy()) return;
+    if (devos_ota_has_update()) devos_ota_apply();
+    else devos_ota_check();
+}
+
+static void ota_feed_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (!devos_ota_busy()) open_feed_modal();
 }
 
 static void build_system_panel(lv_obj_t *pn)
@@ -1150,13 +1188,25 @@ static void build_system_panel(lv_obj_t *pn)
     lv_obj_set_pos(lbl_sys_mem, 0, 30);
     lv_obj_set_style_text_line_space(lbl_sys_mem, 6, 0);
 
-    c = mk_card(pn, 0, 412, PANEL_W, 120, "FIRMWARE UPDATE");
+    c = mk_card(pn, 0, 412, PANEL_W, 176, "FIRMWARE UPDATE");
     lbl_fw = mk_label(c, &st_text, DEVOS_VERSION_STR);
     lv_obj_set_pos(lbl_fw, 0, 30);
-    lv_obj_t *b = mk_btn(c, LV_SYMBOL_REFRESH "  Check for updates", NULL, ota_check_cb, NULL, &lbl_ota_btn);
-    lv_obj_set_pos(b, 0, 58);
+    btn_ota = mk_btn(c, LV_SYMBOL_REFRESH "  Check for updates", NULL, ota_check_cb, NULL, &lbl_ota_btn);
+    lv_obj_set_pos(btn_ota, 0, 58);
+    lv_obj_set_width(btn_ota, 210);
+    lv_obj_t *b = mk_btn(c, LV_SYMBOL_EDIT "  Feed...", NULL, ota_feed_cb, NULL, NULL);
+    lv_obj_set_pos(b, 222, 58);
     lbl_ota = mk_label(c, &st_muted, "");
-    lv_obj_set_pos(lbl_ota, 240, 68);
+    lv_obj_set_pos(lbl_ota, 0, 104);
+    lv_obj_set_width(lbl_ota, PANEL_W - 40);
+    lv_label_set_long_mode(lbl_ota, LV_LABEL_LONG_DOT);
+    bar_ota = lv_bar_create(c);
+    lv_obj_set_size(bar_ota, PANEL_W - 40, 8);
+    lv_obj_set_pos(bar_ota, 0, 130);
+    lv_bar_set_range(bar_ota, 0, 100);
+    lv_obj_add_flag(bar_ota, LV_OBJ_FLAG_HIDDEN);
+    lbl_feed = mk_label(c, &st_muted, "");
+    lv_obj_set_pos(lbl_feed, 0, 130);
 }
 
 static void refresh_system(void)
@@ -1203,8 +1253,28 @@ static void refresh_system(void)
              (unsigned)t->free_sram_kb, (unsigned)t->sram_min_free_kb, sd);
     set_text(lbl_sys_mem, buf);
 
-    set_text(lbl_ota, devos_ota_update_text());
-    set_text(lbl_ota_btn, devos_ota_has_update() ? LV_SYMBOL_DOWNLOAD "  Install update"
+    char ota[320];
+    const char *notes = devos_ota_notes();
+    snprintf(ota, sizeof(ota), "%s%s%s", devos_ota_update_text(),
+             devos_ota_has_update() && notes[0] ? "  -  " : "", devos_ota_has_update() ? notes : "");
+    set_text(lbl_ota, ota);
+    int pct = devos_ota_progress();
+    if (pct >= 0) {
+        lv_bar_set_value(bar_ota, pct, LV_ANIM_OFF);
+        lv_obj_remove_flag(bar_ota, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_feed, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(bar_ota, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(lbl_feed, LV_OBJ_FLAG_HIDDEN);
+    }
+    char feed[DEVOS_OTA_FEED_MAX + 8];
+    devos_ota_get_feed(feed + 6, sizeof(feed) - 6);
+    memcpy(feed, "Feed: ", 6);
+    set_text(lbl_feed, feed);
+    if (devos_ota_busy()) lv_obj_add_state(btn_ota, LV_STATE_DISABLED);
+    else lv_obj_remove_state(btn_ota, LV_STATE_DISABLED);
+    set_text(lbl_ota_btn, devos_ota_busy() ? LV_SYMBOL_REFRESH "  Working..."
+                          : devos_ota_has_update() ? LV_SYMBOL_DOWNLOAD "  Install update"
                                                  : LV_SYMBOL_REFRESH "  Check for updates");
 }
 

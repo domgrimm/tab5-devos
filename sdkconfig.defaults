@@ -143,3 +143,8 @@ CONFIG_ML_MAX_PEERS=32
 # (devOS owns Wi-Fi and has its own UI).
 CONFIG_ML_ENABLE_CELLULAR=n
 CONFIG_ML_ENABLE_CONFIG_HTTPD=n
+
+# OTA safety net: a freshly installed image boots "pending verify" and must
+# confirm itself (devos_ota_mark_boot_ok, 15 s after the UI starts) or the
+# next reset returns to the previous firmware.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
