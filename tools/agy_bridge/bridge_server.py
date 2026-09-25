@@ -1,247 +1,712 @@
-"""Antigravity bridge daemon (Path B): Tab5 <-> Antigravity runtime.
+#!/usr/bin/env python3
+"""devOS Antigravity bridge: drive the `agy` CLI from the Tab5.
 
-Listens on the Tailscale interface (default 100.77.11.92:8420) and speaks
-newline-delimited JSON over a single WebSocket (`/ws`).
+The bridge runs next to your code (on your computer), starts Antigravity's
+headless mode
 
-Protocol (both directions are JSON objects with a "type" field):
+    agy --input-format stream-json --output-format stream-json \
+        --dangerously-skip-permissions [--conversation ID] [--model M]
 
+in your project folder, and relays it to the Tab5 over one WebSocket (`/ws`).
+Tool permissions are NOT skipped: a PreToolUse hook (devos_hook.sh, installed
+into ~/.gemini/config/hooks.json while the bridge runs) asks the bridge before
+every tool call. Read-only tools are allowed; everything else (commands, file
+edits, browsing, MCP calls...) waits for Allow / Deny on the Tab5, and is
+denied if the bridge is unreachable. Outside bridge sessions the hook is a
+no-op, so your normal `agy` use is unaffected.
+
+Run (from your project folder, which agy should already trust):
+    python3 tools/agy_bridge/bridge_server.py --psk <secret>
+    python3 tools/agy_bridge/bridge_server.py --workspace ~/dev/app --resume
+    python3 tools/agy_bridge/bridge_server.py --demo      # scripted, no agy
+
+Protocol: JSON objects with a "type" field, one per WebSocket message.
   Tab5 -> bridge:
-    {"type":"HELLO","token":"<psk>","client":"devos/x.y"}
-    {"type":"PROMPT","text":"...","command":"/goal"|""}
-    {"type":"PERMISSION_REPLY","id":"...","allow":true,"always":false}
-    {"type":"QUESTION_REPLY","id":"...","choice":1}
-    {"type":"PING"}
-
+    HELLO {token, client}          PROMPT {text, command}
+    PERMISSION_REPLY {id, allow, always}
+    QUESTION_REPLY {id, choice (-1 = skip), text (optional typed answer)}
+    NEW                            ABORT                  PING
   Bridge -> Tab5:
-    {"type":"WELCOME","conversation_id","model","subagents":[{"name","state"}]}
-    {"type":"THINKING","text"}            # appended to the thinking trace
-    {"type":"TOKEN","text"}               # appended to the reply draft
-    {"type":"TOOL","name","detail"}       # tool execution card
-    {"type":"DIFF","file","hunk"}         # unified-diff chunk
-    {"type":"ARTIFACT","name","kind","text"}
-    {"type":"PERMISSION","id","text"}     # Tab5 must reply PERMISSION_REPLY
-    {"type":"QUESTION","id","prompt","choices":[]}  # reply QUESTION_REPLY
-    {"type":"SUBAGENTS","agents":[{"name","state"}]}
-    {"type":"STATUS","state"}             # busy | idle
-    {"type":"PONG"}
-    {"type":"ERROR","message"}
-
-Run:
-  python3 bridge_server.py --host 100.77.11.92 --port 8420 --psk <secret>
-  python3 bridge_server.py --demo   # scripted replies, no AGY install needed
+    RESET (clear the view; the conversation so far is replayed after it)
+    WELCOME {conversation_id, model, workspace, subagents:[{name,state}]}
+    USER {text} (a prompt sent from another screen, or replayed)
+    TOKEN {text}                   THINKING {text}
+    TOOL {id, name, state, detail} (same id = update: running -> done/error)
+    DIFF {file, hunk}              ARTIFACT {name, kind, text}
+    PERMISSION {id, text, preview (optional diff of a pending edit)}
+    QUESTION {id, prompt, choices:[...]}
+    RESOLVED {id} (that permission/question is settled: close its dialog)
+    SUBAGENTS {agents}             STATUS {state: busy|idle}
+    USAGE {input, output, total}   ERROR {message}        PONG
 """
 
 import argparse
 import asyncio
+import difflib
 import json
+import os
+import secrets
+import signal
+import sys
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+try:
+    from websockets.asyncio.server import serve
+    from websockets.exceptions import ConnectionClosed
+except ImportError:  # pragma: no cover
+    sys.exit("The bridge needs the `websockets` package: pip install websockets")
 
-from transcript_watcher import TranscriptWatcher, find_latest_transcript, get_conversation_id
+HERE = Path(__file__).resolve().parent
+HOOKS_FILE = Path.home() / ".gemini" / "config" / "hooks.json"
+HOOK_NAME = "devos-tab5-bridge"
+BRAIN_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+AGY_SETTINGS = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
 
-app = FastAPI(title="devOS Antigravity Bridge Server")
-
-PSK = ""
-DEMO = False
-MODEL = "Gemini 3.8 Flash (High)"
-watcher = TranscriptWatcher()
-
-
-def get_current_conv_id() -> str:
-    return get_conversation_id()
-
-
-class PromptRequest(BaseModel):
-    prompt: str
-    slash_command: str = ""
+# Tools that only read local state or manage the agent itself: never asked.
+AUTO_ALLOW = {
+    "view_file", "list_dir", "grep_search", "find_by_name", "command_status",
+    "list_resources", "read_resource", "list_permissions", "wait", "wait_5_seconds",
+    "finish", "manage_task", "manage_inbox", "invoke_subagent", "define_subagent",
+    "manage_subagents", "schedule", "search_web", "list_browser_pages", "read_browser_page",
+    "capture_browser_screenshot", "capture_browser_console_logs", "browser_get_dom",
+    "browser_list_network_requests", "browser_get_network_request",
+}
+EDIT_TOOLS = {"write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file", "notebook_edit"}
+PERMISSION_TIMEOUT = 600          # seconds a tool waits for the Tab5
+HISTORY_MAX = 400                 # events replayed to a Tab5 that (re)connects
 
 
-@app.get("/status")
-async def get_status():
-    return {
-        "status": "online",
-        "conversation_id": get_current_conv_id(),
-        "active_transcript": find_latest_transcript(),
-        "demo": DEMO,
-        "service": "agy-bridge",
-        "version": "2.0.0",
+def wire(msg):
+    """JSON for the Tab5: raw UTF-8 rather than \\u escapes."""
+    return json.dumps(msg, ensure_ascii=False)
+
+
+def log(*a):
+    print("[agy-bridge]", *a, flush=True)
+
+
+# --------------------------------------------------------------------------
+# Hook installation (~/.gemini/config/hooks.json)
+# --------------------------------------------------------------------------
+def install_hook():
+    HOOKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    existed = HOOKS_FILE.exists()
+    data = {}
+    if existed:
+        try:
+            data = json.loads(HOOKS_FILE.read_text() or "{}")
+        except ValueError:
+            sys.exit(f"{HOOKS_FILE} is not valid JSON; fix it or move it aside first")
+    data[HOOK_NAME] = {
+        "PreToolUse": [{
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": str(HERE / "devos_hook.sh"),
+                       "timeout": PERMISSION_TIMEOUT + 60}],
+        }]
     }
+    tmp = HOOKS_FILE.with_suffix(".json.devos-tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(HOOKS_FILE)
+    return existed
 
 
-def demo_script(prompt: str, command: str) -> List[Dict[str, Any]]:
-    """Scripted turn used when no real Antigravity runtime is attached."""
-    what = f"{command} " if command else ""
-    return [
-        {"type": "STATUS", "state": "busy"},
-        {"type": "SUBAGENTS",
-         "agents": [{"name": "research", "state": "running"},
-                    {"name": "self", "state": "idle"}]},
-        {"type": "THINKING",
-         "text": f"Planning {what}request: {prompt[:120]}"},
-        {"type": "THINKING", "text": "Checking workspace context."},
-        {"type": "TOOL", "name": "view_file",
-         "detail": "devos_config.h (128 lines)"},
-        {"type": "TOKEN", "text": "Analysis complete. "},
-        {"type": "TOKEN", "text": "Two files need attention. "},
-        {"type": "PERMISSION", "id": f"perm-{uuid.uuid4().hex[:8]}",
-         "text": "run_command 'ninja -C build_sim'"},
-        {"type": "DIFF", "file": "main/apps/app_editor/app_editor.c",
-         "hunk": "@@ -1,2 +1,3 @@\n+// demo hunk\n ctx();\n"},
-        {"type": "ARTIFACT", "name": "plan.md", "kind": "markdown",
-         "text": "# Demo plan\n\n- [x] Reproduce\n- [ ] Fix\n"},
-        {"type": "QUESTION", "id": f"q-{uuid.uuid4().hex[:8]}",
-         "prompt": "Which target should the fix land in?",
-         "choices": ["factory", "ota_0", "both slots"]},
-        {"type": "STATUS", "state": "idle"},
-    ]
-
-
-def transcript_to_events() -> List[Dict[str, Any]]:
-    """Forward new transcript lines: thinking, tools, tokens, artifacts."""
-    out = []
-    for ev in watcher.get_events():
-        if not isinstance(ev, dict):
-            continue
-
-        # 1. Thinking trace
-        thinking = ev.get("thinking")
-        if isinstance(thinking, str) and thinking.strip():
-            out.append({"type": "THINKING", "text": thinking[:1200]})
-
-        # 2. Tool calls
-        tool_calls = ev.get("tool_calls")
-        if isinstance(tool_calls, list):
-            for tc in tool_calls:
-                if isinstance(tc, dict):
-                    tname = tc.get("name") or tc.get("tool_name") or "tool"
-                    targs = tc.get("args") or tc.get("parameters") or {}
-                    summary = ""
-                    if isinstance(targs, dict):
-                        summary = targs.get("toolSummary") or targs.get("toolAction") or ""
-                        if not summary:
-                            for k, v in targs.items():
-                                summary = f"{k}={v}"
-                                break
-                    else:
-                        summary = str(targs)
-                    out.append({"type": "TOOL", "name": tname, "detail": str(summary)[:120]})
-
-        # 3. Model tokens / response content
-        if ev.get("type") == "PLANNER_RESPONSE" or ev.get("source") == "MODEL":
-            content = ev.get("content")
-            if isinstance(content, str) and content.strip():
-                out.append({"type": "TOKEN", "text": content})
-        elif ev.get("type") != "USER_INPUT":
-            text = ev.get("text") or ev.get("content") or ev.get("message")
-            if isinstance(text, str) and text.strip():
-                out.append({"type": "TOKEN", "text": text[:500]})
-
-    return out
-
-
-async def send(ws: WebSocket, msg: Dict[str, Any]):
-    await ws.send_text(json.dumps(msg) + "\n")
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    authed = PSK == ""
-    if authed:
-        await send(websocket, {
-            "type": "WELCOME",
-            "conversation_id": get_current_conv_id(),
-            "model": MODEL,
-            "subagents": [{"name": "research", "state": "idle"},
-                          {"name": "self", "state": "idle"}],
-        })
-    pending_demo: List[Dict[str, Any]] = []
-
+def remove_hook(existed_before):
     try:
-        while True:
+        data = json.loads(HOOKS_FILE.read_text() or "{}")
+    except (OSError, ValueError):
+        return
+    data.pop(HOOK_NAME, None)
+    if not data and not existed_before:
+        HOOKS_FILE.unlink(missing_ok=True)
+    else:
+        HOOKS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+def short(s, n=160):
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "..."
+
+
+def target_file(args):
+    for k in ("TargetFile", "AbsolutePath", "FilePath", "File", "Path", "path"):
+        if isinstance(args.get(k), str):
+            return args[k]
+    return ""
+
+
+WORKSPACE = ""                     # set in main(); paths inside it are shown relative
+
+
+def rel(path):
+    if WORKSPACE and isinstance(path, str) and path.startswith(WORKSPACE.rstrip("/") + "/"):
+        return path[len(WORKSPACE.rstrip("/")) + 1:]
+    return path
+
+
+def describe_tool(name, args):
+    """Human text for a tool call (permission prompts and tool cards)."""
+    if name in ("run_command", "send_command_input"):
+        cmd = args.get("CommandLine") or args.get("Input") or ""
+        cwd = args.get("Cwd") or ""
+        cwd = rel(cwd)
+        return f"$ {short(cmd, 300)}" + (f"\n(in {cwd})" if cwd and cwd not in (".", WORKSPACE) else "")
+    if name in EDIT_TOOLS:
+        verb = "Create/overwrite" if name == "write_to_file" else "Edit"
+        return f"{verb} {rel(target_file(args)) or '?'}"
+    if name in ("open_browser_url", "read_url_content"):
+        return f"Open {args.get('Url') or args.get('url') or '?'}"
+    if name == "call_mcp_tool":
+        return f"MCP {args.get('ServerName', '?')}/{args.get('ToolName', '?')}"
+    if name == "view_file":
+        return f"Read {rel(target_file(args))}"
+    if name in ("grep_search", "find_by_name"):
+        return f"Search {args.get('Query') or args.get('Pattern') or args.get('SearchPattern') or ''}"
+    if name == "list_dir":
+        return f"List {rel(args.get('DirectoryPath') or target_file(args))}"
+    summary = args.get("toolSummary") or args.get("toolAction")
+    if summary:
+        return short(summary, 200)
+    rest = {k: v for k, v in args.items() if k not in ("toolAction", "toolSummary", "WaitMsBeforeAsync")}
+    return short(json.dumps(rest), 200) if rest else ""
+
+
+def edit_preview(name, args):
+    """Diff of what an edit tool call is about to do, for the Allow dialog."""
+    path = target_file(args)
+    before = read_small(path) if path else None
+    after = None
+    if name == "write_to_file":
+        after = str(args.get("CodeContent") or "")
+    elif name in ("replace_file_content", "multi_replace_file_content"):
+        chunks = args.get("ReplacementChunks")
+        chunks = chunks if isinstance(chunks, list) else [args]
+        after = before
+        for c in chunks:
+            t = c.get("TargetContent") if isinstance(c, dict) else None
+            r = c.get("ReplacementContent") if isinstance(c, dict) else None
+            if after is None or not isinstance(t, str) or not isinstance(r, str) or t not in after:
+                after = None
+                break
+            after = after.replace(t, r) if c.get("AllowMultiple") else after.replace(t, r, 1)
+        if after is None:           # can't apply it here: show the chunks as-is
+            out = []
+            for c in chunks:
+                if isinstance(c, dict):
+                    out += ["@@"] + ["-" + l for l in str(c.get("TargetContent") or "").splitlines()]
+                    out += ["+" + l for l in str(c.get("ReplacementContent") or "").splitlines()]
+            return "\n".join(out)[:6000]
+    if after is None:
+        return ""
+    return file_diff(path, before or "", after)[:6000]
+
+
+def always_key(name, args):
+    if name in ("run_command", "send_command_input"):
+        return f"cmd:{args.get('CommandLine') or args.get('Input')}"
+    if name in EDIT_TOOLS:
+        return f"edit:{target_file(args)}"
+    return f"tool:{name}"
+
+
+def read_small(path, limit=512 * 1024):
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return ""
+        if p.stat().st_size > limit:
+            return None
+        return p.read_text(errors="replace")
+    except OSError:
+        return None
+
+
+def file_diff(path, before, after):
+    """Unified diff of a file before/after an edit tool ran."""
+    name = rel(path)
+    return "\n".join(difflib.unified_diff(before.splitlines(), after.splitlines(),
+                                         fromfile="a/" + name, tofile="b/" + name, lineterm="", n=2))
+
+
+def default_model():
+    try:
+        return json.loads(AGY_SETTINGS.read_text()).get("model", "")
+    except (OSError, ValueError):
+        return ""
+
+
+# --------------------------------------------------------------------------
+# Bridge
+# --------------------------------------------------------------------------
+class Bridge:
+    def __init__(self, args):
+        self.args = args
+        self.workspace = str(Path(args.workspace).expanduser().resolve())
+        self.model = args.model or default_model()
+        self.clients = set()                    # authenticated websockets
+        self.history = []                       # replayed to late joiners
+        self.proc = None
+        self.conversation_id = args.conversation or ""
+        self.resume = bool(args.resume)
+        self.busy = False
+        self.pending = {}                       # id -> {"future", "msg"}
+        self.always = set()
+        self.tools = {}                         # step index -> tool card id
+        self.subagents = {}                     # name -> state
+        self.artifact_mtimes = {}
+        self.snapshots = {}                     # step index -> (file, content before the edit)
+        self.sock_path = ""
+        self.stopping = False
+
+    # ---- fan-out ----
+    async def emit(self, msg, record=True):
+        if record and msg.get("type") not in ("PONG", "PERMISSION", "QUESTION", "RESET"):
+            self.remember(msg)
+        data = wire(msg)
+        for ws in list(self.clients):
             try:
-                raw = await asyncio.wait_for(websocket.receive_text(),
-                                             timeout=0.2)
-            except asyncio.TimeoutError:
-                raw = None
-            if raw:
+                await ws.send(data)
+            except ConnectionClosed:
+                self.clients.discard(ws)
+
+    def remember(self, msg):
+        """Keep the replay history compact: streamed text is merged, and a
+        tool card's updates replace its earlier entry."""
+        h, t = self.history, msg.get("type")
+        if t in ("TOKEN", "THINKING") and h and h[-1].get("type") == t and len(h[-1]["text"]) < 4000:
+            h[-1] = dict(h[-1], text=h[-1]["text"] + msg.get("text", ""))
+            return
+        if t == "TOOL" and msg.get("id"):
+            for i in range(len(h) - 1, max(-1, len(h) - 200), -1):
+                if h[i].get("type") == "TOOL" and h[i].get("id") == msg["id"]:
+                    h[i] = msg
+                    return
+        h.append(msg)
+        del h[:-HISTORY_MAX]
+
+    async def status(self, busy):
+        self.busy = busy
+        await self.emit({"type": "STATUS", "state": "busy" if busy else "idle"})
+        await self.emit({"type": "SUBAGENTS", "agents": self.agents()})
+
+    def agents(self):
+        main = [{"name": "agent", "state": "running" if self.busy else "idle"}]
+        return (main + [{"name": n, "state": s} for n, s in self.subagents.items()])[:8]
+
+    def welcome(self):
+        return {"type": "WELCOME", "conversation_id": self.conversation_id, "model": self.model,
+                "workspace": self.workspace, "subagents": self.agents()}
+
+    # ---- agy process ----
+    async def start_agy(self):
+        if self.args.demo:
+            return
+        cmd = ["agy", "--input-format", "stream-json", "--output-format", "stream-json",
+               "--dangerously-skip-permissions", "--add-dir", self.workspace]
+        if self.conversation_id:
+            cmd += ["--conversation", self.conversation_id]
+        elif self.resume:
+            cmd += ["--continue"]
+        if self.args.model:
+            cmd += ["--model", self.args.model]
+        env = dict(os.environ, DEVOS_AGY_BRIDGE_SOCK=self.sock_path)
+        self.proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=self.workspace, env=env, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
+        what = (f"resuming {self.conversation_id}" if self.conversation_id
+                else "continuing the latest conversation" if self.resume else "new conversation")
+        log(f"started agy ({what})")
+        asyncio.create_task(self.read_stdout(self.proc))
+        asyncio.create_task(self.read_stderr(self.proc))
+
+    async def stop_agy(self):
+        p, self.proc = self.proc, None
+        if not p or p.returncode is not None:
+            return
+        try:
+            p.send_signal(signal.SIGINT)
+            await asyncio.wait_for(p.wait(), 5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            p.kill()
+
+    async def read_stderr(self, proc):
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode(errors="replace").rstrip()
+            if text:
+                log("agy:", text[:300])
+
+    async def read_stdout(self, proc):
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            try:
+                await self.on_agy_event(ev)
+            except Exception as e:  # never let one odd event kill the reader
+                log("event error:", repr(e))
+        if proc is self.proc and not self.stopping:
+            log("agy exited; it restarts with the next prompt")
+            self.proc = None
+            if self.busy:
+                await self.status(False)
+
+    async def on_agy_event(self, ev):
+        kind = ev.get("event")
+        if kind == "init":
+            cid = ev.get("conversation_id") or ""
+            if cid and cid != self.conversation_id:
+                self.conversation_id = cid
+                self.artifact_mtimes = {}
+            await self.emit(self.welcome())
+        elif kind == "step_update":
+            await self.on_step(ev.get("step_update") or {})
+        elif kind == "result":
+            r = ev.get("result") or {}
+            if r.get("status") not in (None, "SUCCESS"):
+                await self.emit({"type": "ERROR", "message": "Antigravity: " + short(r.get("error") or r.get("status"), 240)})
+            for d in r.get("denied_actions") or []:
+                await self.emit({"type": "ERROR", "message": f"Denied: {d.get('display_name') or d.get('action')}"})
+            u = r.get("usage") or {}
+            await self.emit({"type": "USAGE", "input": u.get("input_tokens", 0), "output": u.get("output_tokens", 0),
+                             "total": u.get("total_tokens", 0)})
+            for n in list(self.subagents):
+                self.subagents[n] = "idle"
+            await self.status(False)
+            await self.scan_artifacts()
+
+    async def on_step(self, u):
+        stype = u.get("step_type")
+        state = u.get("state")
+        if u.get("thinking_delta"):
+            await self.emit({"type": "THINKING", "text": u["thinking_delta"]})
+        if stype == "agent_response":
+            if u.get("text_delta"):
+                await self.emit({"type": "TOKEN", "text": u["text_delta"]})
+        elif stype == "tool":
+            info = u.get("tool_info") or {}
+            name = u.get("tool_name") or info.get("name") or "tool"
+            params = info.get("parameters") or {}
+            tid = f"{self.conversation_id[:8]}-{u.get('step_index')}"
+            st = {"ACTIVE": "running", "DONE": "done", "ERROR": "error"}.get(state, (state or "").lower())
+            detail = describe_tool(name, params)
+            err = (info.get("error") or {}).get("message")
+            if err:
+                detail += "\n" + short(err.split("\nDo not attempt")[0], 300)
+            await self.emit({"type": "TOOL", "id": tid, "name": name, "state": st, "detail": detail})
+            if name in ("invoke_subagent", "define_subagent"):
+                subs = params.get("Subagents") if isinstance(params.get("Subagents"), list) else [params]
+                for i, sa in enumerate(subs):
+                    sa = sa if isinstance(sa, dict) else {}
+                    label = sa.get("Name") or sa.get("SubagentName") or short(sa.get("Prompt") or "", 28) or f"subagent {i + 1}"
+                    self.subagents[label] = "running" if st == "running" else "idle"
+                while len(self.subagents) > 7:
+                    self.subagents.pop(next(iter(self.subagents)))
+                await self.emit({"type": "SUBAGENTS", "agents": self.agents()})
+            if st in ("done", "error") and name in EDIT_TOOLS:
+                snap = self.snapshots.pop(u.get("step_index"), None)
+                if snap and st == "done":
+                    after = read_small(snap[0])
+                    if after is not None and snap[1] is not None and after != snap[1]:
+                        hunk = file_diff(snap[0], snap[1], after)
+                        if hunk:
+                            await self.emit({"type": "DIFF", "file": rel(snap[0]), "hunk": hunk[:6000]})
+            if st in ("done", "error"):
+                await self.scan_artifacts()
+
+    async def scan_artifacts(self):
+        """Antigravity writes plans/tasks/walkthroughs as markdown artifacts."""
+        if not self.conversation_id:
+            return
+        d = BRAIN_DIR / self.conversation_id
+        try:
+            files = [p for p in d.iterdir() if p.suffix == ".md" and p.is_file()]
+        except OSError:
+            return
+        for p in files:
+            m = p.stat().st_mtime
+            if self.artifact_mtimes.get(p.name) == m:
+                continue
+            self.artifact_mtimes[p.name] = m
+            try:
+                text = p.read_text(errors="replace")
+            except OSError:
+                continue
+            await self.emit({"type": "ARTIFACT", "name": p.name, "kind": "markdown", "text": text[:12000]})
+
+    async def prompt(self, text, command=""):
+        full = f"{command} {text}".strip() if command else text
+        if self.args.demo:
+            asyncio.create_task(self.demo_turn(full))
+            return
+        if not self.proc or self.proc.returncode is not None:
+            await self.start_agy()
+        await self.status(True)
+        line = json.dumps({"event": "user", "message": {"content": full}}) + "\n"
+        self.proc.stdin.write(line.encode())
+        await self.proc.stdin.drain()
+
+    async def abort(self):
+        """Stop the running turn; the conversation continues with the next prompt."""
+        for p in list(self.pending.values()):
+            if not p["future"].done():
+                p["future"].set_result({"allow": False, "choice": -1, "aborted": True})
+        await self.stop_agy()
+        await self.status(False)
+        await self.emit({"type": "TOKEN", "text": "\n(stopped)\n"})
+
+    async def new_conversation(self):
+        await self.abort()
+        self.conversation_id = ""
+        self.resume = False
+        self.history.clear()
+        self.subagents.clear()
+        self.artifact_mtimes = {}
+        await self.emit({"type": "RESET"}, record=False)
+        await self.emit(self.welcome())
+
+    # ---- permission hook (Unix socket) ----
+    async def on_hook(self, reader, writer):
+        try:
+            line = await reader.readline()
+            payload = json.loads(line or b"{}")
+            decision = await self.decide(payload)
+        except Exception as e:
+            decision = {"decision": "deny", "reason": f"devOS bridge error: {e}"}
+        writer.write((json.dumps(decision) + "\n").encode())
+        try:
+            await writer.drain()
+        finally:
+            writer.close()
+
+    async def decide(self, payload):
+        call = payload.get("toolCall") or {}
+        name = call.get("name") or ""
+        args = call.get("args") or {}
+        if name == "ask_question":
+            return await self.ask_question(args)
+        if name in ("ask_permission", "ask_custom_permission"):
+            ok = await self.ask_tab5(name, args, "The agent asks for permission:\n" + describe_tool(name, args))
+            return {"decision": "allow" if ok else "deny", "reason": "decided on the Tab5"}
+        if self.args.yolo or name in AUTO_ALLOW or always_key(name, args) in self.always:
+            ok = True
+        else:
+            preview = edit_preview(name, args) if name in EDIT_TOOLS else ""
+            ok = await self.ask_tab5(name, args, describe_tool(name, args) or name, preview)
+        if ok:
+            if name in EDIT_TOOLS and target_file(args):
+                # remember the file as it was, to diff it once the edit is done
+                self.snapshots[payload.get("stepIdx")] = (target_file(args), read_small(target_file(args)))
+            return {"decision": "allow", "reason": "approved on the Tab5"}
+        return {"decision": "deny", "reason": "The user denied this on their Tab5. Do not retry it or work around it."}
+
+    async def ask_tab5(self, name, args, text, preview=""):
+        pid = "perm-" + uuid.uuid4().hex[:8]
+        fut = asyncio.get_running_loop().create_future()
+        msg = {"type": "PERMISSION", "id": pid, "text": f"{name}\n{text}"}
+        if preview:
+            msg["preview"] = preview
+        self.pending[pid] = {"future": fut, "msg": msg}
+        log("permission?", name, short(text, 120))
+        await self.emit(msg, record=False)
+        try:
+            res = await asyncio.wait_for(fut, PERMISSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            res = {"allow": False}
+        finally:
+            self.pending.pop(pid, None)
+            await self.emit({"type": "RESOLVED", "id": pid}, record=False)
+        if res.get("allow") and res.get("always"):
+            self.always.add(always_key(name, args))
+        log("permission", "allowed" if res.get("allow") else "denied", name)
+        return bool(res.get("allow"))
+
+    async def ask_question(self, args):
+        prompt, choices = "", []
+        qs = args.get("Questions") or args.get("questions")
+        q = qs[0] if isinstance(qs, list) and qs else args
+        if isinstance(q, dict):
+            prompt = q.get("Question") or q.get("question") or q.get("Prompt") or q.get("prompt") or ""
+            opts = q.get("Options") or q.get("options") or q.get("Choices") or q.get("choices") or []
+            for o in opts if isinstance(opts, list) else []:
+                choices.append(o if isinstance(o, str) else (o.get("Label") or o.get("label") or o.get("text") or json.dumps(o)))
+        if not prompt:
+            prompt = short(json.dumps(args), 300)
+        qid = "q-" + uuid.uuid4().hex[:8]
+        fut = asyncio.get_running_loop().create_future()
+        msg = {"type": "QUESTION", "id": qid, "prompt": prompt, "choices": [short(c, 120) for c in choices[:4]]}
+        self.pending[qid] = {"future": fut, "msg": msg}
+        await self.emit(msg, record=False)
+        try:
+            res = await asyncio.wait_for(fut, PERMISSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            res = {"choice": -1}
+        finally:
+            self.pending.pop(qid, None)
+            await self.emit({"type": "RESOLVED", "id": qid}, record=False)
+        c = res.get("choice", -1)
+        typed = str(res.get("text") or "").strip()[:500]
+        if typed or (isinstance(c, int) and 0 <= c < len(choices)):
+            answer = typed or choices[c]
+            await self.emit({"type": "TOKEN", "text": f"\n(answered: {answer})\n"})
+            return {"decision": "deny", "reason": f"The user already answered this question on their Tab5: "
+                                                  f"\"{answer}\". Use that answer and do not ask again."}
+        return {"decision": "deny", "reason": "Nobody answered on the Tab5; continue with your best judgement."}
+
+    # ---- WebSocket ----
+    async def on_ws(self, ws):
+        authed = not self.args.psk
+        peer = ws.remote_address[0] if ws.remote_address else "?"
+        try:
+            if authed:
+                await self.join(ws)
+            async for raw in ws:
                 try:
                     msg = json.loads(raw)
-                except (ValueError, TypeError):
-                    await send(websocket, {"type": "ERROR",
-                                           "message": "bad json"})
+                except ValueError:
+                    await ws.send(wire({"type": "ERROR", "message": "bad json"}))
                     continue
-                mtype = msg.get("type", "")
-                if mtype == "HELLO":
-                    if PSK and msg.get("token") != PSK:
-                        await send(websocket, {"type": "ERROR",
-                                               "message": "bad token"})
-                        break
-                    authed = True
-                    await send(websocket, {
-                        "type": "WELCOME",
-                        "conversation_id": get_current_conv_id(),
-                        "model": MODEL,
-                        "subagents": [{"name": "research", "state": "idle"},
-                                      {"name": "self", "state": "idle"}],
-                    })
+                t = msg.get("type", "")
+                if t == "HELLO":
+                    if self.args.psk and not secrets.compare_digest(str(msg.get("token", "")), self.args.psk):
+                        await ws.send(wire({"type": "ERROR", "message": "Wrong bridge token"}))
+                        log("rejected client", peer, "(wrong token)")
+                        return
+                    if not authed:
+                        authed = True
+                        await self.join(ws)
                 elif not authed:
-                    await send(websocket, {"type": "ERROR",
-                                           "message": "hello first"})
-                elif mtype == "PING":
-                    await send(websocket, {"type": "PONG"})
-                elif mtype == "PROMPT":
-                    text = str(msg.get("text", ""))[:2000]
+                    await ws.send(wire({"type": "ERROR", "message": "Send HELLO with the bridge token first"}))
+                elif t == "PING":
+                    await ws.send(wire({"type": "PONG"}))
+                elif t == "PROMPT":
+                    text = str(msg.get("text", ""))[:16000]
                     command = str(msg.get("command", ""))[:32]
-                    print(f"[AGY-BRIDGE] prompt ({command or 'chat'}): "
-                          f"{text[:80]}", flush=True)
-                    if DEMO:
-                        pending_demo.extend(demo_script(text, command))
-                    else:
-                        # Real runtime hook: transcript tail answers.
-                        pending_demo.append({"type": "STATUS",
-                                             "state": "busy"})
-                elif mtype == "PERMISSION_REPLY":
-                    print(f"[AGY-BRIDGE] permission {msg.get('id')}: "
-                          f"allow={msg.get('allow')} "
-                          f"always={msg.get('always')}", flush=True)
-                    await send(websocket, {"type": "STATUS", "state": "idle"})
-                elif mtype == "QUESTION_REPLY":
-                    print(f"[AGY-BRIDGE] question {msg.get('id')}: "
-                          f"choice={msg.get('choice')}", flush=True)
-                    await send(websocket, {"type": "STATUS", "state": "idle"})
+                    log("prompt:", short(text, 80))
+                    # the sender shows its own words; replay + other screens need them
+                    user = {"type": "USER", "text": f"{command} {text}".strip()}
+                    self.remember(user)
+                    for other in list(self.clients - {ws}):
+                        try:
+                            await other.send(wire(user))
+                        except ConnectionClosed:
+                            self.clients.discard(other)
+                    await self.prompt(text, command)
+                elif t in ("PERMISSION_REPLY", "QUESTION_REPLY"):
+                    p = self.pending.get(str(msg.get("id")))
+                    if p and not p["future"].done():
+                        p["future"].set_result(msg)
+                elif t == "NEW":
+                    await self.new_conversation()
+                elif t == "ABORT":
+                    await self.abort()
                 else:
-                    await send(websocket, {"type": "ERROR",
-                                           "message": f"unknown {mtype}"})
-            # flush one queued event per tick (pacing for the Tab5)
+                    await ws.send(wire({"type": "ERROR", "message": f"unknown message {t}"}))
+        except ConnectionClosed:
+            pass
+        finally:
+            self.clients.discard(ws)
             if authed:
-                if pending_demo:
-                    await send(websocket, pending_demo.pop(0))
-                    await asyncio.sleep(0.4)
-                elif not DEMO:
-                    for ev in transcript_to_events():
-                        await send(websocket, ev)
-    except WebSocketDisconnect:
-        print("[AGY-BRIDGE] Tab5 client disconnected.")
-    except Exception as e:
-        print(f"[AGY-BRIDGE] Error: {e}")
+                log("Tab5 disconnected:", peer)
+
+    async def join(self, ws):
+        self.clients.add(ws)
+        log("Tab5 connected:", ws.remote_address[0] if ws.remote_address else "?")
+        await ws.send(wire({"type": "RESET"}))
+        await ws.send(wire(self.welcome()))
+        for m in self.history:                  # catch up on the conversation
+            await ws.send(wire(m))
+        await ws.send(wire({"type": "STATUS", "state": "busy" if self.busy else "idle"}))
+        for p in self.pending.values():         # questions still waiting for an answer
+            await ws.send(wire(p["msg"]))
+
+    # ---- demo mode ----
+    async def demo_turn(self, text):
+        await self.status(True)
+        tid = "demo-" + uuid.uuid4().hex[:4]
+        await self.emit({"type": "THINKING", "text": f"Planning: {short(text, 100)}"})
+        await asyncio.sleep(0.4)
+        await self.emit({"type": "TOOL", "id": tid + "a", "name": "view_file", "state": "done",
+                         "detail": "Read src/main.c"})
+        ok = await self.ask_tab5("run_command", {"CommandLine": "make test"}, "$ make test")
+        await self.emit({"type": "TOOL", "id": tid + "b", "name": "run_command", "state": "done" if ok else "error",
+                         "detail": "$ make test" + ("\n12 passed" if ok else "\ndenied on the Tab5")})
+        for w in ["Demo ", "reply: ", "all ", "tests ", "pass." if ok else "skipped the tests."]:
+            await self.emit({"type": "TOKEN", "text": w})
+            await asyncio.sleep(0.15)
+        await self.emit({"type": "DIFF", "file": "src/main.c", "hunk": "@@ -1,2 +1,3 @@\n+#include <stdio.h>\n int main(void)\n"})
+        await self.emit({"type": "ARTIFACT", "name": "implementation_plan.md", "kind": "markdown",
+                         "text": "# Plan\n\n- [x] Reproduce\n- [ ] Fix\n"})
+        await self.status(False)
+
+
+async def main():
+    ap = argparse.ArgumentParser(description="devOS Antigravity bridge (Tab5 <-> agy)")
+    ap.add_argument("--host", default="0.0.0.0", help="listen address (default all interfaces)")
+    ap.add_argument("--port", type=int, default=8420)
+    ap.add_argument("--psk", default=os.environ.get("DEVOS_BRIDGE_PSK", ""),
+                    help="shared token the Tab5 must send (generated if omitted)")
+    ap.add_argument("--workspace", default=".", help="project folder agy works in (default: here)")
+    ap.add_argument("--model", default="", help="agy model (default: your agy setting)")
+    ap.add_argument("--conversation", default="", help="resume this conversation id")
+    ap.add_argument("--resume", action="store_true", help="continue the most recent conversation")
+    ap.add_argument("--yolo", action="store_true", help="allow every tool without asking (not recommended)")
+    ap.add_argument("--no-psk", action="store_true", help="allow clients without a token (loopback only)")
+    ap.add_argument("--demo", action="store_true", help="scripted replies, no agy needed")
+    args = ap.parse_args()
+
+    if not args.psk and not args.no_psk:
+        args.psk = secrets.token_urlsafe(12)
+        log(f"No --psk given; this run's token is: {args.psk}")
+    if args.no_psk and args.host not in ("127.0.0.1", "localhost", "::1"):
+        sys.exit("--no-psk is only allowed with --host 127.0.0.1")
+
+    global WORKSPACE
+    bridge = Bridge(args)
+    WORKSPACE = bridge.workspace
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    bridge.sock_path = os.path.join(runtime, f"devos-agy-bridge-{os.getpid()}.sock")
+    old_umask = os.umask(0o077)                     # socket readable by this user only
+    hook_server = await asyncio.start_unix_server(bridge.on_hook, path=bridge.sock_path)
+    os.umask(old_umask)
+
+    existed = False if args.demo else install_hook()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        async with serve(bridge.on_ws, args.host, args.port, max_size=4 * 1024 * 1024, ping_interval=20):
+            log(f"listening on ws://{args.host}:{args.port}/ws  workspace={bridge.workspace}  "
+                f"model={bridge.model or 'default'}  demo={args.demo}")
+            if not args.demo and (args.resume or args.conversation):
+                await bridge.start_agy()
+            await stop.wait()
+    finally:
+        bridge.stopping = True
+        await bridge.stop_agy()
+        hook_server.close()
+        try:
+            os.unlink(bridge.sock_path)
+        except OSError:
+            pass
+        if not args.demo:
+            remove_hook(existed)
+        log("stopped")
 
 
 if __name__ == "__main__":
-    import uvicorn
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="0.0.0.0", help="Host interface")
-    parser.add_argument("--port", type=int, default=8420, help="Port")
-    parser.add_argument("--psk", default="", help="Pre-shared token")
-    parser.add_argument("--demo", action="store_true",
-                        help="Scripted replies, no AGY runtime needed")
-    args = parser.parse_args()
-    PSK = args.psk
-    DEMO = args.demo
-    print(f"Starting agy-bridge on {args.host}:{args.port} "
-          f"(demo={DEMO}, auth={'on' if PSK else 'off'})...")
-    uvicorn.run(app, host=args.host, port=args.port)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

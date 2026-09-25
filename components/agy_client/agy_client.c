@@ -3,6 +3,7 @@
 #include "devos_json.h"
 #include "devos_net.h"
 #include "devos_config.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #ifdef ESP_PLATFORM
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_random.h"
 #endif
 
 #ifndef ESP_PLATFORM
@@ -20,9 +22,12 @@
 
 #define WS_TIMEOUT_TICKS 100      /* 10 s handshake/connect budget */
 #define WS_RETRY_TICKS 30         /* 3 s between attempts */
-#define WS_RX_MAX 8192
-#define WS_TX_MAX 4352            /* prompts truncate past 4 KB */
+#define WS_IDLE_TICKS 450         /* 45 s of silence: the bridge pings every 20 s */
 #define WS_HDR_MAX 1024
+#define AGY_MSG_MAX (96 * 1024)   /* bigger messages are skipped whole */
+#define WS_TX_MAX (AGY_PROMPT_MAX * 2 + 256)
+#define RX_CHUNK 2048
+#define RX_CHUNKS_PER_POLL 24     /* ~48 KB per tick: history replays stay quick */
 
 typedef struct {
     char host[AGY_HOST_MAX];
@@ -42,33 +47,66 @@ static EXT_RAM_BSS_ATTR agy_artifact_t s_artifacts[AGY_MAX_ARTIFACTS];
 static int s_artifact_count = 0;
 static EXT_RAM_BSS_ATTR agy_block_t s_blocks[AGY_MAX_BLOCKS];
 static int s_block_count = 0;
+static uint32_t s_rev = 0;
 static agy_permission_t s_perm;
+static EXT_RAM_BSS_ATTR char s_perm_preview[AGY_PREVIEW_MAX];
 static agy_question_t s_q;
 static char s_conv[AGY_NAME_MAX] = "";
 static char s_model[AGY_NAME_MAX] = "";
-static EXT_RAM_BSS_ATTR char s_diff[AGY_ARTIFACT_MAX] = "";
+static char s_workspace[AGY_PATH_MAX] = "";
+static EXT_RAM_BSS_ATTR char s_diff[AGY_DIFF_MAX];
+static size_t s_diff_len = 0;
+static uint32_t s_diff_rev = 0;
+static int s_usage[3] = {0, 0, 0};
 static bool s_busy = false;
 static agy_status_t s_status = AGY_DOWN;
 static char s_status_text[128] = "Offline";
 static uint32_t s_gen = 0;
 
+/* scratch for pulling long strings out of a message */
+static EXT_RAM_BSS_ATTR char s_str[AGY_ARTIFACT_MAX];
+
 /* Link state */
 static int s_fd = -1;
 static int s_ticks = 0;
 static int s_retry = 0;
+static int s_idle = 0;
 static bool s_want = false;
 static bool s_sent_upgrade = false;
 static bool s_handshook = false;
-static EXT_RAM_BSS_ATTR char s_rx[WS_RX_MAX];
-static size_t s_rx_len = 0;
 static char s_hdr[WS_HDR_MAX];
 static size_t s_hdr_len = 0;
-/* fragmented text accumulation */
-static EXT_RAM_BSS_ATTR char s_frag[WS_RX_MAX];
-static size_t s_frag_len = 0;
-static int s_frag_op = -1;
+
+/* Streaming frame parser */
+static struct {
+    uint8_t hdr[14];
+    int hdr_len;
+    int hdr_need;
+    bool in_payload;
+    int op;
+    bool fin;
+    bool masked;
+    uint8_t mask[4];
+    uint64_t remain;
+    uint64_t pos;               /* payload offset, for unmasking */
+    uint8_t ctrl[125];
+    size_t ctrl_len;
+    int msg_op;                 /* -1: no message in progress */
+    size_t msg_len;
+    bool msg_skip;              /* message too big: drop it */
+} rx;
+static EXT_RAM_BSS_ATTR char s_msg[AGY_MSG_MAX + 1];
 
 static void bump(void) { s_gen++; }
+
+static uint8_t rnd8(void)
+{
+#ifdef ESP_PLATFORM
+    return (uint8_t)esp_random();
+#else
+    return (uint8_t)rand();
+#endif
+}
 
 static void set_status(agy_status_t st, const char *text)
 {
@@ -78,9 +116,41 @@ static void set_status(agy_status_t st, const char *text)
     }
     if (text && strcmp(s_status_text, text) != 0) {
         snprintf(s_status_text, sizeof(s_status_text), "%s", text);
-        s_status_text[sizeof(s_status_text) - 1] = '\0';
         bump();
     }
+}
+
+/* Cut a string back to a whole UTF-8 sequence (after a byte-limit copy). */
+static void utf8_trim(char *s)
+{
+    size_t i = strlen(s);
+    int cont = 0;
+    while (i > 0 && cont < 3 && ((unsigned char)s[i - 1] & 0xC0) == 0x80) {
+        i--;
+        cont++;
+    }
+    if (cont == 0) return;
+    if (i == 0) {
+        s[0] = '\0';
+        return;
+    }
+    unsigned char lead = (unsigned char)s[i - 1];
+    if (lead < 0xC0) {
+        s[i] = '\0';                  /* stray continuation bytes */
+        return;
+    }
+    int need = lead >= 0xF0 ? 3 : lead >= 0xE0 ? 2 : 1;
+    if (cont < need) s[i - 1] = '\0'; /* sequence cut short */
+}
+
+/* Bounded copy that never splits a UTF-8 character. */
+static void copy_text(char *dst, size_t cap, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+    utf8_trim(dst);
 }
 
 /* ------------------------------------------------------------ persistence */
@@ -160,76 +230,133 @@ static void b64_encode(const uint8_t *in, size_t len, char *out)
 }
 
 /* ---------------------------------------------------------------- frames */
-static int ws_send_raw(const void *buf, size_t len)
-{
-    return devos_net_socket_send_all(s_fd, buf, len);
-}
+static void link_down(const char *text);
 
-/* One masked client text frame (payload capped, longer is truncated). */
-static int ws_send_text(const char *text, size_t len)
+/* One masked client frame (FIN set). */
+static int ws_send_frame(int op, const void *data, size_t len)
 {
-    if (s_fd < 0 || !text) return -1;
-    if (len > WS_TX_MAX) len = WS_TX_MAX;
-    uint8_t hdr[10];
+    if (s_fd < 0) return -1;
+    uint8_t hdr[14];
     size_t hlen = 2;
-    hdr[0] = 0x81; /* FIN + text */
+    hdr[0] = (uint8_t)(0x80 | (op & 0x0F));
     if (len < 126) {
-        hdr[1] = 0x80 | (uint8_t)len;
-    } else {
+        hdr[1] = (uint8_t)(0x80 | len);
+    } else if (len <= 0xFFFF) {
         hdr[1] = 0x80 | 126;
-        hdr[2] = (uint8_t)((len >> 8) & 0xFF);
-        hdr[3] = (uint8_t)(len & 0xFF);
+        hdr[2] = (uint8_t)(len >> 8);
+        hdr[3] = (uint8_t)len;
         hlen = 4;
+    } else {
+        hdr[1] = 0x80 | 127;
+        for (int i = 0; i < 8; i++) hdr[2 + i] = (uint8_t)((uint64_t)len >> (56 - 8 * i));
+        hlen = 10;
     }
-    uint8_t mask[4] = {(uint8_t)rand(), (uint8_t)rand(),
-                       (uint8_t)rand(), (uint8_t)rand()};
-    if (ws_send_raw(hdr, hlen) != 0 || ws_send_raw(mask, 4) != 0) return -1;
-    /* ponytail: mask in 1 KB stack chunks instead of a heap copy */
+    uint8_t *mask = hdr + hlen;
+    for (int i = 0; i < 4; i++) mask[i] = rnd8();
+    hlen += 4;
+    if (devos_net_socket_send_all(s_fd, hdr, hlen) != 0) return -1;
+    /* mask in 1 KB chunks instead of a heap copy */
     static uint8_t chunk[1024];
     size_t off = 0;
     while (off < len) {
         size_t n = len - off > sizeof(chunk) ? sizeof(chunk) : len - off;
         for (size_t i = 0; i < n; i++) {
-            chunk[i] = ((const uint8_t *)text)[off + i] ^ mask[(off + i) & 3];
+            chunk[i] = ((const uint8_t *)data)[off + i] ^ mask[(off + i) & 3];
         }
-        if (ws_send_raw(chunk, n) != 0) return -1;
+        if (devos_net_socket_send_all(s_fd, chunk, n) != 0) return -1;
         off += n;
     }
     return 0;
 }
 
-static int ws_send_json(const char *json, size_t len)
+static int ws_send_json(const char *json)
 {
-    return ws_send_text(json, len);
+    if (ws_send_frame(0x1, json, strlen(json)) != 0) {
+        if (s_fd >= 0) link_down("Link lost");
+        return -1;
+    }
+    return 0;
 }
 
-/* -------------------------------------------------------------- messages */
-static void push_block(uint8_t role, uint8_t kind, const char *text)
+/* ------------------------------------------------------------ view model */
+static agy_block_t *new_block(uint8_t role, uint8_t kind)
 {
-    if (!text || !*text) return;
-    if (kind == AGY_KIND_TEXT && s_block_count > 0) {
-        agy_block_t *last = &s_blocks[s_block_count - 1];
-        if (last->role == role && last->kind == AGY_KIND_TEXT) {
-            size_t have = strlen(last->text);
-            size_t add = strlen(text);
-            size_t room = sizeof(last->text) - have - 1;
-            if (add > room) add = room;
-            memcpy(last->text + have, text, add);
-            last->text[have + add] = '\0';
-            bump();
-            return;
-        }
-    }
     if (s_block_count >= AGY_MAX_BLOCKS) {
-        memmove(s_blocks, s_blocks + 1,
-                sizeof(s_blocks[0]) * (AGY_MAX_BLOCKS - 1));
+        memmove(s_blocks, s_blocks + 1, sizeof(s_blocks[0]) * (AGY_MAX_BLOCKS - 1));
         s_block_count = AGY_MAX_BLOCKS - 1;
     }
     agy_block_t *b = &s_blocks[s_block_count++];
+    memset(b, 0, offsetof(agy_block_t, text));
+    b->text[0] = '\0';
     b->role = role;
     b->kind = kind;
-    snprintf(b->text, sizeof(b->text), "%s", text);
-    b->text[sizeof(b->text) - 1] = '\0';
+    b->rev = ++s_rev;
+    return b;
+}
+
+/* Streamed text: extend the last block of the same kind, else start one
+ * (long text spills into further blocks, split on a UTF-8 boundary). */
+static void append_text(uint8_t role, uint8_t kind, const char *text)
+{
+    if (!text || !*text) return;
+    while (*text) {
+        size_t add = strlen(text);
+        agy_block_t *last = s_block_count > 0 ? &s_blocks[s_block_count - 1] : NULL;
+        agy_block_t *b = (last && last->role == role && last->kind == kind &&
+                          strlen(last->text) + add < sizeof(last->text))
+                         ? last : new_block(role, kind);
+        size_t have = strlen(b->text);
+        size_t room = sizeof(b->text) - have - 1;
+        if (add > room) {
+            add = room;
+            while (add > 0 && ((unsigned char)text[add] & 0xC0) == 0x80) add--;
+        }
+        if (add == 0) break;
+        memcpy(b->text + have, text, add);
+        b->text[have + add] = '\0';
+        b->rev = ++s_rev;
+        text += add;
+    }
+    bump();
+}
+
+static void clear_view(void)
+{
+    s_block_count = 0;
+    s_artifact_count = 0;
+    s_diff[0] = '\0';
+    s_diff_len = 0;
+    s_diff_rev++;
+    s_perm.active = false;
+    s_q.active = false;
+    memset(s_usage, 0, sizeof(s_usage));
+    bump();
+}
+
+static void diff_append(const char *file, const char *hunk)
+{
+    char head[2 * AGY_PATH_MAX + 32] = "";
+    if (strncmp(hunk, "---", 3) != 0) {
+        snprintf(head, sizeof(head), "--- a/%s\n+++ b/%s\n", file, file);
+    }
+    size_t hl = strlen(head), bl = strlen(hunk);
+    size_t need = hl + bl + 2;   /* hunk + '\n' separator + NUL */
+    if (need > sizeof(s_diff)) return;
+    if (s_diff_len + need > sizeof(s_diff)) {
+        /* drop the oldest edits, whole files at a time */
+        size_t cut = s_diff_len + need - sizeof(s_diff);
+        const char *next = strstr(s_diff + cut, "\n--- ");
+        cut = next ? (size_t)(next + 1 - s_diff) : s_diff_len;
+        memmove(s_diff, s_diff + cut, s_diff_len - cut + 1);
+        s_diff_len -= cut;
+    }
+    memcpy(s_diff + s_diff_len, head, hl);
+    s_diff_len += hl;
+    memcpy(s_diff + s_diff_len, hunk, bl);
+    s_diff_len += bl;
+    if (s_diff_len == 0 || s_diff[s_diff_len - 1] != '\n') s_diff[s_diff_len++] = '\n';
+    s_diff[s_diff_len] = '\0';
+    s_diff_rev++;
     bump();
 }
 
@@ -248,10 +375,71 @@ static void agents_each_cb(const char *obj, size_t len, void *ud)
     s_agent_count++;
 }
 
-static void set_agents(const char *arr, size_t len)
+static void set_agents(const char *js, size_t len, const char *key)
 {
+    const char *end = js + len;
+    const char *v = devos_json_find_key(js, end, key);
+    if (!v || v >= end || *v != '[') return;
+    const char *stop = devos_json_span(v, end);
+    if (!stop) return;
     s_agent_count = 0;
-    devos_json_array_each(arr, len, agents_each_cb, NULL);
+    devos_json_array_each(v, (size_t)(stop - v), agents_each_cb, NULL);
+    bump();
+}
+
+static void on_tool(const char *js, size_t len)
+{
+    char id[40] = "", name[48] = "", st[16] = "";
+    devos_json_get_str(js, len, "id", id, sizeof(id));
+    devos_json_get_str(js, len, "name", name, sizeof(name));
+    devos_json_get_str(js, len, "state", st, sizeof(st));
+    s_str[0] = '\0';
+    devos_json_get_str(js, len, "detail", s_str, 2048);
+    utf8_trim(s_str);
+    agy_block_t *b = NULL;
+    for (int i = s_block_count - 1; id[0] && i >= 0; i--) {
+        if (s_blocks[i].kind == AGY_KIND_TOOL && strcmp(s_blocks[i].id, id) == 0) {
+            b = &s_blocks[i];
+            break;
+        }
+    }
+    if (!b) {
+        b = new_block(AGY_ROLE_AGY, AGY_KIND_TOOL);
+        snprintf(b->id, sizeof(b->id), "%s", id);
+    }
+    snprintf(b->name, sizeof(b->name), "%s", name[0] ? name : "tool");
+    b->state = strcmp(st, "error") == 0 ? AGY_TOOL_ERROR
+             : strcmp(st, "running") == 0 ? AGY_TOOL_RUNNING : AGY_TOOL_DONE;
+    copy_text(b->text, sizeof(b->text), s_str);
+    b->rev = ++s_rev;
+    bump();
+}
+
+static void on_question(const char *js, size_t len)
+{
+    const char *end = js + len;
+    char qid[AGY_NAME_MAX] = "";
+    if (devos_json_get_str(js, len, "id", qid, sizeof(qid)) != 0) return;
+    memset(&s_q, 0, sizeof(s_q));
+    devos_json_get_str(js, len, "prompt", s_q.prompt, sizeof(s_q.prompt));
+    utf8_trim(s_q.prompt);
+    snprintf(s_q.id, sizeof(s_q.id), "%s", qid);
+    const char *v = devos_json_find_key(js, end, "choices");
+    if (v && v < end && *v == '[') {
+        const char *stop = devos_json_span(v, end);
+        const char *p = stop ? v + 1 : stop;
+        /* choices are plain strings */
+        while (p && p < stop && s_q.choice_count < 4) {
+            while (p < stop && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')) p++;
+            if (p >= stop || *p != '"') break;
+            char *out = s_q.choices[s_q.choice_count];
+            p = devos_json_parse_str(p, stop, out, sizeof(s_q.choices[0]));
+            if (!p) break;
+            utf8_trim(out);
+            s_q.choice_count++;
+        }
+    }
+    s_q.active = true;
     bump();
 }
 
@@ -259,94 +447,43 @@ static void on_message(const char *js, size_t len)
 {
     char type[32] = "";
     if (devos_json_get_str(js, len, "type", type, sizeof(type)) != 0) return;
-    const char *end = js + len;
 
-    if (strcmp(type, "WELCOME") == 0) {
+    if (strcmp(type, "TOKEN") == 0 || strcmp(type, "THINKING") == 0) {
+        s_str[0] = '\0';
+        if (devos_json_get_str(js, len, "text", s_str, sizeof(s_str)) == 0) {
+            utf8_trim(s_str);
+            append_text(AGY_ROLE_AGY, type[1] == 'O' ? AGY_KIND_TEXT : AGY_KIND_THINK, s_str);
+        }
+    } else if (strcmp(type, "USER") == 0) {
+        s_str[0] = '\0';
+        if (devos_json_get_str(js, len, "text", s_str, AGY_BLOCK_MAX) == 0 && s_str[0]) {
+            utf8_trim(s_str);
+            agy_block_t *b = new_block(AGY_ROLE_USER, AGY_KIND_TEXT);
+            copy_text(b->text, sizeof(b->text), s_str);
+            bump();
+        }
+    } else if (strcmp(type, "TOOL") == 0) {
+        on_tool(js, len);
+    } else if (strcmp(type, "RESET") == 0) {
+        clear_view();
+    } else if (strcmp(type, "WELCOME") == 0) {
         devos_json_get_str(js, len, "conversation_id", s_conv, sizeof(s_conv));
         devos_json_get_str(js, len, "model", s_model, sizeof(s_model));
-        const char *v = devos_json_find_key(js, end, "subagents");
-        if (v && v < end && *v == '[') {
-            const char *stop = devos_json_span(v, end);
-            if (stop) set_agents(v, (size_t)(stop - v));
-        }
+        devos_json_get_str(js, len, "workspace", s_workspace, sizeof(s_workspace));
+        set_agents(js, len, "subagents");
         set_status(AGY_UP, "Bridge live");
-        return;
-    }
-    if (strcmp(type, "THINKING") == 0) {
-        char t[1024] = "";
-        if (devos_json_get_str(js, len, "text", t, sizeof(t)) == 0) {
-            if (s_block_count > 0) {
-                agy_block_t *last = &s_blocks[s_block_count - 1];
-                if (last->role == AGY_ROLE_AGY &&
-                    last->kind == AGY_KIND_THINK) {
-                    size_t have = strlen(last->text);
-                    size_t room = sizeof(last->text) - have - 1;
-                    size_t add = strlen(t);
-                    if (add > room) add = room;
-                    if (have > 0 && room > 0) {
-                        last->text[have++] = '\n';
-                        room--;
-                        if (add > room) add = room;
-                    }
-                    memcpy(last->text + have, t, add);
-                    last->text[have + add] = '\0';
-                    bump();
-                    return;
-                }
-            }
-            push_block(AGY_ROLE_AGY, AGY_KIND_THINK, t);
-        }
-        return;
-    }
-    if (strcmp(type, "TOKEN") == 0) {
-        char t[1024] = "";
-        if (devos_json_get_str(js, len, "text", t, sizeof(t)) == 0) {
-            push_block(AGY_ROLE_AGY, AGY_KIND_TEXT, t);
-        }
-        return;
-    }
-    if (strcmp(type, "TOOL") == 0) {
-        char name[96] = "";
-        char detail[512] = "";
-        devos_json_get_str(js, len, "name", name, sizeof(name));
-        devos_json_get_str(js, len, "detail", detail, sizeof(detail));
-        char buf[768];
-        snprintf(buf, sizeof(buf), "%s%s%s", name[0] ? name : "tool",
-                 detail[0] ? "\n" : "", detail);
-        push_block(AGY_ROLE_AGY, AGY_KIND_TOOL, buf);
-        return;
-    }
-    if (strcmp(type, "DIFF") == 0) {
-        char file[128] = "";
-        char hunk[2048] = "";
-        devos_json_get_str(js, len, "file", file, sizeof(file));
-        devos_json_get_str(js, len, "hunk", hunk, sizeof(hunk));
-        char buf[2300];
-        snprintf(buf, sizeof(buf), "--- %s\n%s", file, hunk);
-        size_t have = strlen(s_diff);
-        size_t room = sizeof(s_diff) - have - 1;
-        size_t add = strlen(buf);
-        if (add > room) add = room;
-        if (have > 0 && room > 0) {
-            s_diff[have++] = '\n';
-            room--;
-            if (add > room) add = room;
-        }
-        memcpy(s_diff + have, buf, add);
-        s_diff[have + add] = '\0';
         bump();
-        return;
-    }
-    if (strcmp(type, "ARTIFACT") == 0) {
-        char name[AGY_NAME_MAX] = "";
-        char kind[AGY_STATE_MAX] = "";
-        char text[AGY_ARTIFACT_MAX] = "";
-        if (devos_json_get_str(js, len, "name", name, sizeof(name)) != 0) {
-            return;
+    } else if (strcmp(type, "DIFF") == 0) {
+        char file[AGY_PATH_MAX] = "";
+        devos_json_get_str(js, len, "file", file, sizeof(file));
+        s_str[0] = '\0';
+        if (devos_json_get_str(js, len, "hunk", s_str, sizeof(s_str)) == 0 && s_str[0]) {
+            diff_append(file, s_str);
         }
-        devos_json_get_str(js, len, "kind", kind, sizeof(kind));
-        devos_json_get_str(js, len, "text", text, sizeof(text));
-        /* ponytail: same-name artifact replaces (latest wins) */
+    } else if (strcmp(type, "ARTIFACT") == 0) {
+        char name[AGY_NAME_MAX] = "";
+        if (devos_json_get_str(js, len, "name", name, sizeof(name)) != 0) return;
+        /* same-name artifact replaces (latest wins) */
         int slot = -1;
         for (int i = 0; i < s_artifact_count; i++) {
             if (strcmp(s_artifacts[i].name, name) == 0) {
@@ -362,88 +499,83 @@ static void on_message(const char *js, size_t len)
             }
             slot = s_artifact_count++;
         }
-        snprintf(s_artifacts[slot].name, sizeof(s_artifacts[slot].name), "%s", name);
-        snprintf(s_artifacts[slot].kind, sizeof(s_artifacts[slot].kind), "%s", kind);
-        snprintf(s_artifacts[slot].text, sizeof(s_artifacts[slot].text), "%s", text);
+        agy_artifact_t *a = &s_artifacts[slot];
+        snprintf(a->name, sizeof(a->name), "%s", name);
+        a->kind[0] = '\0';
+        devos_json_get_str(js, len, "kind", a->kind, sizeof(a->kind));
+        a->text[0] = '\0';
+        devos_json_get_str(js, len, "text", a->text, sizeof(a->text));
+        utf8_trim(a->text);
         bump();
-        return;
-    }
-    if (strcmp(type, "PERMISSION") == 0) {
+    } else if (strcmp(type, "PERMISSION") == 0) {
         char pid[AGY_NAME_MAX] = "";
-        char text[512] = "";
         if (devos_json_get_str(js, len, "id", pid, sizeof(pid)) != 0) return;
-        devos_json_get_str(js, len, "text", text, sizeof(text));
-        s_perm.active = true;
+        s_perm.text[0] = '\0';
+        devos_json_get_str(js, len, "text", s_perm.text, sizeof(s_perm.text));
+        utf8_trim(s_perm.text);
         snprintf(s_perm.id, sizeof(s_perm.id), "%s", pid);
-        snprintf(s_perm.text, sizeof(s_perm.text), "%s", text[0] ? text : pid);
+        s_perm_preview[0] = '\0';
+        devos_json_get_str(js, len, "preview", s_perm_preview, sizeof(s_perm_preview));
+        utf8_trim(s_perm_preview);
+        if (!s_perm.text[0]) snprintf(s_perm.text, sizeof(s_perm.text), "%s", pid);
+        s_perm.active = true;
         bump();
-        return;
-    }
-    if (strcmp(type, "QUESTION") == 0) {
-        char qid[AGY_NAME_MAX] = "";
-        char prompt[512] = "";
-        if (devos_json_get_str(js, len, "id", qid, sizeof(qid)) != 0) return;
-        devos_json_get_str(js, len, "prompt", prompt, sizeof(prompt));
-        s_q.active = true;
-        snprintf(s_q.id, sizeof(s_q.id), "%s", qid);
-        snprintf(s_q.prompt, sizeof(s_q.prompt), "%s", prompt[0] ? prompt : qid);
-        s_q.choice_count = 0;
-        const char *v = devos_json_find_key(js, end, "choices");
-        if (v && v < end && *v == '[') {
-            const char *stop = devos_json_span(v, end);
-            if (stop) {
-                /* ponytail: choices are plain strings; walk manually */
-                const char *p = v + 1;
-                while (p < stop && s_q.choice_count < 4) {
-                    while (p < stop &&
-                           (*p == ' ' || *p == '\t' || *p == '\n' ||
-                            *p == '\r' || *p == ',')) {
-                        p++;
-                    }
-                    if (p >= stop || *p != '"') break;
-                    char tmp[128];
-                    const char *np =
-                        devos_json_parse_str(p, stop, tmp, sizeof(tmp));
-                    if (!np) break;
-                    snprintf(s_q.choices[s_q.choice_count], sizeof(s_q.choices[0]), "%s", tmp);
-                    s_q.choice_count++;
-                    p = np;
-                }
-            }
-        }
+    } else if (strcmp(type, "QUESTION") == 0) {
+        on_question(js, len);
+    } else if (strcmp(type, "RESOLVED") == 0) {
+        /* answered elsewhere, timed out or the turn was stopped */
+        char rid[AGY_NAME_MAX] = "";
+        devos_json_get_str(js, len, "id", rid, sizeof(rid));
+        if (s_perm.active && strcmp(s_perm.id, rid) == 0) s_perm.active = false;
+        if (s_q.active && strcmp(s_q.id, rid) == 0) s_q.active = false;
         bump();
-        return;
-    }
-    if (strcmp(type, "SUBAGENTS") == 0) {
-        const char *v = devos_json_find_key(js, end, "agents");
-        if (v && v < end && *v == '[') {
-            const char *stop = devos_json_span(v, end);
-            if (stop) set_agents(v, (size_t)(stop - v));
-        }
-        return;
-    }
-    if (strcmp(type, "STATUS") == 0) {
+    } else if (strcmp(type, "SUBAGENTS") == 0) {
+        set_agents(js, len, "agents");
+    } else if (strcmp(type, "STATUS") == 0) {
         char st[24] = "";
         if (devos_json_get_str(js, len, "state", st, sizeof(st)) == 0) {
             bool busy = strcmp(st, "busy") == 0;
-            if (s_busy != busy) {
-                s_busy = busy;
-                bump();
+            if (!busy) {
+                /* the turn is over: nothing is still running */
+                for (int i = 0; i < s_block_count; i++) {
+                    if (s_blocks[i].kind == AGY_KIND_TOOL && s_blocks[i].state == AGY_TOOL_RUNNING) {
+                        s_blocks[i].state = AGY_TOOL_DONE;
+                        s_blocks[i].rev = ++s_rev;
+                    }
+                }
             }
+            s_busy = busy;
+            bump();
         }
-        return;
-    }
-    if (strcmp(type, "ERROR") == 0) {
-        char m[256] = "";
-        if (devos_json_get_str(js, len, "message", m, sizeof(m)) == 0 && m[0]) {
-            push_block(AGY_ROLE_AGY, AGY_KIND_TEXT, m);
+    } else if (strcmp(type, "USAGE") == 0) {
+        devos_json_get_int(js, len, "input", &s_usage[0]);
+        devos_json_get_int(js, len, "output", &s_usage[1]);
+        devos_json_get_int(js, len, "total", &s_usage[2]);
+        bump();
+    } else if (strcmp(type, "ERROR") == 0) {
+        char m[300] = "";
+        if (devos_json_get_str(js, len, "message", m, sizeof(m)) != 0 || !m[0]) return;
+        utf8_trim(m);
+        if (strstr(m, "Wrong bridge token")) {
+            /* the bridge hangs up next; don't hammer it with the same token */
+            s_want = false;
+            link_down("Wrong bridge token: tap the session card to fix it");
+            return;
         }
-        return;
+        agy_block_t *b = new_block(AGY_ROLE_AGY, AGY_KIND_ERROR);
+        snprintf(b->text, sizeof(b->text), "%s", m);
+        bump();
     }
     /* PONG and unknown types: ignored */
 }
 
 /* ------------------------------------------------------------ link poll */
+static void rx_reset(void)
+{
+    memset(&rx, 0, sizeof(rx));
+    rx.msg_op = -1;
+}
+
 static void link_down(const char *text)
 {
     if (s_fd >= 0) {
@@ -452,12 +584,14 @@ static void link_down(const char *text)
     }
     s_sent_upgrade = false;
     s_handshook = false;
-    s_rx_len = 0;
-    s_frag_len = 0;
-    s_frag_op = -1;
-    /* ponytail: a dead link ends the turn too (no orphan busy badge) */
+    s_hdr_len = 0;
+    rx_reset();
+    /* a dead link ends the turn; pending asks are re-sent on reconnect */
     s_busy = false;
+    s_perm.active = false;
+    s_q.active = false;
     set_status(AGY_DOWN, text ? text : "Offline");
+    bump();
 }
 
 static int send_hello(void)
@@ -466,111 +600,103 @@ static int send_hello(void)
     devos_json_escape(s_cfg.token, esc, sizeof(esc));
     char body[512];
     snprintf(body, sizeof(body),
-             "{\"type\":\"HELLO\",\"token\":\"%s\",\"client\":\"devos/0.1\"}",
-             esc);
-    return ws_send_json(body, strlen(body));
+             "{\"type\":\"HELLO\",\"token\":\"%s\",\"client\":\"devos/0.2\"}", esc);
+    return ws_send_json(body);
 }
 
-/* handle one complete server frame payload */
-static void on_frame(int opcode, const uint8_t *pl, size_t len)
+static void frame_done(void)
 {
-    if (opcode == 0x9) { /* PING -> empty masked PONG */
-        if (s_fd >= 0) {
-            uint8_t mask[4] = {(uint8_t)rand(), (uint8_t)rand(),
-                               (uint8_t)rand(), (uint8_t)rand()};
-            uint8_t hdr[6];
-            hdr[0] = 0x8A; /* FIN + pong */
-            hdr[1] = 0x80; /* masked, len 0 */
-            memcpy(hdr + 2, mask, 4);
-            if (devos_net_socket_send_all(s_fd, hdr, sizeof(hdr)) != 0) {
-                link_down("Link lost");
-            }
+    rx.in_payload = false;
+    rx.hdr_len = 0;
+    if (rx.op >= 0x8) {
+        if (rx.op == 0x9) {         /* PING: PONG with the same payload */
+            if (ws_send_frame(0xA, rx.ctrl, rx.ctrl_len) != 0) link_down("Link lost");
+        } else if (rx.op == 0x8) {  /* CLOSE: echo the status code, then hang up */
+            ws_send_frame(0x8, rx.ctrl, rx.ctrl_len >= 2 ? 2 : 0);
+            link_down("Bridge closed the link");
         }
         return;
     }
-    if (opcode == 0xA) return; /* PONG */
-    if (opcode == 0x8) {       /* CLOSE */
-        link_down("Bridge closed");
-        return;
+    if (!rx.fin || rx.msg_op < 0) return;
+    if (!rx.msg_skip && rx.msg_op == 0x1) {
+        s_msg[rx.msg_len] = '\0';
+        on_message(s_msg, rx.msg_len);
     }
-    if (opcode != 0x0 && opcode != 0x1 && opcode != 0x2) return;
-    /* ponytail: accumulate continuations (opcode 0) into one message */
-    if (opcode != 0x0) {
-        s_frag_len = 0;
-        s_frag_op = opcode;
-    }
-    if (s_frag_op != 0x1 && s_frag_op != 0x2) {
-        s_frag_len = 0;
-        s_frag_op = -1;
-        return;
-    }
-    size_t room = sizeof(s_frag) - s_frag_len - 1;
-    size_t take = len > room ? room : len;
-    memcpy(s_frag + s_frag_len, pl, take);
-    s_frag_len += take;
-    /* caller (frame_pump) completes FIN-terminated messages only.
-     * (Single-frame messages dominate; see frame pump below.) */
+    rx.msg_op = -1;
+    rx.msg_len = 0;
+    rx.msg_skip = false;
 }
 
-static void frame_pump(void)
+static void frame_start(void)
 {
-    /* parse complete frames from s_rx; leaves partial tail buffered */
-    size_t pos = 0;
-    while (pos + 2 <= s_rx_len) {
-        const uint8_t *h = (const uint8_t *)s_rx + pos;
-        bool fin = (h[0] & 0x80) != 0;
-        int op = h[0] & 0x0F;
-        bool masked = (h[1] & 0x80) != 0;
-        uint64_t plen = h[1] & 0x7F;
-        size_t hlen = 2;
-        if (plen == 126) {
-            if (pos + 4 > s_rx_len) break;
-            plen = ((uint64_t)(uint8_t)s_rx[pos + 2] << 8) |
-                   (uint64_t)(uint8_t)s_rx[pos + 3];
-            hlen = 4;
-        } else if (plen == 127) {
-            if (pos + 10 > s_rx_len) break;
-            plen = 0;
-            for (int i = 0; i < 8; i++) {
-                plen = (plen << 8) | (uint64_t)(uint8_t)s_rx[pos + 2 + i];
-            }
-            hlen = 10;
-            if (plen > WS_RX_MAX) {
-                link_down("Oversize frame");
-                return;
-            }
-        }
-        uint8_t mask[4] = {0, 0, 0, 0};
-        if (masked) {
-            if (pos + hlen + 4 > s_rx_len) break;
-            memcpy(mask, s_rx + pos + hlen, 4);
-            hlen += 4;
-        }
-        if (pos + hlen + plen > s_rx_len) break; /* incomplete payload */
-        /* unmask in place (server frames are normally unmasked) */
-        if (masked) {
-            for (uint64_t i = 0; i < plen; i++) {
-                s_rx[pos + hlen + i] ^= mask[i & 3];
-            }
-        }
-        on_frame(op, (const uint8_t *)s_rx + pos + hlen, (size_t)plen);
-        if (s_fd < 0) {
-            /* on_frame dropped the link; discard everything */
-            s_rx_len = 0;
+    const uint8_t *h = rx.hdr;
+    rx.fin = (h[0] & 0x80) != 0;
+    rx.op = h[0] & 0x0F;
+    rx.masked = (h[1] & 0x80) != 0;
+    uint64_t plen = h[1] & 0x7F;
+    int o = 2;
+    if (plen == 126) {
+        plen = ((uint64_t)h[2] << 8) | h[3];
+        o = 4;
+    } else if (plen == 127) {
+        plen = 0;
+        for (int i = 0; i < 8; i++) plen = (plen << 8) | h[2 + i];
+        o = 10;
+    }
+    if (rx.masked) memcpy(rx.mask, h + o, 4);
+    rx.remain = plen;
+    rx.pos = 0;
+    rx.ctrl_len = 0;
+    if (rx.op >= 0x8) {
+        if (plen > sizeof(rx.ctrl) || !rx.fin) {
+            link_down("Bridge protocol error");
             return;
         }
-        if (fin && (op == 0x1 || op == 0x2 ||
-                    (op == 0x0 && s_frag_op != -1))) {
-            s_frag[s_frag_len] = '\0';
-            on_message(s_frag, s_frag_len);
-            s_frag_len = 0;
-            s_frag_op = -1;
-        }
-        pos += hlen + (size_t)plen;
+    } else if (rx.op == 0x1 || rx.op == 0x2) {
+        rx.msg_op = rx.op;
+        rx.msg_len = 0;
+        rx.msg_skip = false;
+    } else if (rx.op != 0x0) {
+        link_down("Bridge protocol error");
+        return;
     }
-    if (pos > 0) {
-        memmove(s_rx, s_rx + pos, s_rx_len - pos);
-        s_rx_len -= pos;
+    if (rx.op < 0x8 && rx.msg_op >= 0 && rx.msg_len + plen > AGY_MSG_MAX) rx.msg_skip = true;
+    rx.in_payload = true;
+    if (plen == 0) frame_done();
+}
+
+static void rx_feed(const uint8_t *d, size_t n)
+{
+    while (n > 0 && s_fd >= 0) {
+        if (!rx.in_payload) {
+            rx.hdr[rx.hdr_len++] = *d++;
+            n--;
+            if (rx.hdr_len == 2) {
+                int l7 = rx.hdr[1] & 0x7F;
+                rx.hdr_need = 2 + (l7 == 126 ? 2 : l7 == 127 ? 8 : 0) + ((rx.hdr[1] & 0x80) ? 4 : 0);
+            }
+            if (rx.hdr_len >= 2 && rx.hdr_len == rx.hdr_need) frame_start();
+            continue;
+        }
+        size_t take = rx.remain < n ? (size_t)rx.remain : n;
+        uint8_t *dst = NULL;
+        if (rx.op >= 0x8) {
+            dst = rx.ctrl + rx.ctrl_len;
+            rx.ctrl_len += take;
+        } else if (rx.msg_op >= 0 && !rx.msg_skip) {
+            dst = (uint8_t *)s_msg + rx.msg_len;
+            rx.msg_len += take;
+        }
+        if (dst) {
+            for (size_t i = 0; i < take; i++) {
+                dst[i] = rx.masked ? (uint8_t)(d[i] ^ rx.mask[(rx.pos + i) & 3]) : d[i];
+            }
+        }
+        rx.pos += take;
+        rx.remain -= take;
+        d += take;
+        n -= take;
+        if (rx.remain == 0) frame_done();
     }
 }
 
@@ -579,18 +705,17 @@ void agy_client_init(void)
     config_load();
 #ifndef ESP_PLATFORM
     srand((unsigned)time(NULL));
-#else
-    /* ponytail: key/mask material isn't secret; seed anyway, not fixed */
-    srand(0x9E3779B9u);
 #endif
+    rx_reset();
     s_want = true;
+    s_retry = WS_RETRY_TICKS;
     set_status(AGY_DOWN, "Offline");
 }
 
 void agy_client_poll(void)
 {
     if (!s_want) {
-        if (s_fd >= 0) link_down("Offline");
+        if (s_fd >= 0) link_down(NULL);
         return;
     }
 
@@ -600,118 +725,104 @@ void agy_client_poll(void)
         s_fd = devos_net_socket_connect_start(s_cfg.host, s_cfg.port);
         s_ticks = 0;
         s_hdr_len = 0;
+        char t[128];
         if (s_fd < 0) {
-            char t[128];
-            snprintf(t, sizeof(t), "No route to %s:%d", s_cfg.host,
-                     s_cfg.port);
+            snprintf(t, sizeof(t), "No route to %s:%d", s_cfg.host, s_cfg.port);
             set_status(AGY_CONNECTING, t);
             return;
         }
-        char t[128];
         snprintf(t, sizeof(t), "Connecting %s:%d...", s_cfg.host, s_cfg.port);
         set_status(AGY_CONNECTING, t);
         return;
     }
 
-    if (s_status == AGY_CONNECTING && !s_handshook) {
-        if (!s_sent_upgrade) {
-            int r = devos_net_socket_connect_wait(s_fd, 0);
-            if (r > 0) {
-                if (++s_ticks > WS_TIMEOUT_TICKS) link_down("Connect timeout");
-                return;
-            }
-            if (r < 0) {
-                char t[128];
-                snprintf(t, sizeof(t), "Refused by %s:%d", s_cfg.host, s_cfg.port);
-                link_down(t);
-                return;
-            }
-            /* TCP up: send the WS upgrade */
-            uint8_t key_raw[16];
-            for (int i = 0; i < 16; i++) key_raw[i] = (uint8_t)rand();
-            char key[32];
-            b64_encode(key_raw, sizeof(key_raw), key);
-            char req[512];
-            int hlen = snprintf(req, sizeof(req),
-                                "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
-                                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                                "Sec-WebSocket-Key: %s\r\n"
-                                "Sec-WebSocket-Version: 13\r\n\r\n",
-                                s_cfg.host, s_cfg.port, key);
-            if (hlen <= 0 ||
-                devos_net_socket_send_all(s_fd, req, (size_t)hlen) != 0) {
-                link_down("Upgrade failed");
-                return;
-            }
-            s_sent_upgrade = true;
-            s_ticks = 0;
+    if (!s_handshook && !s_sent_upgrade) {
+        int r = devos_net_socket_connect_wait(s_fd, 0);
+        if (r > 0) {
+            if (++s_ticks > WS_TIMEOUT_TICKS) link_down("Connect timeout");
+            return;
         }
-        /* fall through to header accumulation */
+        if (r < 0) {
+            char t[128];
+            snprintf(t, sizeof(t), "Refused by %s:%d (is the bridge running?)", s_cfg.host, s_cfg.port);
+            link_down(t);
+            return;
+        }
+        /* TCP up: send the WS upgrade */
+        uint8_t key_raw[16];
+        for (int i = 0; i < 16; i++) key_raw[i] = rnd8();
+        char key[32];
+        b64_encode(key_raw, sizeof(key_raw), key);
+        char req[512];
+        int hlen = snprintf(req, sizeof(req),
+                            "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
+                            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                            "Sec-WebSocket-Key: %s\r\n"
+                            "Sec-WebSocket-Version: 13\r\n\r\n",
+                            s_cfg.host, s_cfg.port, key);
+        if (hlen <= 0 || devos_net_socket_send_all(s_fd, req, (size_t)hlen) != 0) {
+            link_down("Upgrade failed");
+            return;
+        }
+        s_sent_upgrade = true;
+        s_ticks = 0;
     }
 
-    /* bounded read; headers first, then frames */
-    char chunk[1024];
-    for (int it = 0; it < 4; it++) {
-        int n = devos_net_socket_recv(s_fd, chunk, sizeof(chunk) - 1, 1);
-        if (n <= 0) {
-            if (n == 0) link_down("Bridge closed");
+    static uint8_t chunk[RX_CHUNK];
+    bool got = false;
+    for (int it = 0; it < RX_CHUNKS_PER_POLL && s_fd >= 0; it++) {
+        int n = devos_net_socket_recv(s_fd, chunk, sizeof(chunk), 1);
+        if (n == 0) {
+            link_down("Bridge closed the link");
+            return;
+        }
+        if (n < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                link_down("Link lost");
+                return;
+            }
             break;
         }
-        if (!s_handshook) {
-            if (s_hdr_len + (size_t)n >= sizeof(s_hdr)) {
-                link_down("Bad headers");
-                return;
-            }
-            memcpy(s_hdr + s_hdr_len, chunk, (size_t)n);
-            s_hdr_len += (size_t)n;
-            s_hdr[s_hdr_len] = '\0';
-            char *eoh = strstr(s_hdr, "\r\n\r\n");
-            if (!eoh) continue;
-            int code = 0;
-            if (sscanf(s_hdr, "HTTP/%*d.%*d %d", &code) != 1 &&
-                sscanf(s_hdr, "HTTP/%*d %d", &code) != 1) {
-                code = 0;
-            }
-            if (code != 101) {
-                char t[64];
-                snprintf(t, sizeof(t), "Bridge HTTP %d", code);
-                link_down(t);
-                return;
-            }
-            s_handshook = true;
-            set_status(AGY_UP, "Bridge live");
-            send_hello();
-            size_t hused = (size_t)(eoh - s_hdr) + 4;
-            if (s_hdr_len > hused) {
-                size_t extra = s_hdr_len - hused;
-                if (extra > sizeof(s_rx) - s_rx_len - 1) {
-                    extra = sizeof(s_rx) - s_rx_len - 1;
-                }
-                memcpy(s_rx + s_rx_len, s_hdr + hused, extra);
-                s_rx_len += extra;
-            }
-        } else {
-            if (s_rx_len + (size_t)n >= sizeof(s_rx)) {
-                /* ponytail: drop oldest half rather than stall on floods */
-                size_t drop = s_rx_len / 2;
-                memmove(s_rx, s_rx + drop, s_rx_len - drop);
-                s_rx_len -= drop;
-            }
-            size_t take = (size_t)n;
-            if (s_rx_len + take >= sizeof(s_rx)) {
-                take = sizeof(s_rx) - s_rx_len - 1;
-            }
-            memcpy(s_rx + s_rx_len, chunk, take);
-            s_rx_len += take;
+        got = true;
+        if (s_handshook) {
+            rx_feed(chunk, (size_t)n);
+            continue;
         }
+        if (s_hdr_len + (size_t)n >= sizeof(s_hdr)) {
+            link_down("Bad reply from the bridge");
+            return;
+        }
+        memcpy(s_hdr + s_hdr_len, chunk, (size_t)n);
+        s_hdr_len += (size_t)n;
+        s_hdr[s_hdr_len] = '\0';
+        char *eoh = strstr(s_hdr, "\r\n\r\n");
+        if (!eoh) continue;
+        int code = 0;
+        if (sscanf(s_hdr, "HTTP/%*d.%*d %d", &code) != 1 && sscanf(s_hdr, "HTTP/%*d %d", &code) != 1) code = 0;
+        if (code != 101) {
+            char t[80];
+            snprintf(t, sizeof(t), "Not a devOS bridge (HTTP %d)", code);
+            link_down(t);
+            return;
+        }
+        s_handshook = true;
+        rx_reset();
+        set_status(AGY_UP, "Signing in...");
+        if (send_hello() != 0) return;
+        size_t hused = (size_t)(eoh - s_hdr) + 4;
+        if (s_hdr_len > hused) rx_feed((const uint8_t *)s_hdr + hused, s_hdr_len - hused);
     }
     if (s_fd < 0) return;
     if (!s_handshook) {
-        /* ponytail: bound slowloris-style header dribbles */
-        if (++s_ticks > WS_TIMEOUT_TICKS + 50) link_down("Header timeout");
+        if (++s_ticks > WS_TIMEOUT_TICKS + 50) link_down("No reply from the bridge");
         return;
     }
-    frame_pump();
+    if (got) {
+        s_idle = 0;
+    } else if (++s_idle > WS_IDLE_TICKS) {
+        s_idle = 0;
+        link_down("Link timed out; reconnecting");
+    }
 }
 
 int agy_client_reconnect(void)
@@ -731,96 +842,88 @@ uint32_t agy_client_generation(void) { return s_gen; }
 void agy_client_get_config(char *host, size_t host_len, int *port,
                            char *token, size_t token_len)
 {
-    if (host && host_len) {
-        snprintf(host, host_len, "%s", s_cfg.host);
-        host[host_len - 1] = '\0';
-    }
+    if (host && host_len) snprintf(host, host_len, "%s", s_cfg.host);
     if (port) *port = s_cfg.port;
-    if (token && token_len) {
-        snprintf(token, token_len, "%s", s_cfg.token);
-        token[token_len - 1] = '\0';
-    }
+    if (token && token_len) snprintf(token, token_len, "%s", s_cfg.token);
 }
 
 int agy_client_set_server(const char *host, int port)
 {
     if (!host || !*host || port <= 0 || port > 65535) return -1;
     snprintf(s_cfg.host, sizeof(s_cfg.host), "%s", host);
-    s_cfg.host[sizeof(s_cfg.host) - 1] = '\0';
     s_cfg.port = port;
     config_save();
-    link_down("Reconnecting...");
-    s_retry = WS_RETRY_TICKS;
-    bump();
-    return 0;
+    return agy_client_reconnect();
 }
 
 int agy_client_set_token(const char *token)
 {
     if (!token) return -1;
     snprintf(s_cfg.token, sizeof(s_cfg.token), "%s", token);
-    s_cfg.token[sizeof(s_cfg.token) - 1] = '\0';
     config_save();
-    link_down("Reconnecting...");
-    s_retry = WS_RETRY_TICKS;
-    bump();
-    return 0;
-}
-
-static int send_prompt_obj(const char *text, const char *command)
-{
-    if (s_status != AGY_UP) return -1;
-    static EXT_RAM_BSS_ATTR char body[WS_TX_MAX];
-    char esc[WS_TX_MAX - 128];
-    devos_json_escape(text ? text : "", esc, sizeof(esc));
-    /* ponytail: command fragment carries its own leading comma */
-    char cmdfrag[64] = "";
-    if (command && *command) {
-        char cesc[48];
-        devos_json_escape(command, cesc, sizeof(cesc));
-        snprintf(cmdfrag, sizeof(cmdfrag), ",\"command\":\"%s\"", cesc);
-    }
-    snprintf(body, sizeof(body), "{\"type\":\"PROMPT\",\"text\":\"%s\"%s}",
-             esc, cmdfrag);
-    return ws_send_json(body, strlen(body));
+    return agy_client_reconnect();
 }
 
 int agy_client_send(const char *text, const char *command)
 {
     if (!text || !*text) return -1;
-    char clipped[AGY_BLOCK_MAX];
-    snprintf(clipped, sizeof(clipped), "%s", text);
-    clipped[sizeof(clipped) - 1] = '\0';
-    push_block(AGY_ROLE_USER, AGY_KIND_TEXT, clipped);
-    if (send_prompt_obj(text, command) != 0) {
-        push_block(AGY_ROLE_AGY, AGY_KIND_TEXT,
-                   "(send failed - bridge unreachable)");
+    if (s_status != AGY_UP || !s_handshook) {
+        agy_block_t *b = new_block(AGY_ROLE_AGY, AGY_KIND_ERROR);
+        snprintf(b->text, sizeof(b->text), "Not sent: the bridge is not connected (%s).", s_status_text);
+        bump();
         return -1;
     }
-    s_busy = true;
+    static EXT_RAM_BSS_ATTR char clipped[AGY_PROMPT_MAX];
+    static EXT_RAM_BSS_ATTR char esc[AGY_PROMPT_MAX * 2];
+    static EXT_RAM_BSS_ATTR char body[WS_TX_MAX];
+    copy_text(clipped, sizeof(clipped), text);
+    devos_json_escape(clipped, esc, sizeof(esc));
+    char cmdfrag[64] = "";
+    if (command && *command) {
+        char cesc[40];
+        devos_json_escape(command, cesc, sizeof(cesc));
+        snprintf(cmdfrag, sizeof(cmdfrag), ",\"command\":\"%s\"", cesc);
+    }
+    snprintf(body, sizeof(body), "{\"type\":\"PROMPT\",\"text\":\"%s\"%s}", esc, cmdfrag);
+    /* the user's words show at once (the bridge doesn't echo them) */
+    agy_block_t *b = new_block(AGY_ROLE_USER, AGY_KIND_TEXT);
+    size_t n = 0;
+    if (command && *command) n = (size_t)snprintf(b->text, sizeof(b->text), "%.40s ", command);
+    copy_text(b->text + n, sizeof(b->text) - n, clipped);
     bump();
+    if (ws_send_json(body) != 0) return -1;
+    s_busy = true;
     return 0;
 }
 
 int agy_client_new(void)
 {
-    s_block_count = 0;
-    s_artifact_count = 0;
-    s_diff[0] = '\0';
     s_conv[0] = '\0';
-    s_model[0] = '\0';
-    s_perm.active = false;
-    s_q.active = false;
-    s_busy = false;
-    bump();
+    clear_view();
+    if (s_status == AGY_UP && s_handshook) return ws_send_json("{\"type\":\"NEW\"}");
     return 0;
+}
+
+int agy_client_abort(void)
+{
+    if (s_status != AGY_UP || !s_handshook) return -1;
+    return ws_send_json("{\"type\":\"ABORT\"}");
 }
 
 const char *agy_client_conversation_id(void) { return s_conv; }
 
 const char *agy_client_model(void) { return s_model; }
 
+const char *agy_client_workspace(void) { return s_workspace; }
+
 bool agy_client_busy(void) { return s_busy; }
+
+void agy_client_usage(int *input, int *output, int *total)
+{
+    if (input) *input = s_usage[0];
+    if (output) *output = s_usage[1];
+    if (total) *total = s_usage[2];
+}
 
 int agy_client_agent_count(void) { return s_agent_count; }
 
@@ -848,6 +951,30 @@ const agy_block_t *agy_client_block(int idx)
 
 const char *agy_client_diff_text(void) { return s_diff; }
 
+uint32_t agy_client_diff_rev(void) { return s_diff_rev; }
+
+int agy_client_diff_file_count(void)
+{
+    /* distinct "+++ " targets */
+    const char *seen[64];
+    size_t seen_len[64];
+    int n = 0;
+    for (const char *p = s_diff; p && *p;) {
+        const char *nl = strchr(p, '\n');
+        size_t l = nl ? (size_t)(nl - p) : strlen(p);
+        if (l > 4 && strncmp(p, "+++ ", 4) == 0) {
+            bool dup = false;
+            for (int i = 0; i < n && !dup; i++) dup = seen_len[i] == l && memcmp(seen[i], p, l) == 0;
+            if (!dup && n < 64) {
+                seen[n] = p;
+                seen_len[n++] = l;
+            }
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    return n;
+}
+
 bool agy_client_permission_pending(agy_permission_t *out)
 {
     if (!s_perm.active) return false;
@@ -855,19 +982,18 @@ bool agy_client_permission_pending(agy_permission_t *out)
     return true;
 }
 
+const char *agy_client_permission_preview(void) { return s_perm.active ? s_perm_preview : ""; }
+
 int agy_client_answer_permission(bool allow, bool always)
 {
     if (!s_perm.active) return -1;
     char body[256];
     snprintf(body, sizeof(body),
-             "{\"type\":\"PERMISSION_REPLY\",\"id\":\"%s\","
-             "\"allow\":%s,\"always\":%s}",
-             s_perm.id, allow ? "true" : "false",
-             always ? "true" : "false");
-    int rc = ws_send_json(body, strlen(body));
+             "{\"type\":\"PERMISSION_REPLY\",\"id\":\"%s\",\"allow\":%s,\"always\":%s}",
+             s_perm.id, allow ? "true" : "false", always ? "true" : "false");
     s_perm.active = false;
     bump();
-    return rc;
+    return ws_send_json(body);
 }
 
 bool agy_client_question_pending(agy_question_t *out)
@@ -880,14 +1006,24 @@ bool agy_client_question_pending(agy_question_t *out)
 int agy_client_answer_question(int choice)
 {
     if (!s_q.active) return -1;
-    if (choice < 0) choice = 0;
-    if (choice > 3) choice = 3;
+    if (choice >= s_q.choice_count) choice = s_q.choice_count - 1;
+    if (choice < -1) choice = -1;
     char body[256];
-    snprintf(body, sizeof(body),
-             "{\"type\":\"QUESTION_REPLY\",\"id\":\"%s\",\"choice\":%d}",
-             s_q.id, choice);
-    int rc = ws_send_json(body, strlen(body));
+    snprintf(body, sizeof(body), "{\"type\":\"QUESTION_REPLY\",\"id\":\"%s\",\"choice\":%d}", s_q.id, choice);
     s_q.active = false;
     bump();
-    return rc;
+    return ws_send_json(body);
+}
+
+int agy_client_answer_question_text(const char *text)
+{
+    if (!s_q.active || !text || !*text) return -1;
+    char esc[600];
+    devos_json_escape(text, esc, sizeof(esc));
+    char body[760];
+    snprintf(body, sizeof(body), "{\"type\":\"QUESTION_REPLY\",\"id\":\"%s\",\"choice\":-1,\"text\":\"%s\"}", s_q.id,
+             esc);
+    s_q.active = false;
+    bump();
+    return ws_send_json(body);
 }
