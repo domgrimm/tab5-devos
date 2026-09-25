@@ -15,6 +15,13 @@ edits, browsing, MCP calls...) waits for Allow / Deny on the Tab5, and is
 denied if the bridge is unreachable. Outside bridge sessions the hook is a
 no-op, so your normal `agy` use is unaffected.
 
+Conversations are shared with antigravity.google.com: the Tab5 lists the
+same history `agy remote-control start` shows there (read from agy's local
+store, see agy_store.py), can open any of them, and continues it in that
+conversation's own folder. Sessions run with --remote-control, so what the
+Tab5 does is live on the website too, and a conversation moved on from the
+website refreshes on the Tab5. Prompts are shared with agy's up-arrow history.
+
 Run (from your project folder, which agy should already trust):
     python3 tools/agy_bridge/bridge_server.py --psk <secret>
     python3 tools/agy_bridge/bridge_server.py --workspace ~/dev/app --resume
@@ -24,6 +31,7 @@ Protocol: JSON objects with a "type" field, one per WebSocket message.
   Tab5 -> bridge:
     HELLO {token, client}          PROMPT {text, command}
     PERMISSION_REPLY {id, allow, always}
+    LIST (resend CONVERSATIONS)    OPEN {id} (switch to that conversation)
     QUESTION_REPLY {id, choice (-1 = skip), text (optional typed answer)}
     NEW                            ABORT                  PING
   Bridge -> Tab5:
@@ -38,6 +46,8 @@ Protocol: JSON objects with a "type" field, one per WebSocket message.
     RESOLVED {id} (that permission/question is settled: close its dialog)
     SUBAGENTS {agents}             STATUS {state: busy|idle}
     USAGE {input, output, total}   ERROR {message}        PONG
+    CONVERSATIONS {instance, items:[{id, title, ws, age, steps, busy}]} (newest first)
+    PROMPTS {items:[...]} (recent prompts, oldest first: the up-arrow history)
 """
 
 import argparse
@@ -59,6 +69,8 @@ except ImportError:  # pragma: no cover
     sys.exit("The bridge needs the `websockets` package: pip install websockets")
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import agy_store  # noqa: E402  (next to this file)
 HOOKS_FILE = Path.home() / ".gemini" / "config" / "hooks.json"
 HOOK_NAME = "devos-tab5-bridge"
 BRAIN_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
@@ -245,7 +257,8 @@ def default_model():
 class Bridge:
     def __init__(self, args):
         self.args = args
-        self.workspace = str(Path(args.workspace).expanduser().resolve())
+        self.default_workspace = str(Path(args.workspace).expanduser().resolve())
+        self.workspace = self.default_workspace
         self.model = args.model or default_model()
         self.clients = set()                    # authenticated websockets
         self.history = []                       # replayed to late joiners
@@ -261,6 +274,10 @@ class Bridge:
         self.snapshots = {}                     # step index -> (file, content before the edit)
         self.sock_path = ""
         self.stopping = False
+        self.known_steps = {}                   # conversation id -> step count last shown
+        self.own_turn_until = 0.0               # store updates until then are our own turn
+        self.list_stamp = 0.0
+        self.instance = ""                      # remote-control instance name
 
     # ---- fan-out ----
     async def emit(self, msg, record=True):
@@ -301,6 +318,11 @@ class Bridge:
         return {"type": "WELCOME", "conversation_id": self.conversation_id, "model": self.model,
                 "workspace": self.workspace, "subagents": self.agents()}
 
+    def set_workspace(self, path):
+        global WORKSPACE
+        self.workspace = path if path and Path(path).is_dir() else self.default_workspace
+        WORKSPACE = self.workspace
+
     # ---- agy process ----
     async def start_agy(self):
         if self.args.demo:
@@ -311,6 +333,8 @@ class Bridge:
             cmd += ["--conversation", self.conversation_id]
         elif self.resume:
             cmd += ["--continue"]
+        if self.args.remote_control:
+            cmd += ["--remote-control"]
         if self.args.model:
             cmd += ["--model", self.args.model]
         env = dict(os.environ, DEVOS_AGY_BRIDGE_SOCK=self.sock_path)
@@ -382,6 +406,7 @@ class Bridge:
                              "total": u.get("total_tokens", 0)})
             for n in list(self.subagents):
                 self.subagents[n] = "idle"
+            self.own_turn_until = time.time() + 15
             await self.status(False)
             await self.scan_artifacts()
 
@@ -465,15 +490,88 @@ class Bridge:
         await self.status(False)
         await self.emit({"type": "TOKEN", "text": "\n(stopped)\n"})
 
+    async def stop_turn(self):
+        """End any running turn without a "(stopped)" note (switching away)."""
+        for p in list(self.pending.values()):
+            if not p["future"].done():
+                p["future"].set_result({"allow": False, "choice": -1, "aborted": True})
+        await self.stop_agy()
+        if self.busy:
+            await self.status(False)
+
     async def new_conversation(self):
-        await self.abort()
+        await self.stop_turn()
         self.conversation_id = ""
         self.resume = False
+        self.set_workspace(self.default_workspace)
         self.history.clear()
         self.subagents.clear()
+        self.snapshots.clear()
         self.artifact_mtimes = {}
-        await self.emit({"type": "RESET"}, record=False)
-        await self.emit(self.welcome())
+        await self.replay_all()
+
+    # ---- shared history (antigravity.google.com / agy's store) ----
+    def conversations_msg(self):
+        items = [{k: c[k] for k in ("id", "title", "ws", "age", "steps", "busy")}
+                 for c in agy_store.list_conversations(30)]
+        return {"type": "CONVERSATIONS", "instance": self.instance, "items": items}
+
+    def load(self, cid):
+        """Make `cid` the current conversation, its transcript the history."""
+        info = agy_store.conversation(cid)
+        self.conversation_id = cid
+        self.resume = False
+        self.set_workspace(info["workspace"] if info else "")
+        self.history = agy_store.load_transcript(cid, describe_tool, HISTORY_MAX)
+        self.known_steps[cid] = info["steps"] if info else 0
+        self.subagents.clear()
+        self.snapshots.clear()
+        self.artifact_mtimes = {}
+        return info
+
+    async def open_conversation(self, cid):
+        if not cid or not (agy_store.CONVERSATIONS_DIR / f"{cid}.db").is_file():
+            await self.emit({"type": "ERROR", "message": "That conversation isn't on this computer."}, record=False)
+            return
+        if cid == self.conversation_id and self.history:
+            await self.replay_all()
+            return
+        await self.stop_turn()
+        info = self.load(cid)
+        log(f"opened conversation {cid[:8]} ({info['title'] if info else '?'}) in {self.workspace}")
+        await self.scan_artifacts()
+        await self.replay_all()
+
+    async def replay_all(self):
+        for ws in list(self.clients):
+            try:
+                await self.replay(ws)
+            except ConnectionClosed:
+                self.clients.discard(ws)
+
+    async def watch_store(self):
+        """Follow the store: new/renamed conversations refresh the Tab5's
+        list, and the open conversation reloads when it moved on elsewhere
+        (antigravity.google.com, the CLI)."""
+        while True:
+            await asyncio.sleep(3)
+            stamp = agy_store.summaries_stamp()
+            if stamp == self.list_stamp or not self.clients:
+                continue
+            self.list_stamp = stamp
+            msg = self.conversations_msg()
+            await self.emit(msg, record=False)
+            cid = self.conversation_id
+            cur = next((c for c in msg["items"] if c["id"] == cid), None)
+            if not cur:
+                continue
+            seen = self.known_steps.get(cid, cur["steps"])
+            self.known_steps[cid] = cur["steps"]
+            if cur["steps"] > seen and not self.busy and time.time() > self.own_turn_until:
+                log(f"conversation {cid[:8]} moved on elsewhere; reloading")
+                self.load(cid)
+                await self.scan_artifacts()
+                await self.replay_all()
 
     # ---- permission hook (Unix socket) ----
     async def on_hook(self, reader, writer):
@@ -596,6 +694,8 @@ class Bridge:
                     # the sender shows its own words; replay + other screens need them
                     user = {"type": "USER", "text": f"{command} {text}".strip()}
                     self.remember(user)
+                    if not self.args.demo:
+                        agy_store.add_prompt(user["text"], self.workspace, self.conversation_id)
                     for other in list(self.clients - {ws}):
                         try:
                             await other.send(wire(user))
@@ -608,6 +708,10 @@ class Bridge:
                         p["future"].set_result(msg)
                 elif t == "NEW":
                     await self.new_conversation()
+                elif t == "LIST":
+                    await ws.send(wire(self.conversations_msg()))
+                elif t == "OPEN":
+                    await self.open_conversation(str(msg.get("id", ""))[:64])
                 elif t == "ABORT":
                     await self.abort()
                 else:
@@ -622,6 +726,11 @@ class Bridge:
     async def join(self, ws):
         self.clients.add(ws)
         log("Tab5 connected:", ws.remote_address[0] if ws.remote_address else "?")
+        await self.replay(ws)
+        await ws.send(wire(self.conversations_msg()))
+        await ws.send(wire({"type": "PROMPTS", "items": agy_store.recent_prompts(40)}))
+
+    async def replay(self, ws):
         await ws.send(wire({"type": "RESET"}))
         await ws.send(wire(self.welcome()))
         for m in self.history:                  # catch up on the conversation
@@ -650,6 +759,20 @@ class Bridge:
         await self.status(False)
 
 
+async def remote_control_instance():
+    """This machine's name on antigravity.google.com ("" if not registered)."""
+    try:
+        p = await asyncio.create_subprocess_exec("agy", "remote-control", "status", stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(), 10)
+    except (OSError, asyncio.TimeoutError):
+        return ""
+    for line in out.decode(errors="replace").splitlines():
+        if line.startswith("Instance name:"):
+            return line.split(":", 1)[1].split("(")[0].strip()
+    return ""
+
+
 async def main():
     ap = argparse.ArgumentParser(description="devOS Antigravity bridge (Tab5 <-> agy)")
     ap.add_argument("--host", default="0.0.0.0", help="listen address (default all interfaces)")
@@ -659,7 +782,9 @@ async def main():
     ap.add_argument("--workspace", default=".", help="project folder agy works in (default: here)")
     ap.add_argument("--model", default="", help="agy model (default: your agy setting)")
     ap.add_argument("--conversation", default="", help="resume this conversation id")
-    ap.add_argument("--resume", action="store_true", help="continue the most recent conversation")
+    ap.add_argument("--resume", action="store_true", help="continue the most recent conversation in --workspace")
+    ap.add_argument("--no-remote-control", dest="remote_control", action="store_false",
+                    help="don't also show the session on antigravity.google.com")
     ap.add_argument("--yolo", action="store_true", help="allow every tool without asking (not recommended)")
     ap.add_argument("--no-psk", action="store_true", help="allow clients without a token (loopback only)")
     ap.add_argument("--demo", action="store_true", help="scripted replies, no agy needed")
@@ -671,9 +796,17 @@ async def main():
     if args.no_psk and args.host not in ("127.0.0.1", "localhost", "::1"):
         sys.exit("--no-psk is only allowed with --host 127.0.0.1")
 
-    global WORKSPACE
     bridge = Bridge(args)
-    WORKSPACE = bridge.workspace
+    bridge.set_workspace(bridge.default_workspace)
+    if not args.demo:
+        bridge.instance = await remote_control_instance()
+        start = args.conversation
+        if args.resume and not start:
+            here = [c for c in agy_store.list_conversations(200) if c["workspace"] == bridge.workspace]
+            start = here[0]["id"] if here else ""
+        if start:
+            info = bridge.load(start)
+            log(f"resuming {start[:8]} ({info['title'] if info else 'not in the store yet'})")
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     bridge.sock_path = os.path.join(runtime, f"devos-agy-bridge-{os.getpid()}.sock")
     old_umask = os.umask(0o077)                     # socket readable by this user only
@@ -689,9 +822,13 @@ async def main():
         async with serve(bridge.on_ws, args.host, args.port, max_size=4 * 1024 * 1024, ping_interval=20):
             log(f"listening on ws://{args.host}:{args.port}/ws  workspace={bridge.workspace}  "
                 f"model={bridge.model or 'default'}  demo={args.demo}")
-            if not args.demo and (args.resume or args.conversation):
+            if not args.demo and bridge.conversation_id:
                 await bridge.start_agy()
+                await bridge.scan_artifacts()
+            watcher = asyncio.create_task(bridge.watch_store()) if not args.demo else None
             await stop.wait()
+            if watcher:
+                watcher.cancel()
     finally:
         bridge.stopping = True
         await bridge.stop_agy()

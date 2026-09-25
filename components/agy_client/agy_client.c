@@ -58,6 +58,11 @@ static EXT_RAM_BSS_ATTR char s_diff[AGY_DIFF_MAX];
 static size_t s_diff_len = 0;
 static uint32_t s_diff_rev = 0;
 static int s_usage[3] = {0, 0, 0};
+static EXT_RAM_BSS_ATTR agy_conv_t s_convs[AGY_MAX_CONVS];
+static int s_conv_count = 0;
+static char s_instance[AGY_NAME_MAX] = "";
+static EXT_RAM_BSS_ATTR char s_prompts[AGY_MAX_PROMPTS][AGY_RECALL_MAX];
+static int s_prompt_count = 0;
 static bool s_busy = false;
 static agy_status_t s_status = AGY_DOWN;
 static char s_status_text[128] = "Offline";
@@ -415,6 +420,62 @@ static void on_tool(const char *js, size_t len)
     bump();
 }
 
+static void conv_each_cb(const char *obj, size_t len, void *ud)
+{
+    (void)ud;
+    if (s_conv_count >= AGY_MAX_CONVS) return;
+    agy_conv_t *c = &s_convs[s_conv_count];
+    memset(c, 0, sizeof(*c));
+    if (devos_json_get_str(obj, len, "id", c->id, sizeof(c->id)) != 0 || !c->id[0]) return;
+    devos_json_get_str(obj, len, "title", c->title, sizeof(c->title));
+    utf8_trim(c->title);
+    devos_json_get_str(obj, len, "ws", c->ws, sizeof(c->ws));
+    utf8_trim(c->ws);
+    devos_json_get_str(obj, len, "age", c->age, sizeof(c->age));
+    devos_json_get_int(obj, len, "steps", &c->steps);
+    const char *b = devos_json_find_key(obj, obj + len, "busy");
+    c->busy = b && b < obj + len && *b == 't';
+    s_conv_count++;
+}
+
+static void prompt_add(const char *text)
+{
+    if (!text || !*text) return;
+    for (int i = 0; i < s_prompt_count; i++) {
+        if (strncmp(s_prompts[i], text, AGY_RECALL_MAX - 1) == 0) {
+            /* already known: move it to the newest slot */
+            memmove(s_prompts[i], s_prompts[i + 1], (size_t)(s_prompt_count - 1 - i) * AGY_RECALL_MAX);
+            s_prompt_count--;
+            break;
+        }
+    }
+    if (s_prompt_count >= AGY_MAX_PROMPTS) {
+        memmove(s_prompts[0], s_prompts[1], (size_t)(AGY_MAX_PROMPTS - 1) * AGY_RECALL_MAX);
+        s_prompt_count = AGY_MAX_PROMPTS - 1;
+    }
+    copy_text(s_prompts[s_prompt_count++], AGY_RECALL_MAX, text);
+}
+
+static void on_prompts(const char *js, size_t len)
+{
+    const char *end = js + len;
+    const char *v = devos_json_find_key(js, end, "items");
+    if (!v || v >= end || *v != '[') return;
+    const char *stop = devos_json_span(v, end);
+    if (!stop) return;
+    s_prompt_count = 0;
+    for (const char *p = v + 1; p < stop;) {
+        while (p < stop && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')) p++;
+        if (p >= stop || *p != '"') break;
+        char tmp[AGY_RECALL_MAX];
+        p = devos_json_parse_str(p, stop, tmp, sizeof(tmp));
+        if (!p) break;
+        utf8_trim(tmp);
+        prompt_add(tmp);
+    }
+    bump();
+}
+
 static void on_question(const char *js, size_t len)
 {
     const char *end = js + len;
@@ -522,6 +583,18 @@ static void on_message(const char *js, size_t len)
         bump();
     } else if (strcmp(type, "QUESTION") == 0) {
         on_question(js, len);
+    } else if (strcmp(type, "CONVERSATIONS") == 0) {
+        devos_json_get_str(js, len, "instance", s_instance, sizeof(s_instance));
+        const char *end = js + len;
+        const char *v = devos_json_find_key(js, end, "items");
+        const char *stop = (v && v < end && *v == '[') ? devos_json_span(v, end) : NULL;
+        if (stop) {
+            s_conv_count = 0;
+            devos_json_array_each(v, (size_t)(stop - v), conv_each_cb, NULL);
+        }
+        bump();
+    } else if (strcmp(type, "PROMPTS") == 0) {
+        on_prompts(js, len);
     } else if (strcmp(type, "RESOLVED") == 0) {
         /* answered elsewhere, timed out or the turn was stopped */
         char rid[AGY_NAME_MAX] = "";
@@ -891,6 +964,7 @@ int agy_client_send(const char *text, const char *command)
     if (command && *command) n = (size_t)snprintf(b->text, sizeof(b->text), "%.40s ", command);
     copy_text(b->text + n, sizeof(b->text) - n, clipped);
     bump();
+    prompt_add(b->text);
     if (ws_send_json(body) != 0) return -1;
     s_busy = true;
     return 0;
@@ -908,6 +982,40 @@ int agy_client_abort(void)
 {
     if (s_status != AGY_UP || !s_handshook) return -1;
     return ws_send_json("{\"type\":\"ABORT\"}");
+}
+
+int agy_client_conv_count(void) { return s_conv_count; }
+
+const agy_conv_t *agy_client_conv(int idx)
+{
+    if (idx < 0 || idx >= s_conv_count) return NULL;
+    return &s_convs[idx];
+}
+
+const char *agy_client_instance(void) { return s_instance; }
+
+int agy_client_open(const char *conversation_id)
+{
+    if (!conversation_id || !*conversation_id || s_status != AGY_UP || !s_handshook) return -1;
+    char esc[96];
+    devos_json_escape(conversation_id, esc, sizeof(esc));
+    char body[160];
+    snprintf(body, sizeof(body), "{\"type\":\"OPEN\",\"id\":\"%s\"}", esc);
+    return ws_send_json(body);
+}
+
+int agy_client_list(void)
+{
+    if (s_status != AGY_UP || !s_handshook) return -1;
+    return ws_send_json("{\"type\":\"LIST\"}");
+}
+
+int agy_client_prompt_count(void) { return s_prompt_count; }
+
+const char *agy_client_prompt(int idx)
+{
+    if (idx < 0 || idx >= s_prompt_count) return NULL;
+    return s_prompts[idx];
 }
 
 const char *agy_client_conversation_id(void) { return s_conv; }

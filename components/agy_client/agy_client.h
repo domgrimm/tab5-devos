@@ -58,6 +58,9 @@ typedef enum {
 #define AGY_PROMPT_MAX 12288
 #define AGY_PATH_MAX 160
 #define AGY_PREVIEW_MAX 8192
+#define AGY_MAX_CONVS 30
+#define AGY_MAX_PROMPTS 40
+#define AGY_RECALL_MAX 256
 
 typedef struct {
     char name[AGY_NAME_MAX];
@@ -85,6 +88,16 @@ typedef struct {
     char id[AGY_NAME_MAX];
     char text[512];
 } agy_permission_t;
+
+/* A conversation from agy's history (what antigravity.google.com lists). */
+typedef struct {
+    char id[40];
+    char title[84];
+    char ws[48];      /* folder name */
+    char age[8];      /* "now", "5m", "3h", "2d" */
+    int steps;
+    bool busy;
+} agy_conv_t;
 
 typedef struct {
     bool active;
@@ -129,6 +142,15 @@ const agy_block_t *agy_client_block(int idx);
 const char *agy_client_diff_text(void);
 uint32_t agy_client_diff_rev(void);
 int agy_client_diff_file_count(void);
+
+/* Shared history (agy remote-control / antigravity.google.com) */
+int agy_client_conv_count(void);
+const agy_conv_t *agy_client_conv(int idx);     /* newest first */
+const char *agy_client_instance(void);         /* machine name on the website */
+int agy_client_open(const char *conversation_id);
+int agy_client_list(void);                     /* ask for a fresh list */
+int agy_client_prompt_count(void);
+const char *agy_client_prompt(int idx);        /* oldest first */
 
 /* Permission + question modals */
 bool agy_client_permission_pending(agy_permission_t *out);

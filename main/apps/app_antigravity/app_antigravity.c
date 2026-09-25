@@ -32,6 +32,8 @@ static lv_obj_t *lbl_ws = NULL;
 static lv_obj_t *lbl_link = NULL;
 static lv_obj_t *btn_new = NULL;
 static lv_obj_t *lbl_new = NULL;
+static lv_obj_t *btn_hist = NULL;
+static lv_obj_t *lbl_hist = NULL;
 static lv_obj_t *lbl_sub = NULL;
 static lv_obj_t *sub_btns[AGY_SUB_BTNS] = {NULL};
 static lv_obj_t *sub_lbls[AGY_SUB_BTNS] = {NULL};
@@ -99,6 +101,18 @@ static lv_obj_t *lbl_art_save = NULL;
 static lv_obj_t *lbl_art_close = NULL;
 static int s_open_artifact = -1;
 
+/* History modal: agy's conversations (antigravity.google.com) */
+static lv_obj_t *modal_hist = NULL;
+static lv_obj_t *lbl_hist_title = NULL;
+static lv_obj_t *hist_list = NULL;
+static lv_obj_t *hist_rows[AGY_MAX_CONVS];
+static int s_hist_sel = 0;
+static int s_hist_n = -1;                   /* rows built; -1 = rebuild */
+static uint32_t s_hist_gen = 0;
+
+/* Up/Down in the prompt walks the prompt history */
+static int s_recall = -1;
+
 /* Server modal */
 static lv_obj_t *modal_srv = NULL;
 static lv_obj_t *lbl_srv_title = NULL;
@@ -123,6 +137,8 @@ static uint32_t s_last_refresh = 0;
 static lv_timer_t *poll_timer = NULL;
 
 static void refresh_all(bool force);
+static void hist_build(void);
+static lv_obj_t *mk_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color, int x, int y);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 static void srv_focus_paint(void);
 
@@ -153,6 +169,11 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     paint_text(lbl_ws, p->text_secondary);
     paint_button(btn_new, p->surface, p->surface_border);
     paint_text(lbl_new, p->text_primary);
+    paint_button(btn_hist, p->surface, p->surface_border);
+    paint_text(lbl_hist, p->text_primary);
+    paint_button(modal_hist, p->surface, p->accent_primary);
+    paint_text(lbl_hist_title, p->accent_primary);
+    if (modal_hist && !lv_obj_has_flag(modal_hist, LV_OBJ_FLAG_HIDDEN)) hist_build();
     paint_text(lbl_sub, p->accent_secondary);
     for (int i = 0; i < AGY_SUB_BTNS; i++) paint_button(sub_btns[i], p->surface, p->surface_border);
     paint_text(lbl_slash, p->text_secondary);
@@ -556,7 +577,7 @@ static void refresh_meta(void)
     }
 
     /* Center: status strip */
-    snprintf(buf, sizeof(buf), "%s%s  |  Esc stop  |  Sym+D diff  |  Sym+L / Sym+R panes",
+    snprintf(buf, sizeof(buf), "%s%s  |  Esc stop  |  Up/Down earlier prompts  |  Sym+O history  |  Sym+D diff",
              agy_client_status_text(), agy_client_busy() ? "  (working)" : "");
     set_text_if(lbl_strip, buf);
     update_send_label();
@@ -659,8 +680,117 @@ static void refresh_all(bool force)
     refresh_chat(force);
     refresh_diff();
     refresh_modals();
+    if (modal_hist && !lv_obj_has_flag(modal_hist, LV_OBJ_FLAG_HIDDEN) && s_hist_gen != agy_client_generation()) {
+        s_hist_gen = agy_client_generation();
+        hist_build();
+    }
     s_dirty = false;
     s_last_refresh = lv_tick_get();
+}
+
+/* ---------------------------------------------------------------- history */
+static void hist_paint(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    const char *cur = agy_client_conversation_id();
+    for (int i = 0; i < s_hist_n; i++) {
+        const agy_conv_t *c = agy_client_conv(i);
+        bool sel = i == s_hist_sel;
+        bool open = c && cur[0] && strcmp(c->id, cur) == 0;
+        lv_obj_set_style_bg_color(hist_rows[i], sel ? p->surface_active : p->surface, 0);
+        lv_obj_set_style_border_color(hist_rows[i], sel || open ? p->accent_primary : p->surface_border, 0);
+        lv_obj_set_style_border_width(hist_rows[i], sel ? 2 : 1, 0);
+    }
+    if (s_hist_sel >= 0 && s_hist_sel < s_hist_n) lv_obj_scroll_to_view(hist_rows[s_hist_sel], LV_ANIM_OFF);
+}
+
+static void hist_row_cb(lv_event_t *e);
+
+static void hist_build(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_clean(hist_list);
+    int n = agy_client_conv_count();
+    const char *cur = agy_client_conversation_id();
+    char buf[200];
+    for (int i = 0; i < n; i++) {
+        const agy_conv_t *c = agy_client_conv(i);
+        lv_obj_t *row = lv_obj_create(hist_list);
+        hist_rows[i] = row;
+        lv_obj_set_size(row, lv_pct(100), 56);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_hor(row, 12, 0);
+        lv_obj_set_style_pad_ver(row, 6, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, hist_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        bool open = cur[0] && strcmp(c->id, cur) == 0;
+        snprintf(buf, sizeof(buf), "%s%s", open ? LV_SYMBOL_RIGHT " " : "", c->title[0] ? c->title : "(untitled)");
+        lv_obj_t *t = mk_label(row, buf, &lv_font_montserrat_14, open ? p->accent_primary : p->text_primary, 0, 0);
+        lv_obj_set_width(t, lv_pct(100));
+        lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
+        snprintf(buf, sizeof(buf), "%s%s%s%s  -  %d steps%s", c->age[0] ? c->age : "", c->age[0] && strcmp(c->age, "now") ? " ago" : "",
+                 c->ws[0] ? "  -  " : "", c->ws, c->steps, c->busy ? "  -  " LV_SYMBOL_BULLET " running" : "");
+        lv_obj_t *m = mk_label(row, buf, &lv_font_montserrat_12, c->busy ? p->accent_secondary : p->text_secondary, 0, 22);
+        lv_obj_set_width(m, lv_pct(100));
+        lv_label_set_long_mode(m, LV_LABEL_LONG_DOT);
+    }
+    if (n == 0) {
+        mk_label(hist_list, agy_client_status() == AGY_UP ? "No conversations yet." : "Not connected to the bridge.",
+                 &lv_font_montserrat_14, p->text_secondary, 8, 8);
+    }
+    s_hist_n = n;
+    if (s_hist_sel >= n) s_hist_sel = n ? n - 1 : 0;
+    const char *inst = agy_client_instance();
+    snprintf(buf, sizeof(buf), LV_SYMBOL_LIST " Conversations%s%s%s", inst[0] ? "  -  " : "", inst,
+             inst[0] ? " on antigravity.google.com" : "");
+    lv_label_set_text(lbl_hist_title, buf);
+    hist_paint();
+}
+
+static void hist_open(void)
+{
+    if (!modal_hist) return;
+    agy_client_list();
+    s_hist_sel = 0;
+    const char *cur = agy_client_conversation_id();
+    for (int i = 0; cur[0] && i < agy_client_conv_count(); i++) {
+        if (strcmp(agy_client_conv(i)->id, cur) == 0) s_hist_sel = i;
+    }
+    lv_obj_remove_flag(modal_hist, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal_hist);
+    hist_build();
+    s_hist_gen = agy_client_generation();
+}
+
+static void hist_close(void)
+{
+    if (modal_hist) lv_obj_add_flag(modal_hist, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void hist_choose(int idx)
+{
+    const agy_conv_t *c = agy_client_conv(idx);
+    if (!c) return;
+    agy_client_open(c->id);
+    hist_close();
+}
+
+static void hist_row_cb(lv_event_t *e)
+{
+    hist_choose((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void hist_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    hist_open();
+}
+
+static void hist_close_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    hist_close();
 }
 
 /* ---------------------------------------------------------------- events */
@@ -688,6 +818,7 @@ static void send_current(void)
         }
     }
     if (agy_client_send(body, cmd[0] ? cmd : NULL) == 0) lv_textarea_set_text(ta, "");
+    s_recall = -1;
     refresh_all(false);
 }
 
@@ -897,7 +1028,7 @@ static bool shown(lv_obj_t *o)
 static bool any_modal_open(void)
 {
     return shown(modal_permission) || shown(modal_question) || shown(modal_artifact) || shown(modal_srv) ||
-           shown(modal_diff);
+           shown(modal_diff) || shown(modal_hist);
 }
 
 void app_antigravity_toggle_focus(void)
@@ -983,6 +1114,17 @@ static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
+    /* History: arrows pick, Enter opens, R refreshes, Esc closes */
+    if (shown(modal_hist)) {
+        if (key == LV_KEY_ESC) hist_close();
+        else if (key == LV_KEY_DOWN && s_hist_sel + 1 < s_hist_n) s_hist_sel++, hist_paint();
+        else if (key == LV_KEY_UP && s_hist_sel > 0) s_hist_sel--, hist_paint();
+        else if (key == '\r' || key == '\n') hist_choose(s_hist_sel);
+        else if (key == 'r' || key == 'R') agy_client_list();
+        else if (key >= '1' && key <= '9' && key - '1' < (uint32_t)s_hist_n) hist_choose((int)(key - '1'));
+        return true;
+    }
+
     /* Artifact viewer: Esc closes, arrows scroll */
     if (shown(modal_artifact)) {
         if (key == LV_KEY_ESC) art_close_cb(NULL);
@@ -1014,6 +1156,7 @@ static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
         else if (key == 'r' || key == 'R') app_antigravity_toggle_right();    /* Sym+R: right inspector */
         else if (key == 'n' || key == 'N') note_btn_cb(NULL);
         else if (key == 'd' || key == 'D') diff_full_open();
+        else if (key == 'o' || key == 'O') hist_open();
         else return false;
         return true;
     }
@@ -1028,9 +1171,25 @@ static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
         if (agy_client_busy()) agy_client_abort();
         else if (t && *t) lv_textarea_set_text(ta, "");
         else handled = false;
-    } else if (key == LV_KEY_UP || key == LV_KEY_DOWN || key == DEVOS_KEY_PGUP || key == DEVOS_KEY_PGDN) {
+    } else if (key == LV_KEY_UP || key == LV_KEY_DOWN) {
+        /* like a shell: walk back through earlier prompts */
+        int n = agy_client_prompt_count();
+        if (key == LV_KEY_UP && n > 0) {
+            s_recall = s_recall < 0 ? n - 1 : (s_recall > 0 ? s_recall - 1 : 0);
+        } else if (key == LV_KEY_DOWN && s_recall >= 0) {
+            s_recall = s_recall + 1 < n ? s_recall + 1 : -1;
+        }
+        const char *t = s_recall >= 0 ? agy_client_prompt(s_recall) : "";
+        char line[AGY_RECALL_MAX];
+        snprintf(line, sizeof(line), "%s", t ? t : "");
+        for (char *c = line; *c; c++) {
+            if (*c == '\n' || *c == '\r' || *c == '\t') *c = ' ';   /* one-line box */
+        }
+        lv_textarea_set_text(ta, line);
+    } else if (key == DEVOS_KEY_PGUP || key == DEVOS_KEY_PGDN) {
         handled = scroll_key(chat_scroll, key, 20);
     } else {
+        s_recall = -1;
         handled = edit_key(ta, key);
     }
     update_send_label();
@@ -1152,13 +1311,22 @@ static void build_left(lv_obj_t *left, const devos_palette_t *p)
         lv_label_set_long_mode(ls[i], LV_LABEL_LONG_DOT);
     }
 
-    btn_new = mk_button(left, 150, 30, 4, 146);
+    int bw = (DEVOS_PANE_LEFT_WIDTH - 36) / 2;
+    btn_new = mk_button(left, bw, 30, 4, 146);
     lv_obj_add_event_cb(btn_new, new_btn_cb, LV_EVENT_CLICKED, NULL);
     lbl_new = lv_label_create(btn_new);
-    lv_label_set_text(lbl_new, LV_SYMBOL_PLUS " New conversation");
+    lv_label_set_text(lbl_new, LV_SYMBOL_PLUS " New");
     lv_obj_center(lbl_new);
     lv_obj_set_style_text_font(lbl_new, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_new, p->text_primary, 0);
+
+    btn_hist = mk_button(left, bw, 30, 12 + bw, 146);
+    lv_obj_add_event_cb(btn_hist, hist_btn_cb, LV_EVENT_CLICKED, NULL);
+    lbl_hist = lv_label_create(btn_hist);
+    lv_label_set_text(lbl_hist, LV_SYMBOL_LIST " History");
+    lv_obj_center(lbl_hist);
+    lv_obj_set_style_text_font(lbl_hist, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_hist, p->text_primary, 0);
 
     lbl_sub = mk_label(left, "AGENTS", &lv_font_montserrat_12, p->accent_secondary, 4, 190);
     for (int i = 0; i < AGY_SUB_BTNS; i++) {
@@ -1233,6 +1401,9 @@ static void build_center(lv_obj_t *center, const devos_palette_t *p)
     lv_textarea_set_max_length(ta, AGY_PROMPT_MAX - 1);
     lv_obj_set_size(ta, 0, 38);
     lv_obj_set_flex_grow(ta, 1);
+    lv_obj_set_style_pad_ver(ta, 9, 0);          /* the text line fits the 38 px box */
+    lv_obj_set_style_pad_hor(ta, 10, 0);
+    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_bg_color(ta, p->bg_alt, 0);
     lv_obj_set_style_border_color(ta, p->surface_border, 0);
     lv_obj_set_style_text_color(ta, p->text_primary, 0);
@@ -1388,6 +1559,27 @@ static void build_modals(const devos_palette_t *p)
     mk_modal_button(modal_artifact, "Close (Esc)", 120, 568, 444, p->surface_active, p->text_primary, art_close_cb,
                     0, &lbl_art_close);
 
+    /* History */
+    modal_hist = mk_modal(900, 600, p->accent_primary);
+    lbl_hist_title = mk_label(modal_hist, LV_SYMBOL_LIST " Conversations", &lv_font_montserrat_16, p->accent_primary,
+                              0, 4);
+    lv_obj_set_width(lbl_hist_title, 700);
+    lv_label_set_long_mode(lbl_hist_title, LV_LABEL_LONG_DOT);
+    lv_obj_t *hc = mk_modal_button(modal_hist, "Close (Esc)", 130, 738, 0, p->surface_active, p->text_primary,
+                                   hist_close_cb, 0, NULL);
+    LV_UNUSED(hc);
+    mk_label(modal_hist, "Up/Down + Enter or tap to open  -  1-9 quick pick  -  R refresh", &lv_font_montserrat_12,
+             p->text_secondary, 0, 30);
+    hist_list = lv_obj_create(modal_hist);
+    lv_obj_set_pos(hist_list, 0, 54);
+    lv_obj_set_size(hist_list, 868, 600 - 32 - 54);
+    lv_obj_set_style_bg_opa(hist_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(hist_list, 0, 0);
+    lv_obj_set_style_pad_all(hist_list, 2, 0);
+    lv_obj_set_style_pad_row(hist_list, 6, 0);
+    lv_obj_set_flex_flow(hist_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(hist_list, LV_DIR_VER);
+
     /* Server (host / port / token) */
     modal_srv = mk_modal(500, 280, p->accent_primary);
     lbl_srv_title = mk_label(modal_srv, LV_SYMBOL_SETTINGS " Antigravity bridge", &lv_font_montserrat_16,
@@ -1444,8 +1636,8 @@ static void antigravity_show(void)
 static void antigravity_hide(void)
 {
     /* pending asks stay pending: they reappear when the app is opened */
-    lv_obj_t *ms[5] = {modal_permission, modal_question, modal_artifact, modal_srv, modal_diff};
-    for (int i = 0; i < 5; i++) {
+    lv_obj_t *ms[6] = {modal_permission, modal_question, modal_artifact, modal_srv, modal_diff, modal_hist};
+    for (int i = 0; i < 6; i++) {
         if (ms[i]) lv_obj_add_flag(ms[i], LV_OBJ_FLAG_HIDDEN);
     }
     s_shown_perm[0] = '\0';
