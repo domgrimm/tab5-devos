@@ -65,24 +65,8 @@ static const char *WELCOME_MD_CONTENT =
 "- [ ] OpenCode & OpenChamber remote client\n"
 "- [ ] Native Antigravity agent integration\n";
 
-static const char *BOOKMARKS_JSON_CONTENT =
-"[\n"
-"  {\n"
-"    \"alias\": \"Workstation (LAN)\",\n"
-"    \"host\": \"10.2.132.54\",\n"
-"    \"port\": 22,\n"
-"    \"user\": \"root\",\n"
-"    \"auth\": \"key\",\n"
-"    \"key_path\": \"/sdcard/.ssh/id_ed25519\"\n"
-"  },\n"
-"  {\n"
-"    \"alias\": \"Dev Cluster\",\n"
-"    \"host\": \"192.168.1.50\",\n"
-"    \"port\": 22,\n"
-"    \"user\": \"root\",\n"
-"    \"auth\": \"password\"\n"
-"  }\n"
-"]\n";
+/* Saved SSH hosts start empty: add them from the Terminal app. */
+static const char *BOOKMARKS_JSON_CONTENT = "[\n]\n";
 
 static void make_dir_if_missing(const char *path)
 {

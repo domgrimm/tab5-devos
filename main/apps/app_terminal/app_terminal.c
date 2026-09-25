@@ -1,1508 +1,1545 @@
+/* Terminal: multi-session SSH client with a real VT100/xterm terminal.
+ *
+ * Each SSH session (components/libssh2_port) gets a devos_vterm emulator;
+ * a poll timer feeds every session's output into its emulator (background
+ * sessions keep their state) and the active one is drawn as a character grid
+ * in Nimbus Mono 14 (8 x 16 px cells, 159 x 40 full width, 126 x 40 with the
+ * sidebar). Sidebar: sessions, saved hosts, device key. Dialogs: connect,
+ * password, host-key trust (TOFU), device key.
+ *
+ * Keys (live session): everything goes to the remote (Ctrl+letter -> control
+ * code, Alt+key -> ESC prefix, arrows honour application-cursor mode, Esc,
+ * Backspace = DEL). Local: Sym+L sidebar, Sym+N new connection, Sym+Up/Down
+ * scrollback, Sym+Left/Right = Home/End, Alt+1..8 switch session.
+ */
 #include "app_terminal.h"
-#include "libssh2_port.h"
 #include "devos_config.h"
 #include "devos_theme.h"
-#include "devos_core.h"
+#include "devos_vterm.h"
+#include "libssh2_port.h"
+#include "tab5_keyboard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define TERM_BUFFER_MAX 16384
-#define TERM_MAX_BOOKMARKS 8
+LV_FONT_DECLARE(lv_font_nimbus_mono_14);
+
+#define CELL_W        8
+#define CELL_H        16
+#define SIDEBAR_W     DEVOS_PANE_LEFT_WIDTH
+#define HEADER_H      32
+#define TERM_PAD      4
+#define SCROLLBACK    1000
+
+typedef struct {
+    devos_vterm_t *vt;
+    int view_offset;               /* lines scrolled back (0 = live) */
+    uint32_t sb_seen;              /* devos_vterm_scrolled_total() last seen */
+    ssh_session_state_t last_state;
+    /* connection parameters, for reconnect (password is never kept) */
+    char alias[SSH_MAX_ALIAS_LEN];
+    char host[SSH_MAX_HOST_LEN];
+    int port;
+    char user[SSH_MAX_USER_LEN];
+    ssh_auth_type_t auth;
+    char keypath[SSH_MAX_PATH_LEN];
+} term_sess_t;
+
+static term_sess_t s_ts[SSH_MAX_SESSIONS];
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 
-/* Left Sidebar (260px) */
-static lv_obj_t *sidebar = NULL;
-static lv_obj_t *btn_tab_active = NULL;
-static lv_obj_t *lbl_tab_active = NULL;
-static lv_obj_t *btn_tab_bookmarks = NULL;
-static lv_obj_t *lbl_tab_bookmarks = NULL;
-static lv_obj_t *container_active = NULL;
-static lv_obj_t *container_bookmarks = NULL;
+/* styles (recoloured on theme change) */
+static bool s_styles_ready = false;
+static lv_style_t st_bg, st_sidebar, st_header, st_title, st_text, st_muted, st_small, st_btn, st_btn_primary,
+                  st_btn_danger, st_row, st_row_active, st_ta, st_ta_focus, st_overlay, st_modal, st_kb,
+                  st_kb_btn, st_err, st_ok, st_warn, st_mono;
 
-static lv_obj_t *sess_cards[SSH_MAX_SESSIONS] = {NULL};
-static lv_obj_t *sess_labels[SSH_MAX_SESSIONS] = {NULL};
-static lv_obj_t *sess_sub_labels[SSH_MAX_SESSIONS] = {NULL};
-static lv_obj_t *sess_close_btns[SSH_MAX_SESSIONS] = {NULL};
-static lv_obj_t *sess_close_lbls[SSH_MAX_SESSIONS] = {NULL};
+/* layout */
+static lv_obj_t *sidebar, *list_sessions, *list_hosts, *term_area, *header, *lbl_header_title,
+                *lbl_header_info, *term_view, *lbl_empty;
+static bool s_sidebar_visible = true;
+static int s_cols = 126, s_rows = 40;
+static int s_active = 0;           /* active session id (0 = none) */
+static char s_list_key[256] = "";
+static char s_hosts_key[64] = "";
 
-static lv_obj_t *bm_cards[TERM_MAX_BOOKMARKS] = {NULL};
-static lv_obj_t *bm_labels[TERM_MAX_BOOKMARKS] = {NULL};
-static lv_obj_t *bm_sub_labels[TERM_MAX_BOOKMARKS] = {NULL};
-static lv_obj_t *bm_conn_btns[TERM_MAX_BOOKMARKS] = {NULL};
-static lv_obj_t *bm_delete_btns[TERM_MAX_BOOKMARKS] = {NULL};
-
-/* Bottom sidebar buttons */
-static lv_obj_t *btn_add_sess = NULL;
-static lv_obj_t *lbl_add_sess = NULL;
-static lv_obj_t *btn_add_bm = NULL;
-static lv_obj_t *lbl_add_bm = NULL;
-
-/* Modals */
-static lv_obj_t *modal_connect = NULL;
-static lv_obj_t *lbl_mtitle = NULL;
-static lv_obj_t *lbl_l_alias = NULL;
-static lv_obj_t *lbl_l_host = NULL;
-static lv_obj_t *lbl_l_port = NULL;
-static lv_obj_t *lbl_l_user = NULL;
-static lv_obj_t *lbl_l_auth = NULL;
-static lv_obj_t *lbl_auth_desc = NULL;
-static lv_obj_t *ta_alias = NULL;
-static lv_obj_t *ta_host = NULL;
-static lv_obj_t *ta_user = NULL;
-static lv_obj_t *ta_port = NULL;
-static lv_obj_t *btn_modal_save_bm = NULL;
-static lv_obj_t *lbl_modal_save_bm = NULL;
-static lv_obj_t *btn_conn_cancel = NULL;
-static lv_obj_t *lbl_can = NULL;
-static lv_obj_t *btn_conn_sub = NULL;
-static lv_obj_t *lbl_conn_sub = NULL;
-static lv_obj_t *bm_conn_lbls[TERM_MAX_BOOKMARKS] = {NULL};
-static lv_obj_t *bm_del_lbls[TERM_MAX_BOOKMARKS] = {NULL};
+/* dialogs */
+static lv_obj_t *overlay, *kb;
+static lv_obj_t *dlg_connect, *ta_host, *ta_port, *ta_user, *ta_alias, *ta_pass, *ta_keypath, *cb_save,
+                *btn_auth[3], *lbl_pass_hint, *row_pass, *row_key, *lbl_connect_err;
+static lv_obj_t *dlg_password, *lbl_pw_title, *ta_pw;
+static lv_obj_t *dlg_hostkey, *lbl_hk_body;
+static lv_obj_t *dlg_devkey, *lbl_dk_body, *btn_dk_create, *btn_dk_install;
 static lv_obj_t *s_focused_ta = NULL;
-static bool s_modal_is_add_bookmark = false;
+static int s_auth_choice = 0;      /* 0 password, 1 device key, 2 key file */
+static int s_hostkey_for = 0;      /* session id the host-key dialog is for */
 
-/* Main Terminal Container */
-static lv_obj_t *terminal_container = NULL;
-static lv_obj_t *term_header = NULL;
-static lv_obj_t *btn_toggle_sidebar = NULL;
-static lv_obj_t *lbl_toggle_sidebar = NULL;
-static lv_obj_t *lbl_term_info = NULL;
-static lv_obj_t *lbl_term_latency = NULL;
-static lv_obj_t *lbl_term_cols = NULL;
+/* pending connect waiting for a password */
+static struct {
+    bool active;
+    int reuse_id;                  /* reconnect into this terminal (0 = new) */
+    ssh_bookmark_t bm;
+} s_pending;
 
-static lv_obj_t *term_body = NULL;
-static lv_obj_t *lbl_terminal_text = NULL;
+static ssh_bookmark_t s_hosts[SSH_MAX_BOOKMARKS];
+static int s_host_count = 0;
 
-static lv_obj_t *term_footer = NULL;
-static lv_obj_t *lbl_term_footer = NULL;
-
-static lv_timer_t *term_poll_timer = NULL;
-
-/* State */
-static bool sidebar_visible = true;
-static int s_active_session_id = 1;
-static int s_sidebar_tab = 0; /* 0: Active, 1: Bookmarks */
-static uint16_t current_cols = DEVOS_TERM_COLS_COLLAPSED; /* 128 */
-static uint16_t current_rows = DEVOS_TERM_ROWS;           /* 45 */
-
-/* Screen text buffer per session */
-static EXT_RAM_BSS_ATTR char s_term_buffers[SSH_MAX_SESSIONS][TERM_BUFFER_MAX];
-static size_t s_term_lens[SSH_MAX_SESSIONS];
-
-/* Forward declarations */
-static void refresh_sidebar(void);
+static void refresh_sidebar(bool force);
 static void refresh_header(void);
-static void apply_theme(const devos_palette_t *p, void *user_data);
-static void app_terminal_switch_session(int session_id);
-static void append_to_screen_buffer(int sess_idx, const char *raw_data, size_t len);
+static void close_dialogs(void);
 
-/* --------------------------------------------------------------------------
- * ANSI VT100 Parser & Terminal Buffer
- * -------------------------------------------------------------------------- */
-static void append_to_screen_buffer(int sess_idx, const char *raw_data, size_t len)
+/* ======================================================================== */
+/* Styles                                                                   */
+/* ======================================================================== */
+static void restyle(const devos_palette_t *p)
 {
-    if (sess_idx < 0 || sess_idx >= SSH_MAX_SESSIONS || !raw_data || len == 0) return;
+    lv_style_set_bg_color(&st_bg, p->bg);
+    lv_style_set_bg_color(&st_sidebar, p->bg_alt);
+    lv_style_set_border_color(&st_sidebar, p->surface_border);
+    lv_style_set_bg_color(&st_header, p->surface);
+    lv_style_set_border_color(&st_header, p->surface_border);
+    lv_style_set_text_color(&st_title, p->accent_primary);
+    lv_style_set_text_color(&st_text, p->text_primary);
+    lv_style_set_text_color(&st_muted, p->text_secondary);
+    lv_style_set_text_color(&st_small, p->text_muted);
+    lv_style_set_bg_color(&st_btn, p->surface_active);
+    lv_style_set_border_color(&st_btn, p->surface_border);
+    lv_style_set_text_color(&st_btn, p->text_primary);
+    lv_style_set_bg_color(&st_btn_primary, p->accent_primary);
+    lv_style_set_text_color(&st_btn_primary, p->bg);
+    lv_style_set_text_color(&st_btn_danger, p->accent_danger);
+    lv_style_set_bg_color(&st_row, p->surface_active);
+    lv_style_set_text_color(&st_row, p->text_primary);
+    lv_style_set_bg_color(&st_row_active, p->surface_active);
+    lv_style_set_border_color(&st_row_active, p->accent_primary);
+    lv_style_set_bg_color(&st_ta, p->bg_alt);
+    lv_style_set_border_color(&st_ta, p->surface_border);
+    lv_style_set_text_color(&st_ta, p->text_primary);
+    lv_style_set_border_color(&st_ta_focus, p->accent_primary);
+    lv_style_set_bg_color(&st_modal, p->surface);
+    lv_style_set_border_color(&st_modal, p->accent_primary);
+    lv_style_set_bg_color(&st_kb, p->bg_alt);
+    lv_style_set_bg_color(&st_kb_btn, p->surface_active);
+    lv_style_set_text_color(&st_kb_btn, p->text_primary);
+    lv_style_set_text_color(&st_err, p->accent_danger);
+    lv_style_set_text_color(&st_ok, p->accent_secondary);
+    lv_style_set_text_color(&st_warn, p->accent_warning);
+    lv_style_set_text_color(&st_mono, p->text_primary);
+}
 
-    char *dest = s_term_buffers[sess_idx];
-    size_t *dlen = &s_term_lens[sess_idx];
+static void styles_init(void)
+{
+    if (s_styles_ready) return;
+    lv_style_t *all[] = { &st_bg, &st_sidebar, &st_header, &st_title, &st_text, &st_muted, &st_small, &st_btn,
+                          &st_btn_primary, &st_btn_danger, &st_row, &st_row_active, &st_ta, &st_ta_focus,
+                          &st_overlay, &st_modal, &st_kb, &st_kb_btn, &st_err, &st_ok, &st_warn, &st_mono };
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) lv_style_init(all[i]);
+    lv_style_set_bg_opa(&st_bg, LV_OPA_COVER);
+    lv_style_set_radius(&st_bg, 0);
+    lv_style_set_border_width(&st_bg, 0);
+    lv_style_set_pad_all(&st_bg, 0);
+    lv_style_set_bg_opa(&st_sidebar, LV_OPA_COVER);
+    lv_style_set_radius(&st_sidebar, 0);
+    lv_style_set_border_width(&st_sidebar, 1);
+    lv_style_set_border_side(&st_sidebar, LV_BORDER_SIDE_RIGHT);
+    lv_style_set_pad_all(&st_sidebar, 10);
+    lv_style_set_pad_row(&st_sidebar, 6);
+    lv_style_set_bg_opa(&st_header, LV_OPA_COVER);
+    lv_style_set_radius(&st_header, 0);
+    lv_style_set_border_width(&st_header, 1);
+    lv_style_set_border_side(&st_header, LV_BORDER_SIDE_BOTTOM);
+    lv_style_set_pad_hor(&st_header, 8);
+    lv_style_set_pad_ver(&st_header, 0);
+    lv_style_set_text_font(&st_title, &lv_font_montserrat_12);
+    lv_style_set_text_letter_space(&st_title, 1);
+    lv_style_set_text_font(&st_text, &lv_font_montserrat_14);
+    lv_style_set_text_font(&st_muted, &lv_font_montserrat_12);
+    lv_style_set_text_font(&st_small, &lv_font_montserrat_12);
+    lv_style_set_bg_opa(&st_btn, LV_OPA_COVER);
+    lv_style_set_border_width(&st_btn, 1);
+    lv_style_set_radius(&st_btn, 6);
+    lv_style_set_shadow_width(&st_btn, 0);
+    lv_style_set_pad_hor(&st_btn, 12);
+    lv_style_set_pad_ver(&st_btn, 7);
+    lv_style_set_text_font(&st_btn, &lv_font_montserrat_14);
+    lv_style_set_border_width(&st_btn_primary, 0);
+    lv_style_set_bg_opa(&st_row, LV_OPA_TRANSP);
+    lv_style_set_radius(&st_row, 6);
+    lv_style_set_border_width(&st_row, 0);
+    lv_style_set_shadow_width(&st_row, 0);
+    lv_style_set_pad_all(&st_row, 6);
+    lv_style_set_bg_opa(&st_row_active, LV_OPA_COVER);
+    lv_style_set_border_width(&st_row_active, 2);
+    lv_style_set_border_side(&st_row_active, LV_BORDER_SIDE_LEFT);
+    lv_style_set_bg_opa(&st_ta, LV_OPA_COVER);
+    lv_style_set_border_width(&st_ta, 1);
+    lv_style_set_radius(&st_ta, 6);
+    lv_style_set_pad_all(&st_ta, 8);
+    lv_style_set_text_font(&st_ta, &lv_font_montserrat_16);
+    lv_style_set_border_width(&st_ta_focus, 2);
+    lv_style_set_bg_color(&st_overlay, lv_color_black());
+    lv_style_set_bg_opa(&st_overlay, LV_OPA_50);
+    lv_style_set_border_width(&st_overlay, 0);
+    lv_style_set_radius(&st_overlay, 0);
+    lv_style_set_pad_all(&st_overlay, 0);
+    lv_style_set_bg_opa(&st_modal, LV_OPA_COVER);
+    lv_style_set_border_width(&st_modal, 1);
+    lv_style_set_radius(&st_modal, 10);
+    lv_style_set_pad_all(&st_modal, 18);
+    lv_style_set_pad_row(&st_modal, 10);
+    lv_style_set_bg_opa(&st_kb, LV_OPA_COVER);
+    lv_style_set_border_width(&st_kb, 0);
+    lv_style_set_radius(&st_kb, 0);
+    lv_style_set_bg_opa(&st_kb_btn, LV_OPA_COVER);
+    lv_style_set_radius(&st_kb_btn, 6);
+    lv_style_set_border_width(&st_kb_btn, 0);
+    lv_style_set_shadow_width(&st_kb_btn, 0);
+    lv_style_set_text_font(&st_kb_btn, &lv_font_montserrat_18);
+    lv_style_set_text_font(&st_err, &lv_font_montserrat_12);
+    lv_style_set_text_font(&st_ok, &lv_font_montserrat_12);
+    lv_style_set_text_font(&st_warn, &lv_font_montserrat_12);
+    lv_style_set_text_font(&st_mono, &lv_font_nimbus_mono_14);
+    restyle(devos_theme_get());
+    s_styles_ready = true;
+}
 
-    for (size_t i = 0; i < len; i++) {
-        char ch = raw_data[i];
+static lv_obj_t *mk_label(lv_obj_t *parent, lv_style_t *st, const char *txt)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_add_style(l, st, 0);
+    lv_label_set_text(l, txt);
+    return l;
+}
 
-        /* ANSI / Terminal Escape Sequences */
-        if (ch == '\033') {
-            /* OSC sequence: \033] ... \007 or \033\ */
-            if (i + 1 < len && raw_data[i + 1] == ']') {
-                i += 2;
-                while (i < len && raw_data[i] != '\007') {
-                    if (raw_data[i] == '\033' && i + 1 < len && raw_data[i + 1] == '\\') {
-                        i++;
-                        break;
-                    }
-                    i++;
-                }
-                continue;
-            }
-            /* CSI sequence: \033[ ... [A-Za-z~] */
-            if (i + 1 < len && raw_data[i + 1] == '[') {
-                i += 2;
-                while (i < len && !(raw_data[i] >= 'A' && raw_data[i] <= 'Z') &&
-                       !(raw_data[i] >= 'a' && raw_data[i] <= 'z') && raw_data[i] != '~') {
-                    i++;
-                }
-                if (i < len) {
-                    char term_cmd = raw_data[i];
-                    if (term_cmd == 'J') {
-                        /* Clear screen */
-                        *dlen = 0;
-                        dest[0] = '\0';
-                    }
-                }
-                continue;
-            }
-            /* Charset selection: \033( or \033) */
-            if (i + 1 < len && (raw_data[i + 1] == '(' || raw_data[i + 1] == ')')) {
-                i += 2;
-                continue;
-            }
-            /* Skip any other raw escape char */
-            continue;
-        }
+static lv_obj_t *mk_btn(lv_obj_t *parent, const char *txt, lv_style_t *extra, lv_event_cb_t cb, void *ud)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_add_style(b, &st_btn, 0);
+    if (extra) lv_obj_add_style(b, extra, 0);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, txt);
+    lv_obj_center(l);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+    return b;
+}
 
-        /* Carriage return: if followed by \n, skip; if standalone, rewind line */
-        if (ch == '\r') {
-            if (i + 1 < len && raw_data[i + 1] == '\n') {
-                continue;
-            }
-            while (*dlen > 0 && dest[*dlen - 1] != '\n') {
-                (*dlen)--;
-            }
-            dest[*dlen] = '\0';
-            continue;
-        }
+static void set_text(lv_obj_t *lbl, const char *txt)
+{
+    if (lbl && strcmp(lv_label_get_text(lbl), txt) != 0) lv_label_set_text(lbl, txt);
+}
 
-        /* Backspace / DEL */
-        if (ch == '\b' || (unsigned char)ch == 0x7F) {
-            if (*dlen > 0 && dest[*dlen - 1] != '\n') {
-                (*dlen)--;
-                dest[*dlen] = '\0';
-            }
-            continue;
-        }
+/* ======================================================================== */
+/* Sessions & emulators                                                     */
+/* ======================================================================== */
+static term_sess_t *ts_for(int id)
+{
+    return (id >= 1 && id <= SSH_MAX_SESSIONS) ? &s_ts[id - 1] : NULL;
+}
 
-        /* Filter out unprintable control characters below ASCII 32 (except newline & tab) */
-        if ((unsigned char)ch < 32 && ch != '\n' && ch != '\t') {
-            continue;
-        }
+static void vt_reply_cb(const char *data, size_t len, void *user)
+{
+    ssh_port_send((int)(intptr_t)user, data, len);
+}
 
-        /* Check buffer capacity, scroll if full (drop top 20%) */
-        if (*dlen >= TERM_BUFFER_MAX - 128) {
-            size_t drop = TERM_BUFFER_MAX / 5;
-            char *nl = strchr(dest + drop, '\n');
-            if (nl) {
-                size_t offset = nl - dest + 1;
-                memmove(dest, nl + 1, *dlen - offset);
-                *dlen -= offset;
-                dest[*dlen] = '\0';
-            } else {
-                *dlen = 0;
-                dest[0] = '\0';
-            }
-        }
+static void vt_puts(term_sess_t *t, const char *s)
+{
+    if (t && t->vt) devos_vterm_feed(t->vt, s, strlen(s));
+}
 
-        /* Append character */
-        dest[(*dlen)++] = ch;
-        dest[*dlen] = '\0';
+static void term_invalidate_all(void)
+{
+    if (term_view) lv_obj_invalidate(term_view);
+}
+
+static void compute_grid(void)
+{
+    int w = DEVOS_SCREEN_WIDTH - (s_sidebar_visible ? SIDEBAR_W : 0);
+    int h = DEVOS_CONTENT_HEIGHT - HEADER_H;
+    s_cols = (w - 2 * TERM_PAD) / CELL_W;
+    s_rows = (h - 2 * TERM_PAD) / CELL_H;
+    if (s_cols > DEVOS_VT_MAX_COLS) s_cols = DEVOS_VT_MAX_COLS;
+}
+
+static void apply_grid_to_sessions(void)
+{
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        if (!s_ts[i].vt) continue;
+        devos_vterm_resize(s_ts[i].vt, s_cols, s_rows);
+        ssh_session_t *s = ssh_port_get_session(i + 1);
+        if (s && s->state == SSH_SESSION_CONNECTED) ssh_port_resize_pty(i + 1, (uint16_t)s_cols, (uint16_t)s_rows);
     }
 }
 
-/* --------------------------------------------------------------------------
- * Callbacks & Navigation
- * -------------------------------------------------------------------------- */
-void app_terminal_resize_pty(uint16_t cols, uint16_t rows)
+static void layout(void)
 {
-    current_cols = cols;
-    current_rows = rows;
-
-    if (lbl_term_cols) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%dx%d Cols", cols, rows);
-        lv_label_set_text(lbl_term_cols, buf);
-    }
-
-    ssh_port_resize_pty(s_active_session_id, cols, rows);
+    compute_grid();
+    int x = s_sidebar_visible ? SIDEBAR_W : 0;
+    if (s_sidebar_visible) lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(term_area, x, 0);
+    lv_obj_set_size(term_area, DEVOS_SCREEN_WIDTH - x, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_width(lbl_header_title, DEVOS_SCREEN_WIDTH - x - 44 - 220);
+    apply_grid_to_sessions();
+    term_invalidate_all();
+    refresh_header();
 }
 
 void app_terminal_toggle_sidebar(void)
 {
-    sidebar_visible = !sidebar_visible;
+    s_sidebar_visible = !s_sidebar_visible;
+    layout();
+}
 
-    if (sidebar_visible) {
-        lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(terminal_container, DEVOS_PANE_LEFT_WIDTH, 0);
-        lv_obj_set_size(terminal_container, DEVOS_SCREEN_WIDTH - DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
-        app_terminal_resize_pty(DEVOS_TERM_COLS_COLLAPSED, DEVOS_TERM_ROWS);
-    } else {
-        lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(terminal_container, 0, 0);
-        lv_obj_set_size(terminal_container, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
-        app_terminal_resize_pty(DEVOS_TERM_COLS_EXPANDED, DEVOS_TERM_ROWS);
+void app_terminal_resize_pty(uint16_t cols, uint16_t rows)
+{
+    if (s_active) ssh_port_resize_pty(s_active, cols, rows);
+}
+
+static void switch_session(int id)
+{
+    term_sess_t *t = ts_for(id);
+    if (!t || !t->vt) return;
+    s_active = id;
+    t->view_offset = 0;
+    term_invalidate_all();
+    refresh_sidebar(true);
+    refresh_header();
+}
+
+/* Start (or restart into `reuse_id`) a session from connection parameters. */
+static int start_session(const ssh_bookmark_t *bm, const char *password, int reuse_id)
+{
+    term_sess_t keep = { 0 };
+    if (reuse_id) {
+        term_sess_t *old = ts_for(reuse_id);
+        if (old) keep = *old;
+        memset(old, 0, sizeof(*old));
+        ssh_port_close_session(reuse_id);        /* frees the finished slot */
+    }
+    const char *cred = bm->auth_type == SSH_AUTH_KEY ? bm->key_path : password;
+    int id = ssh_port_create_session(bm->alias, bm->host, bm->port, bm->user, bm->auth_type, cred,
+                                     (uint16_t)s_cols, (uint16_t)s_rows);
+    if (id <= 0) {
+        if (keep.vt) devos_vterm_destroy(keep.vt);
+        return -1;
+    }
+    term_sess_t *t = ts_for(id);
+    if (t->vt && t->vt != keep.vt) devos_vterm_destroy(t->vt);
+    memset(t, 0, sizeof(*t));
+    t->vt = keep.vt ? keep.vt : devos_vterm_create(s_cols, s_rows, SCROLLBACK);
+    if (!t->vt) {
+        ssh_port_close_session(id);
+        return -1;
+    }
+    devos_vterm_resize(t->vt, s_cols, s_rows);
+    devos_vterm_set_output_cb(t->vt, vt_reply_cb, (void *)(intptr_t)id);
+    t->last_state = SSH_SESSION_DISCONNECTED;
+    snprintf(t->alias, sizeof(t->alias), "%s", bm->alias[0] ? bm->alias : bm->host);
+    snprintf(t->host, sizeof(t->host), "%s", bm->host);
+    t->port = bm->port > 0 ? bm->port : 22;
+    snprintf(t->user, sizeof(t->user), "%s", bm->user);
+    t->auth = bm->auth_type;
+    snprintf(t->keypath, sizeof(t->keypath), "%s", bm->key_path);
+    char line[256];
+    snprintf(line, sizeof(line), "\r\n\033[0;36mConnecting to %.60s@%.100s:%d ...\033[0m\r\n", t->user, t->host, t->port);
+    vt_puts(t, line);
+    switch_session(id);
+    return id;
+}
+
+/* Poll all sessions: feed output, track state, surface prompts. */
+static void on_state_change(int id, term_sess_t *t, ssh_session_t *s)
+{
+    char line[300];
+    switch (s->state) {
+    case SSH_SESSION_ERROR:
+        snprintf(line, sizeof(line), "\r\n\033[1;31m%s\033[0m\r\n\033[0;33mPress Enter to retry.\033[0m\r\n",
+                 s->last_error[0] ? s->last_error : "Connection failed");
+        vt_puts(t, line);
+        break;
+    case SSH_SESSION_CLOSED:
+        vt_puts(t, "\033[0;33mPress Enter to reconnect.\033[0m\r\n");
+        break;
+    case SSH_SESSION_HOSTKEY_PROMPT:
+        if (!dlg_hostkey || lv_obj_has_flag(dlg_hostkey, LV_OBJ_FLAG_HIDDEN)) {
+            close_dialogs();
+            s_hostkey_for = id;
+            snprintf(line, sizeof(line),
+                     "The authenticity of %.60s (port %d) can't be established.\n\n"
+                     "%s key fingerprint:\n%s\n\n"
+                     "Trust this host and remember its key in /sdcard/.ssh/known_hosts?",
+                     s->host, s->port, s->hostkey_type, s->hostkey_fp);
+            lv_label_set_text(lbl_hk_body, line);
+            lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(dlg_hostkey, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(overlay);
+            if (id != s_active) switch_session(id);
+        }
+        break;
+    default:
+        break;
     }
 }
 
-static void toggle_sidebar_cb(lv_event_t *e)
+static void poll_cb(lv_timer_t *tm)
 {
-    LV_UNUSED(e);
-    app_terminal_toggle_sidebar();
+    LV_UNUSED(tm);
+    static char buf[4096];
+    bool visible = screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN);
+    bool states_changed = false;
+
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        term_sess_t *t = &s_ts[i];
+        if (!t->vt) continue;
+        int id = i + 1;
+        ssh_session_t *s = ssh_port_get_session(id);
+        /* Drain this session (bounded per tick so the UI stays responsive). */
+        for (int n = 0; n < 16; n++) {
+            int got = ssh_port_recv(id, buf, sizeof(buf));
+            if (got <= 0) break;
+            devos_vterm_feed(t->vt, buf, (size_t)got);
+        }
+        /* Keep a scrolled-back view anchored as new lines arrive. */
+        uint32_t total = devos_vterm_scrolled_total(t->vt);
+        if (t->view_offset > 0 && total != t->sb_seen) {
+            t->view_offset += (int)(total - t->sb_seen);
+            int max = devos_vterm_scrollback_lines(t->vt);
+            if (t->view_offset > max) t->view_offset = max;
+        }
+        t->sb_seen = total;
+
+        if (s && s->state != t->last_state) {
+            t->last_state = s->state;
+            states_changed = true;
+            on_state_change(id, t, s);
+        }
+    }
+
+    /* Redraw only the rows that changed in the active session. */
+    term_sess_t *a = ts_for(s_active);
+    if (visible && a && a->vt && term_view) {
+        static uint8_t dirty[64];
+        if (devos_vterm_take_dirty(a->vt, dirty, (int)sizeof(dirty))) {
+            if (a->view_offset > 0) {
+                term_invalidate_all();
+            } else {
+                lv_area_t c;
+                lv_obj_get_coords(term_view, &c);
+                int rows = devos_vterm_rows(a->vt);
+                for (int r = 0; r < rows && r < (int)sizeof(dirty); r++) {
+                    if (!dirty[r]) continue;
+                    lv_area_t ar = { c.x1, c.y1 + TERM_PAD + r * CELL_H, c.x2, c.y1 + TERM_PAD + (r + 1) * CELL_H - 1 };
+                    lv_obj_invalidate_area(term_view, &ar);
+                }
+            }
+        }
+    }
+    if (states_changed || visible) {
+        refresh_sidebar(states_changed);
+        if (visible) refresh_header();
+    }
+
+    /* Launcher tile telemetry */
+    int live = 0;
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        ssh_session_t *s = ssh_port_get_session(i + 1);
+        if (s && s->state == SSH_SESSION_CONNECTED) live++;
+    }
+    const devos_telemetry_t *cur = devos_telemetry_get();
+    char host[32];
+    ssh_session_t *as = ssh_port_get_session(s_active);
+    if (as && s_ts[s_active - 1].vt) snprintf(host, sizeof(host), "%.12s@%.18s", as->user, as->host);
+    else snprintf(host, sizeof(host), "No session");
+    if (cur->terminal_sessions != live || strcmp(cur->terminal_host, host) != 0) {
+        devos_telemetry_t t2;
+        memcpy(&t2, cur, sizeof(t2));
+        t2.terminal_sessions = (uint8_t)live;
+        snprintf(t2.terminal_host, sizeof(t2.terminal_host), "%s", host);
+        devos_telemetry_update(&t2);
+    }
 }
 
-static void tab_active_cb(lv_event_t *e)
+/* ======================================================================== */
+/* Terminal grid renderer                                                   */
+/* ======================================================================== */
+static lv_color_t xterm_color(uint8_t idx, const devos_palette_t *p)
 {
-    LV_UNUSED(e);
-    s_sidebar_tab = 0;
-    refresh_sidebar();
+    if (idx < 16) return p->ansi[idx];
+    if (idx < 232) {
+        static const uint8_t lv[6] = { 0, 95, 135, 175, 215, 255 };
+        int i = idx - 16;
+        return lv_color_make(lv[i / 36], lv[(i / 6) % 6], lv[i % 6]);
+    }
+    uint8_t v = (uint8_t)(8 + (idx - 232) * 10);
+    return lv_color_make(v, v, v);
 }
 
-static void tab_bookmarks_cb(lv_event_t *e)
+/* Nimbus Mono 14 covers ASCII + Latin-1; map common TUI glyphs to ASCII. */
+static uint32_t glyph_for(uint16_t ch)
 {
-    LV_UNUSED(e);
-    s_sidebar_tab = 1;
-    refresh_sidebar();
+    if (ch == 0) return ' ';
+    if ((ch >= 0x20 && ch < 0x7F) || (ch >= 0xA0 && ch <= 0xFF)) return ch;
+    if (ch >= 0x2500 && ch <= 0x257F) {
+        switch (ch) {
+        case 0x2500: case 0x2501: case 0x2504: case 0x2505: case 0x2508: case 0x2509:
+        case 0x254C: case 0x254D: case 0x2574: case 0x2576: case 0x2578: case 0x257A:
+            return '-';
+        case 0x2550: return '=';
+        case 0x2502: case 0x2503: case 0x2506: case 0x2507: case 0x250A: case 0x250B:
+        case 0x254E: case 0x254F: case 0x2551: case 0x2575: case 0x2577: case 0x2579: case 0x257B:
+            return '|';
+        case 0x2571: return '/';
+        case 0x2572: return '\\';
+        case 0x2573: return 'X';
+        default: return '+';
+        }
+    }
+    if (ch >= 0x2580 && ch <= 0x259F) return '#';
+    if (ch >= 0x23BA && ch <= 0x23BD) return '-';
+    switch (ch) {
+    case 0x2190: case 0x25C0: case 0x25C4: case 0x2039: return '<';
+    case 0x2192: case 0x25B6: case 0x25BA: case 0x203A: return '>';
+    case 0x2191: case 0x25B2: return '^';
+    case 0x2193: case 0x25BC: return 'v';
+    case 0x2022: case 0x25CF: case 0x25C6: case 0x2605: return '*';
+    case 0x25CB: case 0x25E6: return 'o';
+    case 0x2026: return '.';
+    case 0x2018: case 0x2019: case 0x201B: return '\'';
+    case 0x201C: case 0x201D: return '"';
+    case 0x2010: case 0x2011: case 0x2012: case 0x2013: case 0x2014: case 0x2015: case 0x2212: return '-';
+    case 0x2713: case 0x2714: return 'v';
+    case 0x2717: case 0x2718: return 'x';
+    case 0x2264: return '<';
+    case 0x2265: return '>';
+    case 0x2260: return '#';
+    case 0x03C0: return 'p';
+    case 0x2409: case 0x240A: case 0x240B: case 0x240C: case 0x240D: case 0x2424: return ' ';
+    default: return '?';
+    }
 }
 
-static void session_card_cb(lv_event_t *e)
+static int utf8_put(char *dst, uint32_t cp)
 {
-    int sess_id = (int)(intptr_t)lv_event_get_user_data(e);
-    app_terminal_switch_session(sess_id);
+    if (cp < 0x80) { dst[0] = (char)cp; return 1; }
+    dst[0] = (char)(0xC0 | (cp >> 6));
+    dst[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+}
+
+static void resolve_colors(const devos_vt_cell_t *c, const devos_palette_t *p, lv_color_t dfg, lv_color_t dbg,
+                           lv_color_t *fg, lv_color_t *bg, bool *bg_default)
+{
+    uint8_t fi = c->fg;
+    if ((c->attr & VT_ATTR_BOLD) && fi < 8) fi += 8;                 /* bold = bright */
+    lv_color_t f = (c->attr & VT_ATTR_FG_DEFAULT) ? dfg : xterm_color(fi, p);
+    bool bdef = (c->attr & VT_ATTR_BG_DEFAULT) != 0;
+    lv_color_t b = bdef ? dbg : xterm_color(c->bg, p);
+    if (c->attr & VT_ATTR_REVERSE) {
+        lv_color_t tmp = f; f = b; b = tmp;
+        bdef = false;
+    }
+    if (c->attr & VT_ATTR_DIM) f = lv_color_mix(f, b, 150);
+    *fg = f;
+    *bg = b;
+    *bg_default = bdef;
+}
+
+static void term_draw_cb(lv_event_t *e)
+{
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_obj_t *obj = lv_event_get_current_target(e);
+    term_sess_t *t = ts_for(s_active);
+    if (!t || !t->vt) return;
+    const devos_palette_t *p = devos_theme_get();
+    lv_color_t dfg = p->text_primary, dbg = p->code_bg;
+
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    int cols = devos_vterm_cols(t->vt), rows = devos_vterm_rows(t->vt);
+    int x0 = a.x1 + TERM_PAD, y0 = a.y1 + TERM_PAD;
+    const lv_area_t *clip = &layer->_clip_area;
+    int r0 = (clip->y1 - y0) / CELL_H, r1 = (clip->y2 - y0) / CELL_H;
+    if (r0 < 0) r0 = 0;
+    if (r1 > rows - 1) r1 = rows - 1;
+
+    int ccol = 0, crow = 0;
+    bool cvis = false;
+    devos_vterm_cursor(t->vt, &ccol, &crow, &cvis);
+    ssh_session_t *s = ssh_port_get_session(s_active);
+    bool show_cursor = cvis && t->view_offset == 0 && s && s->state == SSH_SESSION_CONNECTED;
+
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_opa = LV_OPA_COVER;
+    lv_draw_label_dsc_t ld;
+    lv_draw_label_dsc_init(&ld);
+    ld.font = &lv_font_nimbus_mono_14;
+    ld.flag = LV_TEXT_FLAG_EXPAND;
+    ld.text_local = 1;
+    char txt[DEVOS_VT_MAX_COLS * 2 + 1];
+
+    for (int r = r0; r <= r1; r++) {
+        const devos_vt_cell_t *row = devos_vterm_view_row(t->vt, r, t->view_offset);
+        if (!row) continue;
+        int y = y0 + r * CELL_H;
+        int c = 0;
+        while (c < cols) {
+            lv_color_t fg, bg;
+            bool bdef;
+            resolve_colors(&row[c], p, dfg, dbg, &fg, &bg, &bdef);
+            uint8_t ul = row[c].attr & VT_ATTR_UNDERLINE;
+            int start = c, tl = 0;
+            bool blank = true;
+            while (c < cols) {
+                lv_color_t f2, b2;
+                bool bd2;
+                resolve_colors(&row[c], p, dfg, dbg, &f2, &b2, &bd2);
+                if (c > start && (!lv_color_eq(f2, fg) || !lv_color_eq(b2, bg) || bd2 != bdef ||
+                                  (row[c].attr & VT_ATTR_UNDERLINE) != ul)) break;
+                uint32_t g = glyph_for(row[c].ch);
+                if (g != ' ') blank = false;
+                tl += utf8_put(txt + tl, g);
+                c++;
+            }
+            txt[tl] = '\0';
+            if (!bdef) {
+                rd.bg_color = bg;
+                lv_area_t br = { x0 + start * CELL_W, y, x0 + c * CELL_W - 1, y + CELL_H - 1 };
+                lv_draw_rect(layer, &rd, &br);
+            }
+            if (!blank || ul) {
+                ld.color = fg;
+                ld.decor = ul ? LV_TEXT_DECOR_UNDERLINE : LV_TEXT_DECOR_NONE;
+                ld.text = txt;
+                lv_area_t tr = { x0 + start * CELL_W, y, x0 + c * CELL_W + CELL_W, y + CELL_H - 1 };
+                lv_draw_label(layer, &ld, &tr);
+            }
+        }
+        if (show_cursor && r == crow && ccol < cols) {
+            rd.bg_color = p->accent_primary;
+            lv_area_t cr = { x0 + ccol * CELL_W, y, x0 + (ccol + 1) * CELL_W - 1, y + CELL_H - 1 };
+            lv_draw_rect(layer, &rd, &cr);
+            char cc[3];
+            int n = utf8_put(cc, glyph_for(row[ccol].ch));
+            cc[n] = '\0';
+            if (cc[0] != ' ') {
+                ld.color = dbg;
+                ld.decor = LV_TEXT_DECOR_NONE;
+                ld.text = cc;
+                lv_area_t ct = { cr.x1, y, cr.x1 + 2 * CELL_W, y + CELL_H - 1 };
+                lv_draw_label(layer, &ld, &ct);
+            }
+        }
+    }
+}
+
+/* Touch: drag vertically to scroll back through history. */
+static void term_touch_cb(lv_event_t *e)
+{
+    static int32_t last_y = 0;
+    static int acc = 0;
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+    if (code == LV_EVENT_PRESSED) {
+        last_y = pt.y;
+        acc = 0;
+        return;
+    }
+    if (code != LV_EVENT_PRESSING) return;
+    term_sess_t *t = ts_for(s_active);
+    if (!t || !t->vt) return;
+    acc += pt.y - last_y;
+    last_y = pt.y;
+    int lines = acc / CELL_H;
+    if (!lines) return;
+    acc -= lines * CELL_H;
+    int max = devos_vterm_scrollback_lines(t->vt);
+    int v = t->view_offset + lines;                          /* drag down = older */
+    if (v < 0) v = 0;
+    if (v > max) v = max;
+    if (v != t->view_offset) {
+        t->view_offset = v;
+        term_invalidate_all();
+        refresh_header();
+    }
+}
+
+/* ======================================================================== */
+/* Sidebar / header                                                         */
+/* ======================================================================== */
+static const char *state_text(ssh_session_state_t st)
+{
+    switch (st) {
+    case SSH_SESSION_CONNECTING:     return "Connecting...";
+    case SSH_SESSION_AUTHENTICATING: return "Authenticating...";
+    case SSH_SESSION_HOSTKEY_PROMPT: return "Verify host key";
+    case SSH_SESSION_CONNECTED:      return "Connected";
+    case SSH_SESSION_CLOSED:         return "Closed";
+    case SSH_SESSION_ERROR:          return "Failed";
+    default:                         return "";
+    }
+}
+
+static lv_style_t *state_style(ssh_session_state_t st)
+{
+    switch (st) {
+    case SSH_SESSION_CONNECTED: return &st_ok;
+    case SSH_SESSION_ERROR:     return &st_err;
+    case SSH_SESSION_CLOSED:    return &st_small;
+    default:                    return &st_warn;
+    }
+}
+
+static void session_row_cb(lv_event_t *e)
+{
+    switch_session((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 static void session_close_cb(lv_event_t *e)
 {
-    int sess_id = (int)(intptr_t)lv_event_get_user_data(e);
-    ssh_port_close_session(sess_id);
-
-    /* If closed active session, pick another active session */
-    if (sess_id == s_active_session_id) {
-        int active_ids[SSH_MAX_SESSIONS];
-        int count = ssh_port_get_active_sessions(active_ids, SSH_MAX_SESSIONS);
-        if (count > 0) {
-            app_terminal_switch_session(active_ids[0]);
-        } else {
-            s_active_session_id = 1;
-            refresh_header();
+    int id = (int)(intptr_t)lv_event_get_user_data(e);
+    ssh_session_t *s = ssh_port_get_session(id);
+    term_sess_t *t = ts_for(id);
+    if (!s || !t) return;
+    if (s->state == SSH_SESSION_CONNECTED || s->state == SSH_SESSION_CONNECTING ||
+        s->state == SSH_SESSION_AUTHENTICATING || s->state == SSH_SESSION_HOSTKEY_PROMPT) {
+        ssh_port_close_session(id);                         /* disconnect; row stays until removed */
+        return;
+    }
+    ssh_port_close_session(id);                             /* free the slot */
+    if (t->vt) devos_vterm_destroy(t->vt);
+    memset(t, 0, sizeof(*t));
+    if (s_active == id) {
+        s_active = 0;
+        for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+            if (s_ts[i].vt) { s_active = i + 1; break; }
         }
     }
-    refresh_sidebar();
+    term_invalidate_all();
+    refresh_sidebar(true);
+    refresh_header();
 }
 
-static void bookmark_connect_cb(lv_event_t *e)
+static void open_connect_dialog(const char *host);
+static void new_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_connect_dialog(NULL); }
+
+static void open_password_dialog(const ssh_bookmark_t *bm, int reuse_id);
+
+static void connect_bookmark(const ssh_bookmark_t *bm, int reuse_id)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    ssh_bookmark_t bms[TERM_MAX_BOOKMARKS];
-    int count = 0;
-    if (ssh_port_load_bookmarks(bms, TERM_MAX_BOOKMARKS, &count) == 0 && idx < count) {
-        int new_id = ssh_port_create_session(bms[idx].alias, bms[idx].host, bms[idx].port,
-                                             bms[idx].user, bms[idx].auth_type,
-                                             bms[idx].key_path, current_cols, current_rows);
-        if (new_id > 0) {
-            s_sidebar_tab = 0; /* Switch to active tab */
-            app_terminal_switch_session(new_id);
+    if (bm->auth_type == SSH_AUTH_PASSWORD) {
+        open_password_dialog(bm, reuse_id);
+    } else {
+        start_session(bm, NULL, reuse_id);
+    }
+}
+
+static void host_row_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i >= 0 && i < s_host_count) connect_bookmark(&s_hosts[i], 0);
+}
+
+static void host_delete_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    ssh_port_delete_bookmark(i);
+    s_hosts_key[0] = '\0';
+    refresh_sidebar(true);
+}
+
+static void open_devkey_dialog(void);
+static void devkey_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_devkey_dialog(); }
+
+static lv_obj_t *mk_section(lv_obj_t *parent, const char *title, lv_event_cb_t add_cb)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), 30);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *l = mk_label(row, &st_title, title);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+    if (add_cb) {
+        lv_obj_t *b = mk_btn(row, LV_SYMBOL_PLUS " New", NULL, add_cb, NULL);
+        lv_obj_set_style_pad_ver(b, 4, 0);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+    lv_obj_t *list = lv_obj_create(parent);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 4, 0);
+    lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    return list;
+}
+
+static void refresh_sidebar(bool force)
+{
+    if (!list_sessions) return;
+    /* Sessions: rebuild when ids / states / errors change */
+    char key[256];
+    int kl = 0;
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        if (!s_ts[i].vt) continue;
+        ssh_session_t *s = ssh_port_get_session(i + 1);
+        kl += snprintf(key + kl, sizeof(key) - (size_t)kl, "%d:%d:%d,", i, (int)s->state, s_active == i + 1);
+        if (kl >= (int)sizeof(key) - 16) break;
+    }
+    if (force || strcmp(key, s_list_key) != 0) {
+        snprintf(s_list_key, sizeof(s_list_key), "%s", key);
+        lv_obj_clean(list_sessions);
+        bool any = false;
+        for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+            term_sess_t *t = &s_ts[i];
+            if (!t->vt) continue;
+            any = true;
+            ssh_session_t *s = ssh_port_get_session(i + 1);
+            lv_obj_t *row = lv_button_create(list_sessions);
+            lv_obj_add_style(row, &st_row, 0);
+            if (s_active == i + 1) lv_obj_add_style(row, &st_row_active, 0);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_add_event_cb(row, session_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
+            char buf[160];
+            snprintf(buf, sizeof(buf), "%d  %.28s", i + 1, t->alias);
+            lv_obj_t *l1 = mk_label(row, &st_text, buf);
+            lv_label_set_long_mode(l1, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(l1, SIDEBAR_W - 70);
+            snprintf(buf, sizeof(buf), "%.16s@%.24s", t->user, t->host);
+            lv_obj_t *l2 = mk_label(row, &st_muted, buf);
+            lv_obj_set_pos(l2, 0, 20);
+            lv_label_set_long_mode(l2, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(l2, SIDEBAR_W - 70);
+            lv_obj_t *l3 = mk_label(row, state_style(s->state), state_text(s->state));
+            lv_obj_set_pos(l3, 0, 38);
+            bool live = s->state == SSH_SESSION_CONNECTED || s->state == SSH_SESSION_CONNECTING ||
+                        s->state == SSH_SESSION_AUTHENTICATING || s->state == SSH_SESSION_HOSTKEY_PROMPT;
+            lv_obj_t *x = mk_btn(row, live ? LV_SYMBOL_POWER : LV_SYMBOL_CLOSE, &st_btn_danger, session_close_cb,
+                                 (void *)(intptr_t)(i + 1));
+            lv_obj_set_style_pad_all(x, 6, 0);
+            lv_obj_align(x, LV_ALIGN_RIGHT_MID, 0, 0);
+        }
+        if (!any) mk_label(list_sessions, &st_small, "No sessions yet.");
+    }
+
+    /* Saved hosts: reload from SD when the count changes or on demand */
+    ssh_bookmark_t tmp[SSH_MAX_BOOKMARKS];
+    int n = 0;
+    ssh_port_load_bookmarks(tmp, SSH_MAX_BOOKMARKS, &n);
+    char hk[64];
+    snprintf(hk, sizeof(hk), "%d:%s", n, n ? tmp[n - 1].host : "");
+    if (force || strcmp(hk, s_hosts_key) != 0) {
+        snprintf(s_hosts_key, sizeof(s_hosts_key), "%s", hk);
+        memcpy(s_hosts, tmp, sizeof(s_hosts));
+        s_host_count = n;
+        lv_obj_clean(list_hosts);
+        if (n == 0) mk_label(list_hosts, &st_small, "None. Tick \"Save\" when connecting.");
+        for (int i = 0; i < n; i++) {
+            lv_obj_t *row = lv_button_create(list_hosts);
+            lv_obj_add_style(row, &st_row, 0);
+            lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_add_event_cb(row, host_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            char buf[160];
+            lv_obj_t *l1 = mk_label(row, &st_text, s_hosts[i].alias[0] ? s_hosts[i].alias : s_hosts[i].host);
+            lv_label_set_long_mode(l1, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(l1, SIDEBAR_W - 70);
+            snprintf(buf, sizeof(buf), "%.16s@%.24s  (%s)", s_hosts[i].user, s_hosts[i].host,
+                     s_hosts[i].auth_type == SSH_AUTH_DEVICE_KEY ? "device key"
+                     : s_hosts[i].auth_type == SSH_AUTH_KEY ? "key file" : "password");
+            lv_obj_t *l2 = mk_label(row, &st_muted, buf);
+            lv_obj_set_pos(l2, 0, 20);
+            lv_label_set_long_mode(l2, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(l2, SIDEBAR_W - 70);
+            lv_obj_t *x = mk_btn(row, LV_SYMBOL_TRASH, &st_btn_danger, host_delete_cb, (void *)(intptr_t)i);
+            lv_obj_set_style_pad_all(x, 6, 0);
+            lv_obj_align(x, LV_ALIGN_RIGHT_MID, 0, 0);
         }
     }
 }
 
-static void bookmark_delete_cb(lv_event_t *e)
+static void refresh_header(void)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    ssh_port_delete_bookmark(idx);
-    refresh_sidebar();
+    if (!lbl_header_title) return;
+    term_sess_t *t = ts_for(s_active);
+    ssh_session_t *s = ssh_port_get_session(s_active);
+    char buf[200];
+    if (!t || !t->vt || !s) {
+        set_text(lbl_header_title, "Terminal");
+        lv_obj_remove_flag(lbl_empty, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        const char *title = devos_vterm_title(t->vt);
+        snprintf(buf, sizeof(buf), "%.24s@%.40s   %s%s%.60s", t->user, t->host, state_text(s->state),
+                 title[0] ? "   |   " : "", title);
+        set_text(lbl_header_title, buf);
+        lv_obj_add_flag(lbl_empty, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (t && t->vt && t->view_offset > 0) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_UP " %d lines back  |  %dx%d", t->view_offset, s_cols, s_rows);
+    } else {
+        snprintf(buf, sizeof(buf), "%dx%d", s_cols, s_rows);
+    }
+    set_text(lbl_header_info, buf);
 }
 
-static void ta_focus_cb(lv_event_t *e)
+/* ======================================================================== */
+/* Dialogs                                                                  */
+/* ======================================================================== */
+static bool dialog_open(void)
 {
-    lv_obj_t *target = lv_event_get_target(e);
-    s_focused_ta = target;
-    const devos_palette_t *p = devos_theme_get();
+    return overlay && !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+}
 
-    if (ta_alias) {
-        lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
+static void focus_ta(lv_obj_t *ta)
+{
+    lv_obj_t *all[] = { ta_host, ta_port, ta_user, ta_alias, ta_pass, ta_keypath, ta_pw };
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+        if (all[i]) lv_obj_remove_state(all[i], LV_STATE_FOCUSED);
     }
-    if (ta_host) {
-        lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
-    }
-    if (ta_port) {
-        lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
-    }
-    if (ta_user) {
-        lv_obj_clear_state(ta_user, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
-    }
-
-    if (target) {
-        lv_obj_add_state(target, LV_STATE_FOCUSED);
-        lv_obj_set_style_border_color(target, p->accent_primary, 0);
+    s_focused_ta = ta;
+    if (ta) {
+        lv_obj_add_state(ta, LV_STATE_FOCUSED);
+        lv_keyboard_set_textarea(kb, ta);
     }
 }
 
-static bool save_bookmark_from_modal(bool close_modal)
+static void close_dialogs(void)
 {
-    if (!ta_host || !ta_user || !ta_port || !ta_alias) return false;
+    if (!overlay) return;
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_connect, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_password, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_hostkey, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(dlg_devkey, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_text(ta_pass, "");
+    lv_textarea_set_text(ta_pw, "");
+    s_focused_ta = NULL;
+    s_pending.active = false;
+}
 
-    const char *host = lv_textarea_get_text(ta_host);
-    const char *user = lv_textarea_get_text(ta_user);
-    const char *port_s = lv_textarea_get_text(ta_port);
-    const char *alias = lv_textarea_get_text(ta_alias);
+static void show_dialog(lv_obj_t *dlg, lv_obj_t *first_ta)
+{
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(dlg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(overlay);
+    if (first_ta && !tab5_keyboard_is_connected()) lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    focus_ta(first_ta);
+}
 
-    if (!host || strlen(host) == 0) return false;
+static void ta_click_cb(lv_event_t *e)
+{
+    focus_ta(lv_event_get_target(e));
+    lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
 
-    int port = atoi(port_s);
-    if (port <= 0) port = 22;
-    if (!user || strlen(user) == 0) user = "root";
+static lv_obj_t *mk_ta(lv_obj_t *parent, const char *placeholder, int w, bool password)
+{
+    lv_obj_t *ta = lv_textarea_create(parent);
+    lv_obj_add_style(ta, &st_ta, 0);
+    lv_obj_add_style(ta, &st_ta_focus, LV_STATE_FOCUSED);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_textarea_set_password_mode(ta, password);
+    lv_obj_set_width(ta, w);
+    lv_obj_add_event_cb(ta, ta_click_cb, LV_EVENT_CLICKED, NULL);
+    return ta;
+}
 
+static lv_obj_t *mk_row(lv_obj_t *parent)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
+}
+
+static lv_obj_t *mk_dialog(int w)
+{
+    lv_obj_t *d = lv_obj_create(overlay);
+    lv_obj_remove_style_all(d);
+    lv_obj_add_style(d, &st_modal, 0);
+    lv_obj_set_size(d, w, LV_SIZE_CONTENT);
+    lv_obj_align(d, LV_ALIGN_TOP_MID, 0, 16);
+    lv_obj_set_flex_flow(d, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(d, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(d, LV_OBJ_FLAG_HIDDEN);
+    return d;
+}
+
+/* ---- connect dialog ---- */
+static void set_auth_choice(int c)
+{
+    s_auth_choice = c;
+    for (int i = 0; i < 3; i++) {
+        if (i == c) lv_obj_add_style(btn_auth[i], &st_btn_primary, 0);
+        else lv_obj_remove_style(btn_auth[i], &st_btn_primary, 0);
+    }
+    if (c == 2) {
+        lv_obj_add_flag(row_pass, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(row_key, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(row_pass, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(row_key, LV_OBJ_FLAG_HIDDEN);
+    }
+    set_text(lbl_pass_hint, c == 1 ? "Device key (password optional, used as fallback)" : "Password");
+}
+
+static void auth_btn_cb(lv_event_t *e)
+{
+    set_auth_choice((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void open_connect_dialog(const char *host)
+{
+    close_dialogs();
+    lv_textarea_set_text(ta_host, host ? host : "");
+    lv_textarea_set_text(ta_port, "22");
+    lv_textarea_set_text(ta_alias, "");
+    lv_textarea_set_text(ta_pass, "");
+    char keys[1][SSH_MAX_PATH_LEN];
+    int nk = 0;
+    if (!lv_textarea_get_text(ta_keypath)[0] && ssh_port_scan_keys(keys, 1, &nk) == 0 && nk > 0) {
+        lv_textarea_set_text(ta_keypath, keys[0]);
+    }
+    set_text(lbl_connect_err, "");
+    set_auth_choice(ssh_port_devkey_exists() ? 1 : 0);
+    show_dialog(dlg_connect, host && host[0] ? ta_user : ta_host);
+}
+
+static void connect_submit(void)
+{
     ssh_bookmark_t bm;
     memset(&bm, 0, sizeof(bm));
-    snprintf(bm.alias, sizeof(bm.alias), "%s", (alias && strlen(alias) > 0) ? alias : host);
-    snprintf(bm.host, sizeof(bm.host), "%s", host);
-    bm.port = port;
-    snprintf(bm.user, sizeof(bm.user), "%s", user);
-    bm.auth_type = SSH_AUTH_KEY;
-    snprintf(bm.key_path, sizeof(bm.key_path), "%s", TAB5_SD_MOUNT_POINT "/.ssh/id_ed25519");
+    snprintf(bm.host, sizeof(bm.host), "%s", lv_textarea_get_text(ta_host));
+    snprintf(bm.user, sizeof(bm.user), "%s", lv_textarea_get_text(ta_user));
+    snprintf(bm.alias, sizeof(bm.alias), "%s", lv_textarea_get_text(ta_alias));
+    bm.port = atoi(lv_textarea_get_text(ta_port));
+    if (bm.port <= 0 || bm.port > 65535) bm.port = 22;
+    bm.auth_type = s_auth_choice == 1 ? SSH_AUTH_DEVICE_KEY : s_auth_choice == 2 ? SSH_AUTH_KEY : SSH_AUTH_PASSWORD;
+    snprintf(bm.key_path, sizeof(bm.key_path), "%s", s_auth_choice == 2 ? lv_textarea_get_text(ta_keypath) : "");
+    if (!bm.host[0]) { set_text(lbl_connect_err, "Enter a host name or IP address."); focus_ta(ta_host); return; }
+    if (!bm.user[0]) { set_text(lbl_connect_err, "Enter a user name."); focus_ta(ta_user); return; }
+    if (bm.auth_type == SSH_AUTH_PASSWORD && !lv_textarea_get_text(ta_pass)[0]) {
+        set_text(lbl_connect_err, "Enter the password (or choose Device key).");
+        focus_ta(ta_pass);
+        return;
+    }
+    if (bm.auth_type == SSH_AUTH_KEY && !bm.key_path[0]) { set_text(lbl_connect_err, "Enter the key file path."); return; }
+    if (bm.auth_type == SSH_AUTH_DEVICE_KEY && !ssh_port_devkey_exists()) {
+        set_text(lbl_connect_err, "No device key yet: create one from the sidebar first.");
+        return;
+    }
+    if (lv_obj_has_state(cb_save, LV_STATE_CHECKED)) {
+        ssh_port_save_bookmark(&bm);                        /* never stores the password */
+        s_hosts_key[0] = '\0';
+    }
+    char pw[SSH_MAX_PASSWORD_LEN];
+    snprintf(pw, sizeof(pw), "%s", lv_textarea_get_text(ta_pass));
+    close_dialogs();
+    if (start_session(&bm, pw, 0) < 0) {
+        vt_puts(ts_for(s_active), "\r\n\033[1;31mAll 8 session slots are in use.\033[0m\r\n");
+    }
+    memset(pw, 0, sizeof(pw));
+    refresh_sidebar(true);
+}
 
-    int rc = ssh_port_save_bookmark(&bm);
-    if (rc == 0) {
-        refresh_sidebar();
-        if (lbl_modal_save_bm) {
-            lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_OK " Saved!");
+static void connect_btn_cb(lv_event_t *e) { LV_UNUSED(e); connect_submit(); }
+static void cancel_btn_cb(lv_event_t *e) { LV_UNUSED(e); close_dialogs(); }
+
+/* ---- password dialog ---- */
+static void open_password_dialog(const ssh_bookmark_t *bm, int reuse_id)
+{
+    close_dialogs();
+    s_pending.active = true;
+    s_pending.reuse_id = reuse_id;
+    s_pending.bm = *bm;
+    char t[200];
+    snprintf(t, sizeof(t), "Password for %.40s@%.80s", bm->user, bm->host);
+    lv_label_set_text(lbl_pw_title, t);
+    lv_textarea_set_text(ta_pw, "");
+    show_dialog(dlg_password, ta_pw);
+}
+
+static void password_submit(void)
+{
+    if (!s_pending.active) return;
+    ssh_bookmark_t bm = s_pending.bm;
+    int reuse = s_pending.reuse_id;
+    char pw[SSH_MAX_PASSWORD_LEN];
+    snprintf(pw, sizeof(pw), "%s", lv_textarea_get_text(ta_pw));
+    close_dialogs();
+    start_session(&bm, pw, reuse);
+    memset(pw, 0, sizeof(pw));
+    refresh_sidebar(true);
+}
+
+static void pw_ok_cb(lv_event_t *e) { LV_UNUSED(e); password_submit(); }
+
+/* ---- host key dialog ---- */
+static void hostkey_answer(bool trust)
+{
+    int id = s_hostkey_for;
+    s_hostkey_for = 0;
+    close_dialogs();
+    if (id) ssh_port_hostkey_answer(id, trust);
+}
+
+static void hk_trust_cb(lv_event_t *e) { LV_UNUSED(e); hostkey_answer(true); }
+static void hk_reject_cb(lv_event_t *e) { LV_UNUSED(e); hostkey_answer(false); }
+
+/* ---- device key dialog ---- */
+static void refresh_devkey_dialog(void)
+{
+    char pub[300];
+    if (ssh_port_devkey_exists() && ssh_port_devkey_public(pub, sizeof(pub)) == 0) {
+        char body[640];
+        snprintf(body, sizeof(body),
+                 "This device's public key (ECDSA P-256):\n\n%s\n\n"
+                 "Add it to ~/.ssh/authorized_keys on a server, or connect once with a password and "
+                 "press Install to add it to that server for you.", pub);
+        lv_label_set_text(lbl_dk_body, body);
+        lv_obj_add_flag(btn_dk_create, LV_OBJ_FLAG_HIDDEN);
+        ssh_session_t *s = ssh_port_get_session(s_active);
+        if (s && s->state == SSH_SESSION_CONNECTED) lv_obj_remove_flag(btn_dk_install, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(btn_dk_install, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text(lbl_dk_body,
+                          "No device key yet.\n\nCreate one to log in without typing passwords. The private key "
+                          "stays in this device's flash (NVS); only the public half is shown here.\n\n"
+                          "Ed25519 keys are not supported by this build. RSA or ECDSA keys in PEM format "
+                          "copied to /sdcard/.ssh/ can be used with \"Key file\".");
+        lv_obj_remove_flag(btn_dk_create, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn_dk_install, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void open_devkey_dialog(void)
+{
+    close_dialogs();
+    refresh_devkey_dialog();
+    show_dialog(dlg_devkey, NULL);
+}
+
+static void dk_create_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    lv_label_set_text(lbl_dk_body, "Generating key...");
+    lv_refr_now(NULL);
+    if (ssh_port_devkey_generate() != 0) {
+        lv_label_set_text(lbl_dk_body, "Key generation failed. See the serial log.");
+        return;
+    }
+    refresh_devkey_dialog();
+}
+
+static void dk_install_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    char pub[300], cmd[1024];
+    if (ssh_port_devkey_public(pub, sizeof(pub)) != 0 || !s_active) return;
+    snprintf(cmd, sizeof(cmd),
+             "mkdir -p ~/.ssh && chmod 700 ~/.ssh && grep -qxF '%s' ~/.ssh/authorized_keys 2>/dev/null || "
+             "echo '%s' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+             "echo 'devOS: device key installed'\r", pub, pub);
+    ssh_port_send(s_active, cmd, strlen(cmd));
+    close_dialogs();
+}
+
+static void kb_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CANCEL) { close_dialogs(); return; }
+    if (code != LV_EVENT_READY) return;
+    if (!lv_obj_has_flag(dlg_password, LV_OBJ_FLAG_HIDDEN)) password_submit();
+    else if (!lv_obj_has_flag(dlg_connect, LV_OBJ_FLAG_HIDDEN)) connect_submit();
+}
+
+static void build_dialogs(void)
+{
+    overlay = lv_obj_create(screen);
+    lv_obj_remove_style_all(overlay);
+    lv_obj_add_style(overlay, &st_overlay, 0);
+    lv_obj_set_size(overlay, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+
+    /* connect */
+    dlg_connect = mk_dialog(720);
+    lv_obj_t *t = mk_label(dlg_connect, &st_text, "New SSH connection");
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
+    lv_obj_t *row = mk_row(dlg_connect);
+    ta_host = mk_ta(row, "Host or IP (e.g. 192.168.1.20 or box.local)", 560, false);
+    ta_port = mk_ta(row, "Port", 100, false);
+    lv_textarea_set_accepted_chars(ta_port, "0123456789");
+    lv_textarea_set_max_length(ta_port, 5);
+    row = mk_row(dlg_connect);
+    ta_user = mk_ta(row, "User (e.g. root)", 330, false);
+    ta_alias = mk_ta(row, "Name (optional)", 330, false);
+    row = mk_row(dlg_connect);
+    mk_label(row, &st_muted, "Sign in with");
+    static const char *const auth_txt[3] = { "Password", "Device key", "Key file" };
+    for (int i = 0; i < 3; i++) btn_auth[i] = mk_btn(row, auth_txt[i], NULL, auth_btn_cb, (void *)(intptr_t)i);
+    row_pass = lv_obj_create(dlg_connect);
+    lv_obj_remove_style_all(row_pass);
+    lv_obj_set_size(row_pass, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row_pass, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(row_pass, 4, 0);
+    lbl_pass_hint = mk_label(row_pass, &st_muted, "Password");
+    ta_pass = mk_ta(row_pass, "Password (not saved)", 680, true);
+    lv_textarea_set_max_length(ta_pass, SSH_MAX_PASSWORD_LEN - 1);
+    row_key = lv_obj_create(dlg_connect);
+    lv_obj_remove_style_all(row_key);
+    lv_obj_set_size(row_key, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row_key, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(row_key, 4, 0);
+    mk_label(row_key, &st_muted, "Private key file (RSA or ECDSA, PEM; put the .pub next to ECDSA keys)");
+    ta_keypath = mk_ta(row_key, TAB5_SD_MOUNT_POINT "/.ssh/id_rsa", 680, false);
+    lbl_connect_err = mk_label(dlg_connect, &st_err, "");
+    row = mk_row(dlg_connect);
+    cb_save = lv_checkbox_create(row);
+    lv_checkbox_set_text(cb_save, "Save to saved hosts (password is never saved)");
+    lv_obj_add_style(cb_save, &st_text, 0);
+    lv_obj_add_state(cb_save, LV_STATE_CHECKED);
+    lv_obj_set_flex_grow(cb_save, 1);
+    mk_btn(row, "Cancel", NULL, cancel_btn_cb, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, connect_btn_cb, NULL);
+
+    /* password */
+    dlg_password = mk_dialog(620);
+    lbl_pw_title = mk_label(dlg_password, &st_text, "Password");
+    lv_obj_set_style_text_font(lbl_pw_title, &lv_font_montserrat_20, 0);
+    ta_pw = mk_ta(dlg_password, "Password", 580, true);
+    lv_textarea_set_max_length(ta_pw, SSH_MAX_PASSWORD_LEN - 1);
+    row = mk_row(dlg_password);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    mk_btn(row, "Cancel", NULL, cancel_btn_cb, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, pw_ok_cb, NULL);
+
+    /* host key */
+    dlg_hostkey = mk_dialog(700);
+    t = mk_label(dlg_hostkey, &st_text, LV_SYMBOL_WARNING "  Unknown host key");
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
+    lbl_hk_body = mk_label(dlg_hostkey, &st_text, "");
+    lv_obj_set_width(lbl_hk_body, 660);
+    lv_label_set_long_mode(lbl_hk_body, LV_LABEL_LONG_WRAP);
+    row = mk_row(dlg_hostkey);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    mk_btn(row, "Reject (N)", &st_btn_danger, hk_reject_cb, NULL);
+    mk_btn(row, LV_SYMBOL_OK "  Trust (Y)", &st_btn_primary, hk_trust_cb, NULL);
+
+    /* device key */
+    dlg_devkey = mk_dialog(760);
+    t = mk_label(dlg_devkey, &st_text, "Device key");
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_20, 0);
+    lbl_dk_body = mk_label(dlg_devkey, &st_text, "");
+    lv_obj_set_width(lbl_dk_body, 720);
+    lv_label_set_long_mode(lbl_dk_body, LV_LABEL_LONG_WRAP);
+    row = mk_row(dlg_devkey);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    mk_btn(row, "Close", NULL, cancel_btn_cb, NULL);
+    btn_dk_create = mk_btn(row, LV_SYMBOL_PLUS "  Create key", &st_btn_primary, dk_create_cb, NULL);
+    btn_dk_install = mk_btn(row, LV_SYMBOL_UPLOAD "  Install on this session's host", &st_btn_primary,
+                            dk_install_cb, NULL);
+
+    kb = lv_keyboard_create(overlay);
+    lv_obj_add_style(kb, &st_kb, 0);
+    lv_obj_add_style(kb, &st_kb_btn, LV_PART_ITEMS);
+    lv_obj_set_size(kb, DEVOS_SCREEN_WIDTH, 280);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_CANCEL, NULL);
+    lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ======================================================================== */
+/* Keyboard                                                                 */
+/* ======================================================================== */
+static bool dialog_handle_key(uint32_t key, uint8_t mods)
+{
+    if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    if (!lv_obj_has_flag(dlg_hostkey, LV_OBJ_FLAG_HIDDEN)) {
+        if (key == 'y' || key == 'Y' || key == '\r') hostkey_answer(true);
+        else if (key == 'n' || key == 'N' || key == LV_KEY_ESC) hostkey_answer(false);
+        return true;
+    }
+    if (key == LV_KEY_ESC) { close_dialogs(); return true; }
+    if (!lv_obj_has_flag(dlg_devkey, LV_OBJ_FLAG_HIDDEN)) return true;
+    if (key == '\r' || key == '\n') {
+        if (!lv_obj_has_flag(dlg_password, LV_OBJ_FLAG_HIDDEN)) password_submit();
+        else connect_submit();
+        return true;
+    }
+    if (key == '\t' && !lv_obj_has_flag(dlg_connect, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_t *order[] = { ta_host, ta_port, ta_user, ta_alias, s_auth_choice == 2 ? ta_keypath : ta_pass };
+        int n = 5, i = 0;
+        for (; i < n; i++) if (order[i] == s_focused_ta) break;
+        focus_ta(order[(i + ((mods & DEVOS_MOD_SHIFT) ? n - 1 : 1)) % n]);
+        return true;
+    }
+    if (!s_focused_ta) return true;
+    if (key == '\b') { lv_textarea_delete_char(s_focused_ta); return true; }
+    if (key == LV_KEY_DEL) { lv_textarea_delete_char_forward(s_focused_ta); return true; }
+    if (key == LV_KEY_LEFT) { lv_textarea_cursor_left(s_focused_ta); return true; }
+    if (key == LV_KEY_RIGHT) { lv_textarea_cursor_right(s_focused_ta); return true; }
+    if (key >= 32 && key <= 126 && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN))) {
+        lv_textarea_add_char(s_focused_ta, (char)key);
+    }
+    return true;
+}
+
+static void send_str(const char *s)
+{
+    ssh_port_send(s_active, s, strlen(s));
+}
+
+static bool terminal_handle_key(uint32_t key, uint8_t mods)
+{
+    if (dialog_open()) return dialog_handle_key(key, mods);
+
+    /* Local shortcuts (Sym = DEVOS_MOD_FN) */
+    if (mods & DEVOS_MOD_FN) {
+        if (key == 'l' || key == 'L') { app_terminal_toggle_sidebar(); return true; }
+        if (key == 'n' || key == 'N') { open_connect_dialog(NULL); return true; }
+        if (key == 'k' || key == 'K') { open_devkey_dialog(); return true; }
+    }
+    if ((mods & DEVOS_MOD_ALT) && key >= '1' && key <= '8') {
+        switch_session((int)(key - '0'));
+        return true;
+    }
+
+    term_sess_t *t = ts_for(s_active);
+    ssh_session_t *s = ssh_port_get_session(s_active);
+    if (!t || !t->vt || !s) {
+        if (key == '\r' || key == '\n') { open_connect_dialog(NULL); return true; }
+        return false;                                       /* Esc -> Home */
+    }
+
+    /* Scrollback */
+    if (key == DEVOS_KEY_PGUP || key == DEVOS_KEY_PGDN) {
+        int max = devos_vterm_scrollback_lines(t->vt);
+        int step = devos_vterm_rows(t->vt) - 2;
+        int v = t->view_offset + (key == DEVOS_KEY_PGUP ? step : -step);
+        if (v < 0) v = 0;
+        if (v > max) v = max;
+        t->view_offset = v;
+        term_invalidate_all();
+        refresh_header();
+        return true;
+    }
+
+    if (s->state != SSH_SESSION_CONNECTED) {
+        if (key == '\r' || key == '\n') {
+            if (s->state == SSH_SESSION_ERROR || s->state == SSH_SESSION_CLOSED) {
+                ssh_bookmark_t bm;
+                memset(&bm, 0, sizeof(bm));
+                snprintf(bm.alias, sizeof(bm.alias), "%s", t->alias);
+                snprintf(bm.host, sizeof(bm.host), "%s", t->host);
+                bm.port = t->port;
+                snprintf(bm.user, sizeof(bm.user), "%s", t->user);
+                bm.auth_type = t->auth;
+                snprintf(bm.key_path, sizeof(bm.key_path), "%s", t->keypath);
+                connect_bookmark(&bm, s_active);
+            }
+            return true;
         }
-        if (close_modal && modal_connect) {
-            lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-            s_focused_ta = NULL;
+        return key != LV_KEY_ESC;                           /* Esc -> Home */
+    }
+
+    /* Any input returns a scrolled-back view to the live screen */
+    if (t->view_offset) {
+        t->view_offset = 0;
+        term_invalidate_all();
+        refresh_header();
+    }
+
+    char out[16];
+    bool ctrl = mods & DEVOS_MOD_CTRL, alt = mods & DEVOS_MOD_ALT, shift = mods & DEVOS_MOD_SHIFT;
+    if (key == LV_KEY_UP || key == LV_KEY_DOWN || key == LV_KEY_RIGHT || key == LV_KEY_LEFT) {
+        char dir = key == LV_KEY_UP ? 'A' : key == LV_KEY_DOWN ? 'B' : key == LV_KEY_RIGHT ? 'C' : 'D';
+        if ((mods & DEVOS_MOD_FN) && (dir == 'C' || dir == 'D')) {       /* Sym+Right/Left = End/Home */
+            snprintf(out, sizeof(out), devos_vterm_app_cursor_keys(t->vt) ? "\033O%c" : "\033[%c",
+                     dir == 'C' ? 'F' : 'H');
+        } else {
+            int m = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0);
+            if (m > 1) snprintf(out, sizeof(out), "\033[1;%d%c", m, dir);
+            else snprintf(out, sizeof(out), devos_vterm_app_cursor_keys(t->vt) ? "\033O%c" : "\033[%c", dir);
         }
+        send_str(out);
+        return true;
+    }
+    if (mods & DEVOS_MOD_FN) return false;                  /* other Sym chords are global */
+    if (key == '\r' || key == '\n') { send_str("\r"); return true; }
+    if (key == '\b') { send_str(alt ? "\033\177" : "\177"); return true; }
+    if (key == '\t') { send_str(shift ? "\033[Z" : "\t"); return true; }
+    if (key == LV_KEY_ESC) { send_str("\033"); return true; }
+    if (key == LV_KEY_DEL) { send_str("\033[3~"); return true; }
+    if (ctrl && key < 128) {
+        char c = 0;
+        if (key < 0x20) c = (char)key;                      /* already a control code */
+        else if ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z')) c = (char)(key & 0x1F);
+        else if (key == ' ' || key == '@' || key == '2') c = 0;
+        else if (key == '[') c = 0x1B;
+        else if (key == '\\') c = 0x1C;
+        else if (key == ']') c = 0x1D;
+        else if (key == '^' || key == '6') c = 0x1E;
+        else if (key == '_' || key == '-' || key == '/') c = 0x1F;
+        else return true;
+        ssh_port_send(s_active, &c, 1);
+        return true;
+    }
+    if (key < 0x20) {                                       /* raw control code (simulator) */
+        char c = (char)key;
+        ssh_port_send(s_active, &c, 1);
+        return true;
+    }
+    if (key < 0x100) {
+        int n = 0;
+        if (alt) out[n++] = 0x1B;                           /* Alt = Meta prefix */
+        n += utf8_put(out + n, key);
+        ssh_port_send(s_active, out, (size_t)n);
         return true;
     }
     return false;
 }
 
-static void connect_modal_save_bm_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    save_bookmark_from_modal(false);
-}
-
-static void open_connect_modal_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    if (modal_connect) {
-        s_modal_is_add_bookmark = false;
-        lv_obj_remove_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(modal_connect);
-
-        if (lbl_mtitle) {
-            lv_label_set_text(lbl_mtitle, LV_SYMBOL_SETTINGS " Quick Connect New SSH Session");
-        }
-        if (lbl_conn_sub) {
-            lv_label_set_text(lbl_conn_sub, LV_SYMBOL_OK " Connect");
-        }
-        if (btn_modal_save_bm) {
-            lv_obj_remove_flag(btn_modal_save_bm, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (lbl_modal_save_bm) {
-            lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_SAVE " Save Bookmark");
-        }
-        if (btn_conn_sub) {
-            lv_obj_set_size(btn_conn_sub, 120, 34);
-            lv_obj_set_pos(btn_conn_sub, 384, 168);
-        }
-        if (btn_conn_cancel) {
-            lv_obj_set_pos(btn_conn_cancel, 276, 168);
-        }
-
-        /* Clear text areas */
-        if (ta_alias) lv_textarea_set_text(ta_alias, "");
-        if (ta_host) lv_textarea_set_text(ta_host, "");
-        if (ta_port) lv_textarea_set_text(ta_port, "22");
-        if (ta_user) lv_textarea_set_text(ta_user, "root");
-
-        s_focused_ta = ta_host;
-        const devos_palette_t *p = devos_theme_get();
-        if (ta_alias) {
-            lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
-        }
-        if (ta_port) {
-            lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
-        }
-        if (ta_user) {
-            lv_obj_clear_state(ta_user, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
-        }
-        if (ta_host) {
-            lv_obj_add_state(ta_host, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_host, p->accent_primary, 0);
-        }
-    }
-}
-
-static void open_add_bookmark_modal_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    if (modal_connect) {
-        s_modal_is_add_bookmark = true;
-        lv_obj_remove_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(modal_connect);
-
-        if (lbl_mtitle) {
-            lv_label_set_text(lbl_mtitle, LV_SYMBOL_PLUS " Add New SSH Bookmark");
-        }
-        if (lbl_conn_sub) {
-            lv_label_set_text(lbl_conn_sub, LV_SYMBOL_SAVE " Save Bookmark");
-        }
-        if (btn_modal_save_bm) {
-            lv_obj_add_flag(btn_modal_save_bm, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (btn_conn_sub) {
-            lv_obj_set_size(btn_conn_sub, 140, 34);
-            lv_obj_set_pos(btn_conn_sub, 364, 168);
-        }
-        if (btn_conn_cancel) {
-            lv_obj_set_pos(btn_conn_cancel, 256, 168);
-        }
-
-        /* Clear text areas */
-        if (ta_alias) lv_textarea_set_text(ta_alias, "");
-        if (ta_host) lv_textarea_set_text(ta_host, "");
-        if (ta_port) lv_textarea_set_text(ta_port, "22");
-        if (ta_user) lv_textarea_set_text(ta_user, "root");
-
-        s_focused_ta = ta_alias;
-        const devos_palette_t *p = devos_theme_get();
-        if (ta_host) {
-            lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
-        }
-        if (ta_port) {
-            lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
-        }
-        if (ta_user) {
-            lv_obj_clear_state(ta_user, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
-        }
-        if (ta_alias) {
-            lv_obj_add_state(ta_alias, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_color(ta_alias, p->accent_primary, 0);
-        }
-    }
-}
-
-static void close_connect_modal_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    if (modal_connect) {
-        lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-        s_focused_ta = NULL;
-    }
-}
-
-static void connect_modal_submit_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    if (s_modal_is_add_bookmark) {
-        save_bookmark_from_modal(true);
-        return;
-    }
-
-    if (!ta_host || !ta_user || !ta_port) return;
-
-    const char *host = lv_textarea_get_text(ta_host);
-    const char *user = lv_textarea_get_text(ta_user);
-    const char *port_s = lv_textarea_get_text(ta_port);
-    const char *alias = lv_textarea_get_text(ta_alias);
-    int port = atoi(port_s);
-    if (port <= 0) port = 22;
-    if (!user || strlen(user) == 0) user = "root";
-
-    if (host && strlen(host) > 0) {
-        const char *sess_alias = (alias && strlen(alias) > 0) ? alias : host;
-        int new_id = ssh_port_create_session(sess_alias, host, port, user, SSH_AUTH_KEY, NULL, current_cols, current_rows);
-        if (new_id > 0) {
-            s_sidebar_tab = 0;
-            app_terminal_switch_session(new_id);
-        }
-    }
-
-    if (modal_connect) {
-        lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-        s_focused_ta = NULL;
-    }
-}
-
-static void app_terminal_switch_session(int session_id)
-{
-    if (session_id < 1 || session_id > SSH_MAX_SESSIONS) return;
-    s_active_session_id = session_id;
-
-    /* Notify PTY size */
-    ssh_port_resize_pty(s_active_session_id, current_cols, current_rows);
-
-    /* Update screen display with buffered text */
-    if (lbl_terminal_text) {
-        lv_label_set_text(lbl_terminal_text, s_term_buffers[s_active_session_id - 1]);
-    }
-
-    ssh_session_t *sess = ssh_port_get_session(s_active_session_id);
-    if (sess) {
-        int active_ids[SSH_MAX_SESSIONS];
-        int count = ssh_port_get_active_sessions(active_ids, SSH_MAX_SESSIONS);
-
-        devos_telemetry_t t;
-        memcpy(&t, devos_telemetry_get(), sizeof(devos_telemetry_t));
-        t.terminal_sessions = (uint8_t)count;
-        snprintf(t.terminal_host, sizeof(t.terminal_host), "%s (%s)", sess->alias, sess->command);
-        devos_telemetry_update(&t);
-    }
-
-    refresh_sidebar();
-    refresh_header();
-}
-
-/* --------------------------------------------------------------------------
- * Timer & Realtime Polling
- * -------------------------------------------------------------------------- */
-static void terminal_poll_cb(lv_timer_t *timer)
-{
-    LV_UNUSED(timer);
-    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
-
-    char buf[1024];
-    int bytes = ssh_port_recv(s_active_session_id, buf, sizeof(buf) - 1);
-    if (bytes > 0) {
-        buf[bytes] = '\0';
-        append_to_screen_buffer(s_active_session_id - 1, buf, (size_t)bytes);
-
-        if (lbl_terminal_text) {
-            lv_label_set_text(lbl_terminal_text, s_term_buffers[s_active_session_id - 1]);
-        }
-        if (term_body) {
-            lv_obj_scroll_to_y(term_body, LV_COORD_MAX, LV_ANIM_OFF);
-        }
-    }
-}
-
-/* --------------------------------------------------------------------------
- * UI Refresh Helpers
- * -------------------------------------------------------------------------- */
-static void refresh_header(void)
-{
-    if (!screen) return;
-    ssh_session_t *sess = ssh_port_get_session(s_active_session_id);
-    const devos_palette_t *p = devos_theme_get();
-
-    if (sess && sess->state == SSH_SESSION_CONNECTED) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "SSH: %s (%s:%d) - %s",
-                 sess->alias, sess->host, sess->port, sess->command);
-        lv_label_set_text(lbl_term_info, buf);
-
-        snprintf(buf, sizeof(buf), "%dms", sess->ping_ms);
-        lv_label_set_text(lbl_term_latency, buf);
-        lv_obj_set_style_text_color(lbl_term_latency, p->accent_secondary, 0);
-    } else {
-        lv_label_set_text(lbl_term_info, "SSH: Disconnected");
-        lv_label_set_text(lbl_term_latency, "--");
-        lv_obj_set_style_text_color(lbl_term_latency, p->accent_danger, 0);
-    }
-
-    char col_buf[32];
-    snprintf(col_buf, sizeof(col_buf), "%dx%d Cols", current_cols, current_rows);
-    lv_label_set_text(lbl_term_cols, col_buf);
-}
-
-static void refresh_sidebar(void)
-{
-    if (!screen) return;
-    const devos_palette_t *p = devos_theme_get();
-
-    if (s_sidebar_tab == 0) {
-        /* Active Sessions Tab */
-        lv_obj_remove_flag(container_active, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(container_bookmarks, LV_OBJ_FLAG_HIDDEN);
-        if (btn_add_sess) lv_obj_remove_flag(btn_add_sess, LV_OBJ_FLAG_HIDDEN);
-        if (btn_add_bm) lv_obj_add_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_set_style_bg_color(btn_tab_active, p->surface_active, 0);
-        lv_obj_set_style_text_color(lbl_tab_active, p->accent_primary, 0);
-        lv_obj_set_style_bg_color(btn_tab_bookmarks, p->surface, 0);
-        lv_obj_set_style_text_color(lbl_tab_bookmarks, p->text_secondary, 0);
-
-        int active_count = 0;
-        for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-            ssh_session_t *sess = ssh_port_get_session(i + 1);
-            if (sess && sess->state == SSH_SESSION_CONNECTED) {
-                active_count++;
-                lv_obj_remove_flag(sess_cards[i], LV_OBJ_FLAG_HIDDEN);
-
-                char title[64];
-                snprintf(title, sizeof(title), "%d: %s (%s)", sess->id, sess->alias, sess->command);
-                lv_label_set_text(sess_labels[i], title);
-
-                char sub[64];
-                snprintf(sub, sizeof(sub), "%s | %dms", sess->host, sess->ping_ms);
-                lv_label_set_text(sess_sub_labels[i], sub);
-
-                if (sess->id == s_active_session_id) {
-                    lv_obj_set_style_border_color(sess_cards[i], p->accent_primary, 0);
-                    lv_obj_set_style_bg_color(sess_cards[i], p->surface_active, 0);
-                    lv_obj_set_style_text_color(sess_labels[i], p->accent_primary, 0);
-                } else {
-                    lv_obj_set_style_border_color(sess_cards[i], p->surface_border, 0);
-                    lv_obj_set_style_bg_color(sess_cards[i], p->surface, 0);
-                    lv_obj_set_style_text_color(sess_labels[i], p->text_primary, 0);
-                }
-
-                if (sess_close_btns[i]) {
-                    lv_obj_set_style_bg_color(sess_close_btns[i], p->surface, 0);
-                }
-                if (sess_close_lbls[i]) {
-                    lv_obj_set_style_text_color(sess_close_lbls[i], p->accent_danger, 0);
-                }
-            } else {
-                lv_obj_add_flag(sess_cards[i], LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-
-        char tab_title[32];
-        snprintf(tab_title, sizeof(tab_title), "Active (%d)", active_count);
-        lv_label_set_text(lbl_tab_active, tab_title);
-
-    } else {
-        /* Bookmarks Tab */
-        lv_obj_add_flag(container_active, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(container_bookmarks, LV_OBJ_FLAG_HIDDEN);
-        if (btn_add_sess) lv_obj_add_flag(btn_add_sess, LV_OBJ_FLAG_HIDDEN);
-        if (btn_add_bm) lv_obj_remove_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_set_style_bg_color(btn_tab_active, p->surface, 0);
-        lv_obj_set_style_text_color(lbl_tab_active, p->text_secondary, 0);
-        lv_obj_set_style_bg_color(btn_tab_bookmarks, p->surface_active, 0);
-        lv_obj_set_style_text_color(lbl_tab_bookmarks, p->accent_primary, 0);
-
-        ssh_bookmark_t bms[TERM_MAX_BOOKMARKS];
-        int bm_count = 0;
-        ssh_port_load_bookmarks(bms, TERM_MAX_BOOKMARKS, &bm_count);
-
-        for (int i = 0; i < TERM_MAX_BOOKMARKS; i++) {
-            if (i < bm_count) {
-                lv_obj_remove_flag(bm_cards[i], LV_OBJ_FLAG_HIDDEN);
-                lv_obj_set_style_bg_color(bm_cards[i], p->surface, 0);
-                lv_obj_set_style_border_color(bm_cards[i], p->surface_border, 0);
-                lv_label_set_text(bm_labels[i], bms[i].alias[0] ? bms[i].alias : bms[i].host);
-                lv_obj_set_style_text_color(bm_labels[i], p->accent_primary, 0);
-
-                char sub[64];
-                snprintf(sub, sizeof(sub), "%s@%s:%d (%s)",
-                         bms[i].user, bms[i].host, bms[i].port,
-                         bms[i].auth_type == SSH_AUTH_KEY ? "key" : "pwd");
-                lv_label_set_text(bm_sub_labels[i], sub);
-                lv_obj_set_style_text_color(bm_sub_labels[i], p->text_secondary, 0);
-
-                if (bm_delete_btns[i]) {
-                    lv_obj_set_style_bg_color(bm_delete_btns[i], p->surface, 0);
-                    lv_obj_set_style_border_color(bm_delete_btns[i], p->surface_border, 0);
-                }
-            } else {
-                lv_obj_add_flag(bm_cards[i], LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-
-        char tab_title[32];
-        snprintf(tab_title, sizeof(tab_title), "Bookmarks (%d)", bm_count);
-        lv_label_set_text(lbl_tab_bookmarks, tab_title);
-    }
-
-    /* Tab-independent sidebar chrome (stale after theme toggle otherwise) */
-    if (container_active) {
-        lv_obj_set_style_bg_color(container_active, p->surface, 0);
-    }
-    if (container_bookmarks) {
-        lv_obj_set_style_bg_color(container_bookmarks, p->surface, 0);
-    }
-    if (btn_add_sess) {
-        lv_obj_set_style_bg_color(btn_add_sess, p->surface, 0);
-        lv_obj_set_style_border_color(btn_add_sess, p->surface_border, 0);
-    }
-    if (lbl_add_sess) lv_obj_set_style_text_color(lbl_add_sess, p->accent_primary, 0);
-    if (btn_add_bm) {
-        lv_obj_set_style_bg_color(btn_add_bm, p->surface, 0);
-        lv_obj_set_style_border_color(btn_add_bm, p->surface_border, 0);
-    }
-    if (lbl_add_bm) lv_obj_set_style_text_color(lbl_add_bm, p->accent_primary, 0);
-    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-        if (sess_sub_labels[i]) {
-            lv_obj_set_style_text_color(sess_sub_labels[i], p->text_secondary, 0);
-        }
-    }
-}
+/* ======================================================================== */
+/* Lifecycle                                                                */
+/* ======================================================================== */
+static void toggle_btn_cb(lv_event_t *e) { LV_UNUSED(e); app_terminal_toggle_sidebar(); }
 
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
-    if (!screen) return;
-
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-
-    /* Sidebar */
-    lv_obj_set_style_bg_color(sidebar, p->surface, 0);
-    lv_obj_set_style_border_color(sidebar, p->surface_border, 0);
-
-    /* Header */
-    lv_obj_set_style_bg_color(term_header, p->top_bar_bg, 0);
-    lv_obj_set_style_border_color(term_header, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_term_info, p->accent_primary, 0);
-    lv_obj_set_style_text_color(lbl_term_cols, p->text_secondary, 0);
-    if (btn_toggle_sidebar) {
-        lv_obj_set_style_bg_color(btn_toggle_sidebar, p->surface, 0);
-        lv_obj_set_style_border_color(btn_toggle_sidebar, p->surface_border, 0);
-    }
-    if (lbl_toggle_sidebar) {
-        lv_obj_set_style_text_color(lbl_toggle_sidebar, p->text_primary, 0);
-    }
-
-    /* Body */
-    lv_obj_set_style_bg_color(term_body, p->code_bg, 0);
-    lv_obj_set_style_text_color(lbl_terminal_text, p->text_primary, 0);
-
-    /* Footer */
-    lv_obj_set_style_bg_color(term_footer, p->bottom_bar_bg, 0);
-    lv_obj_set_style_border_color(term_footer, p->surface_border, 0);
-    lv_obj_set_style_text_color(lbl_term_footer, p->text_secondary, 0);
-
-    /* ponytail: black on neon cyan (dark) / white on cobalt (light) */
-    lv_color_t on_accent = devos_theme_is_dark() ? lv_color_black() : lv_color_white();
-
-    /* Bookmark Open/Delete buttons (not covered by refresh_sidebar) */
-    for (int i = 0; i < TERM_MAX_BOOKMARKS; i++) {
-        if (bm_conn_btns[i]) {
-            lv_obj_set_style_bg_color(bm_conn_btns[i], p->accent_primary, 0);
-        }
-        if (bm_conn_lbls[i]) lv_obj_set_style_text_color(bm_conn_lbls[i], on_accent, 0);
-        if (bm_del_lbls[i]) {
-            lv_obj_set_style_text_color(bm_del_lbls[i], p->accent_danger, 0);
-        }
-    }
-
-    /* Quick Connect modal */
-    if (modal_connect) {
-        lv_obj_set_style_bg_color(modal_connect, p->surface, 0);
-        lv_obj_set_style_border_color(modal_connect, p->accent_primary, 0);
-    }
-    if (lbl_mtitle) lv_obj_set_style_text_color(lbl_mtitle, p->accent_primary, 0);
-    if (lbl_l_alias) lv_obj_set_style_text_color(lbl_l_alias, p->text_secondary, 0);
-    if (lbl_l_host) lv_obj_set_style_text_color(lbl_l_host, p->text_secondary, 0);
-    if (lbl_l_port) lv_obj_set_style_text_color(lbl_l_port, p->text_secondary, 0);
-    if (lbl_l_user) lv_obj_set_style_text_color(lbl_l_user, p->text_secondary, 0);
-    if (lbl_l_auth) lv_obj_set_style_text_color(lbl_l_auth, p->text_secondary, 0);
-    if (lbl_auth_desc) {
-        lv_obj_set_style_text_color(lbl_auth_desc, p->accent_secondary, 0);
-    }
-    /* Textareas: keep focused-field accent highlight */
-    lv_obj_t *tas[4] = {ta_alias, ta_host, ta_port, ta_user};
-    for (int i = 0; i < 4; i++) {
-        if (tas[i]) {
-            lv_obj_set_style_bg_color(tas[i], p->code_bg, 0);
-            lv_obj_set_style_text_color(tas[i], p->text_primary, 0);
-            lv_obj_set_style_border_color(tas[i],
-                (tas[i] == s_focused_ta) ? p->accent_primary : p->surface_border, 0);
-        }
-    }
-    if (btn_modal_save_bm) {
-        lv_obj_set_style_bg_color(btn_modal_save_bm, p->surface, 0);
-        lv_obj_set_style_border_color(btn_modal_save_bm, p->surface_border, 0);
-    }
-    if (lbl_modal_save_bm) {
-        lv_obj_set_style_text_color(lbl_modal_save_bm, p->text_primary, 0);
-    }
-    if (btn_conn_cancel) {
-        lv_obj_set_style_bg_color(btn_conn_cancel, p->surface, 0);
-        lv_obj_set_style_border_color(btn_conn_cancel, p->surface_border, 0);
-    }
-    if (lbl_can) lv_obj_set_style_text_color(lbl_can, p->text_primary, 0);
-    if (btn_conn_sub) lv_obj_set_style_bg_color(btn_conn_sub, p->accent_primary, 0);
-    if (lbl_conn_sub) lv_obj_set_style_text_color(lbl_conn_sub, on_accent, 0);
-
-    refresh_sidebar();
-    refresh_header();
+    if (!s_styles_ready) return;
+    restyle(p);
+    lv_obj_report_style_change(NULL);
+    if (term_view) lv_obj_set_style_bg_color(term_view, p->code_bg, 0);
+    term_invalidate_all();
 }
 
-/* --------------------------------------------------------------------------
- * Key Handling
- * -------------------------------------------------------------------------- */
-static bool terminal_handle_key(uint32_t key, uint8_t modifiers)
-{
-    /* 0. If Quick Connect modal is open, capture ALL keystrokes for text inputs */
-    if (modal_connect && !lv_obj_has_flag(modal_connect, LV_OBJ_FLAG_HIDDEN)) {
-        if (!s_focused_ta) {
-            s_focused_ta = ta_host;
-        }
-
-        /* Escape closes modal */
-        if (key == LV_KEY_ESC) {
-            close_connect_modal_cb(NULL);
-            return true;
-        }
-
-        /* Tab cycles between text fields */
-        if (key == '\t') {
-            if (s_focused_ta == ta_alias) {
-                s_focused_ta = ta_host;
-            } else if (s_focused_ta == ta_host) {
-                s_focused_ta = ta_port;
-            } else if (s_focused_ta == ta_port) {
-                s_focused_ta = ta_user;
-            } else {
-                s_focused_ta = ta_alias;
-            }
-            const devos_palette_t *p = devos_theme_get();
-            if (ta_alias) {
-                lv_obj_clear_state(ta_alias, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
-            }
-            if (ta_host) {
-                lv_obj_clear_state(ta_host, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_color(ta_host, p->surface_border, 0);
-            }
-            if (ta_port) {
-                lv_obj_clear_state(ta_port, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
-            }
-            if (ta_user) {
-                lv_obj_clear_state(ta_user, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
-            }
-            if (s_focused_ta) {
-                lv_obj_add_state(s_focused_ta, LV_STATE_FOCUSED);
-                lv_obj_set_style_border_color(s_focused_ta, p->accent_primary, 0);
-            }
-            return true;
-        }
-
-        /* Enter connects / submits */
-        if (key == '\r' || key == '\n') {
-            connect_modal_submit_cb(NULL);
-            return true;
-        }
-
-        /* Backspace */
-        if (key == '\b' || key == 0x7F) {
-            if (s_focused_ta) {
-                lv_textarea_delete_char(s_focused_ta);
-            }
-            return true;
-        }
-
-        /* Arrow navigation */
-        if (key == LV_KEY_LEFT) {
-            if (s_focused_ta) lv_textarea_cursor_left(s_focused_ta);
-            return true;
-        }
-        if (key == LV_KEY_RIGHT) {
-            if (s_focused_ta) lv_textarea_cursor_right(s_focused_ta);
-            return true;
-        }
-
-        /* Printable characters */
-        if (key >= 32 && key <= 126) {
-            if (s_focused_ta) {
-                lv_textarea_add_char(s_focused_ta, (char)key);
-            }
-            return true;
-        }
-
-        /* Absorb all other keys so terminal behind never receives them */
-        return true;
-    }
-
-    /* 1. Toggle Sidebar: Sym + L */
-    if ((modifiers & DEVOS_MOD_FN) && (key == 'l' || key == 'L')) {
-        app_terminal_toggle_sidebar();
-        return true;
-    }
-
-    /* 2. Switch Sessions: Alt + 1..9 */
-    if ((modifiers & DEVOS_MOD_ALT) && (key >= '1' && key <= '9')) {
-        int sess_id = key - '0';
-        app_terminal_switch_session(sess_id);
-        return true;
-    }
-
-    /* 3. VT100 Arrow Keys */
-    if (key == LV_KEY_UP) {
-        ssh_port_send(s_active_session_id, "\033[A", 3);
-        return true;
-    }
-    if (key == LV_KEY_DOWN) {
-        ssh_port_send(s_active_session_id, "\033[B", 3);
-        return true;
-    }
-    if (key == LV_KEY_RIGHT) {
-        ssh_port_send(s_active_session_id, "\033[C", 3);
-        return true;
-    }
-    if (key == LV_KEY_LEFT) {
-        ssh_port_send(s_active_session_id, "\033[D", 3);
-        return true;
-    }
-
-    /* 4. Control Sequences. The keyboard reports Ctrl chords as letter +
-     * DEVOS_MOD_CTRL (the simulator may send the raw code): map to ASCII
-     * control codes so Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+B (tmux) work. */
-    if ((modifiers & DEVOS_MOD_CTRL) &&
-        ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z'))) {
-        char ch = (char)(key & 0x1F);
-        ssh_port_send(s_active_session_id, &ch, 1);
-        return true;
-    }
-    if (key == LV_KEY_ESC || key == LV_KEY_DEL) {
-        /* Esc belongs to the remote program (vim, less...) while a session is
-         * live; Sym+H returns Home. With no live session Esc falls through. */
-        ssh_session_t *sess = ssh_port_get_session(s_active_session_id);
-        if (sess && sess->state == SSH_SESSION_CONNECTED) {
-            if (key == LV_KEY_ESC) {
-                ssh_port_send(s_active_session_id, "\033", 1);
-            } else {
-                ssh_port_send(s_active_session_id, "\033[3~", 4);
-            }
-            return true;
-        }
-        return false;
-    }
-    if (key == 0x03 || key == 0x04 || key == 0x1A || key == 0x0C) {
-        char ch = (char)key;
-        ssh_port_send(s_active_session_id, &ch, 1);
-        return true;
-    }
-
-    /* 5. Enter, Backspace, Tab */
-    if (key == '\r' || key == '\n') {
-        ssh_port_send(s_active_session_id, "\r", 1);
-        return true;
-    }
-    if (key == '\b' || key == 0x7F) {
-        ssh_port_send(s_active_session_id, "\b", 1);
-        return true;
-    }
-    if (key == '\t') {
-        ssh_port_send(s_active_session_id, "\t", 1);
-        return true;
-    }
-
-    /* 6. Printable ASCII characters */
-    if (key >= 32 && key <= 126) {
-        char ch = (char)key;
-        ssh_port_send(s_active_session_id, &ch, 1);
-        return true;
-    }
-
-    return false;
-}
-
-/* --------------------------------------------------------------------------
- * Initialization & Layout
- * -------------------------------------------------------------------------- */
 static void terminal_init(void)
 {
+    styles_init();
     const devos_palette_t *p = devos_theme_get();
 
-    memset(s_term_buffers, 0, sizeof(s_term_buffers));
-    memset(s_term_lens, 0, sizeof(s_term_lens));
-
-    /* Pre-fill initial banner from libssh2_port for sessions 1 and 2 */
-    for (int i = 0; i < 2; i++) {
-        char initial_chunk[2048];
-        int n = ssh_port_recv(i + 1, initial_chunk, sizeof(initial_chunk) - 1);
-        if (n > 0) {
-            initial_chunk[n] = '\0';
-            append_to_screen_buffer(i, initial_chunk, (size_t)n);
-        }
-    }
-
-    /* Screen root */
     screen = lv_obj_create(lv_screen_active());
     app_descriptor.screen = screen;
+    lv_obj_remove_style_all(screen);
+    lv_obj_add_style(screen, &st_bg, 0);
     lv_obj_set_size(screen, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
     lv_obj_set_pos(screen, 0, DEVOS_TOP_BAR_HEIGHT);
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-    lv_obj_set_style_radius(screen, 0, 0);
-    lv_obj_set_style_border_width(screen, 0, 0);
-    lv_obj_set_style_pad_all(screen, 0, 0);
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    /* 1. Left Collapsible Sidebar (260px) */
+    /* Sidebar */
     sidebar = lv_obj_create(screen);
-    lv_obj_set_size(sidebar, DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(sidebar, 0, 0);
-    lv_obj_set_style_bg_color(sidebar, p->surface, 0);
-    lv_obj_set_style_border_color(sidebar, p->surface_border, 0);
-    lv_obj_set_style_border_width(sidebar, 1, 0);
-    lv_obj_set_style_border_side(sidebar, LV_BORDER_SIDE_RIGHT, 0);
-    lv_obj_set_style_radius(sidebar, 0, 0);
-    lv_obj_set_style_pad_all(sidebar, 8, 0);
-    lv_obj_clear_flag(sidebar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_style_all(sidebar);
+    lv_obj_add_style(sidebar, &st_sidebar, 0);
+    lv_obj_set_size(sidebar, SIDEBAR_W, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_flex_flow(sidebar, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(sidebar, LV_DIR_VER);
+    list_sessions = mk_section(sidebar, "SESSIONS", new_btn_cb);
+    list_hosts = mk_section(sidebar, "SAVED HOSTS", NULL);
+    lv_obj_t *dk_head = mk_section(sidebar, "DEVICE KEY", NULL);
+    lv_obj_t *dk = mk_btn(dk_head, LV_SYMBOL_EYE_OPEN "  Device key...", NULL, devkey_btn_cb, NULL);
+    lv_obj_set_width(dk, lv_pct(100));
+    mk_label(dk_head, &st_small, "Sym+L sidebar  Sym+N new\nSym+Up/Down scroll  Alt+1..8 switch");
 
-    /* Top Tab Buttons in Sidebar */
-    btn_tab_active = lv_button_create(sidebar);
-    lv_obj_set_size(btn_tab_active, 118, 28);
-    lv_obj_set_pos(btn_tab_active, 0, 0);
-    lv_obj_set_style_radius(btn_tab_active, 4, 0);
-    lv_obj_add_event_cb(btn_tab_active, tab_active_cb, LV_EVENT_CLICKED, NULL);
+    /* Terminal area: header + grid */
+    term_area = lv_obj_create(screen);
+    lv_obj_remove_style_all(term_area);
+    lv_obj_remove_flag(term_area, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_tab_active = lv_label_create(btn_tab_active);
-    lv_label_set_text(lbl_tab_active, "Active (2)");
-    lv_obj_center(lbl_tab_active);
-    lv_obj_set_style_text_font(lbl_tab_active, &lv_font_montserrat_12, 0);
+    header = lv_obj_create(term_area);
+    lv_obj_remove_style_all(header);
+    lv_obj_add_style(header, &st_header, 0);
+    lv_obj_set_size(header, lv_pct(100), HEADER_H);
+    lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *tb = mk_btn(header, LV_SYMBOL_LIST, NULL, toggle_btn_cb, NULL);
+    lv_obj_set_style_pad_ver(tb, 3, 0);
+    lv_obj_set_style_pad_hor(tb, 8, 0);
+    lv_obj_align(tb, LV_ALIGN_LEFT_MID, 0, 0);
+    lbl_header_title = mk_label(header, &st_text, "Terminal");
+    lv_label_set_long_mode(lbl_header_title, LV_LABEL_LONG_DOT);
+    lv_obj_align(lbl_header_title, LV_ALIGN_LEFT_MID, 44, 0);
+    lbl_header_info = mk_label(header, &st_muted, "");
+    lv_obj_align(lbl_header_info, LV_ALIGN_RIGHT_MID, 0, 0);
 
-    btn_tab_bookmarks = lv_button_create(sidebar);
-    lv_obj_set_size(btn_tab_bookmarks, 118, 28);
-    lv_obj_set_pos(btn_tab_bookmarks, 126, 0);
-    lv_obj_set_style_radius(btn_tab_bookmarks, 4, 0);
-    lv_obj_add_event_cb(btn_tab_bookmarks, tab_bookmarks_cb, LV_EVENT_CLICKED, NULL);
+    term_view = lv_obj_create(term_area);
+    lv_obj_remove_style_all(term_view);
+    lv_obj_set_style_bg_opa(term_view, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(term_view, p->code_bg, 0);
+    lv_obj_set_pos(term_view, 0, HEADER_H);
+    lv_obj_set_size(term_view, lv_pct(100), DEVOS_CONTENT_HEIGHT - HEADER_H);
+    lv_obj_remove_flag(term_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(term_view, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(term_view, term_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(term_view, term_touch_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(term_view, term_touch_cb, LV_EVENT_PRESSING, NULL);
 
-    lbl_tab_bookmarks = lv_label_create(btn_tab_bookmarks);
-    lv_label_set_text(lbl_tab_bookmarks, "Bookmarks (2)");
-    lv_obj_center(lbl_tab_bookmarks);
-    lv_obj_set_style_text_font(lbl_tab_bookmarks, &lv_font_montserrat_12, 0);
+    lbl_empty = mk_label(term_view, &st_muted,
+                         "No terminal session\n\n"
+                         "Press Enter, Sym+N or \"+ New\" to connect over SSH.\n"
+                         "Saved hosts and your device key are in the sidebar (Sym+L).");
+    lv_obj_set_style_text_align(lbl_empty, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lbl_empty, &lv_font_montserrat_16, 0);
+    lv_obj_center(lbl_empty);
 
-    /* 1.A Active Sessions Container */
-    container_active = lv_obj_create(sidebar);
-    lv_obj_set_size(container_active, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 84);
-    lv_obj_set_pos(container_active, 0, 36);
-    lv_obj_set_style_bg_color(container_active, p->surface, 0);
-    lv_obj_set_style_border_width(container_active, 0, 0);
-    lv_obj_set_style_pad_all(container_active, 0, 0);
-
-    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-        sess_cards[i] = lv_button_create(container_active);
-        lv_obj_set_size(sess_cards[i], DEVOS_PANE_LEFT_WIDTH - 20, 48);
-        lv_obj_set_pos(sess_cards[i], 0, i * 54);
-        lv_obj_set_style_radius(sess_cards[i], 4, 0);
-        lv_obj_set_style_border_width(sess_cards[i], 1, 0);
-        lv_obj_set_style_pad_all(sess_cards[i], 6, 0);
-        lv_obj_add_event_cb(sess_cards[i], session_card_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
-
-        sess_labels[i] = lv_label_create(sess_cards[i]);
-        lv_obj_set_pos(sess_labels[i], 2, 2);
-        lv_obj_set_style_text_font(sess_labels[i], &lv_font_montserrat_12, 0);
-
-        sess_sub_labels[i] = lv_label_create(sess_cards[i]);
-        lv_obj_set_pos(sess_sub_labels[i], 2, 22);
-        lv_obj_set_style_text_font(sess_sub_labels[i], &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(sess_sub_labels[i], p->text_secondary, 0);
-
-        sess_close_btns[i] = lv_button_create(sess_cards[i]);
-        lv_obj_set_size(sess_close_btns[i], 24, 24);
-        lv_obj_align(sess_close_btns[i], LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_set_style_bg_color(sess_close_btns[i], p->surface, 0);
-        lv_obj_set_style_border_width(sess_close_btns[i], 0, 0);
-        lv_obj_set_style_radius(sess_close_btns[i], 3, 0);
-        lv_obj_add_event_cb(sess_close_btns[i], session_close_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(i + 1));
-
-        lv_obj_t *lbl_x = sess_close_lbls[i] = lv_label_create(sess_close_btns[i]);
-        lv_label_set_text(lbl_x, "x");
-        lv_obj_center(lbl_x);
-        lv_obj_set_style_text_color(lbl_x, p->accent_danger, 0);
-    }
-
-    /* 1.B Bookmarks Container */
-    container_bookmarks = lv_obj_create(sidebar);
-    lv_obj_set_size(container_bookmarks, DEVOS_PANE_LEFT_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 84);
-    lv_obj_set_pos(container_bookmarks, 0, 36);
-    lv_obj_set_style_bg_color(container_bookmarks, p->surface, 0);
-    lv_obj_set_style_border_width(container_bookmarks, 0, 0);
-    lv_obj_set_style_pad_all(container_bookmarks, 0, 0);
-    lv_obj_add_flag(container_bookmarks, LV_OBJ_FLAG_HIDDEN);
-
-    for (int i = 0; i < TERM_MAX_BOOKMARKS; i++) {
-        bm_cards[i] = lv_obj_create(container_bookmarks);
-        lv_obj_set_size(bm_cards[i], DEVOS_PANE_LEFT_WIDTH - 20, 56);
-        lv_obj_set_pos(bm_cards[i], 0, i * 62);
-        lv_obj_set_style_bg_color(bm_cards[i], p->surface, 0);
-        lv_obj_set_style_border_color(bm_cards[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(bm_cards[i], 1, 0);
-        lv_obj_set_style_radius(bm_cards[i], 4, 0);
-        lv_obj_set_style_pad_all(bm_cards[i], 6, 0);
-        lv_obj_clear_flag(bm_cards[i], LV_OBJ_FLAG_SCROLLABLE);
-
-        bm_labels[i] = lv_label_create(bm_cards[i]);
-        lv_obj_set_pos(bm_labels[i], 2, 2);
-        lv_obj_set_width(bm_labels[i], 136);
-        lv_label_set_long_mode(bm_labels[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(bm_labels[i], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(bm_labels[i], p->accent_primary, 0);
-
-        bm_sub_labels[i] = lv_label_create(bm_cards[i]);
-        lv_obj_set_pos(bm_sub_labels[i], 2, 24);
-        lv_obj_set_width(bm_sub_labels[i], 136);
-        lv_label_set_long_mode(bm_sub_labels[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(bm_sub_labels[i], &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(bm_sub_labels[i], p->text_secondary, 0);
-
-        /* Connect / Open button */
-        bm_conn_btns[i] = lv_button_create(bm_cards[i]);
-        lv_obj_set_size(bm_conn_btns[i], 50, 24);
-        lv_obj_align(bm_conn_btns[i], LV_ALIGN_RIGHT_MID, -28, 0);
-        lv_obj_set_style_bg_color(bm_conn_btns[i], p->accent_primary, 0);
-        lv_obj_set_style_radius(bm_conn_btns[i], 3, 0);
-        lv_obj_set_style_pad_all(bm_conn_btns[i], 0, 0);
-        lv_obj_add_event_cb(bm_conn_btns[i], bookmark_connect_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        lv_obj_t *lbl_c = bm_conn_lbls[i] = lv_label_create(bm_conn_btns[i]);
-        lv_label_set_text(lbl_c, "Open");
-        lv_obj_center(lbl_c);
-        lv_obj_set_style_text_color(lbl_c,
-            devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
-        lv_obj_set_style_text_font(lbl_c, &lv_font_montserrat_10, 0);
-
-        /* Delete button [x] */
-        bm_delete_btns[i] = lv_button_create(bm_cards[i]);
-        lv_obj_set_size(bm_delete_btns[i], 24, 24);
-        lv_obj_align(bm_delete_btns[i], LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_set_style_bg_color(bm_delete_btns[i], p->surface, 0);
-        lv_obj_set_style_border_color(bm_delete_btns[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(bm_delete_btns[i], 1, 0);
-        lv_obj_set_style_radius(bm_delete_btns[i], 3, 0);
-        lv_obj_set_style_pad_all(bm_delete_btns[i], 0, 0);
-        lv_obj_add_event_cb(bm_delete_btns[i], bookmark_delete_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        lv_obj_t *lbl_x = bm_del_lbls[i] = lv_label_create(bm_delete_btns[i]);
-        lv_label_set_text(lbl_x, "x");
-        lv_obj_center(lbl_x);
-        lv_obj_set_style_text_color(lbl_x, p->accent_danger, 0);
-        lv_obj_set_style_text_font(lbl_x, &lv_font_montserrat_12, 0);
-    }
-
-    /* 1.C Bottom Action Buttons */
-    btn_add_sess = lv_button_create(sidebar);
-    lv_obj_set_size(btn_add_sess, DEVOS_PANE_LEFT_WIDTH - 16, 32);
-    lv_obj_set_pos(btn_add_sess, 0, DEVOS_CONTENT_HEIGHT - 44);
-    lv_obj_set_style_bg_color(btn_add_sess, p->surface, 0);
-    lv_obj_set_style_border_color(btn_add_sess, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_add_sess, 1, 0);
-    lv_obj_set_style_radius(btn_add_sess, 4, 0);
-    lv_obj_add_event_cb(btn_add_sess, open_connect_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_add_sess = lv_label_create(btn_add_sess);
-    lv_label_set_text(lbl_add_sess, LV_SYMBOL_PLUS " Quick Connect / New Session");
-    lv_obj_center(lbl_add_sess);
-    lv_obj_set_style_text_font(lbl_add_sess, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_add_sess, p->accent_primary, 0);
-
-    btn_add_bm = lv_button_create(sidebar);
-    lv_obj_set_size(btn_add_bm, DEVOS_PANE_LEFT_WIDTH - 16, 32);
-    lv_obj_set_pos(btn_add_bm, 0, DEVOS_CONTENT_HEIGHT - 44);
-    lv_obj_set_style_bg_color(btn_add_bm, p->surface, 0);
-    lv_obj_set_style_border_color(btn_add_bm, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_add_bm, 1, 0);
-    lv_obj_set_style_radius(btn_add_bm, 4, 0);
-    lv_obj_add_flag(btn_add_bm, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(btn_add_bm, open_add_bookmark_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_add_bm = lv_label_create(btn_add_bm);
-    lv_label_set_text(lbl_add_bm, LV_SYMBOL_PLUS " Add Bookmark");
-    lv_obj_center(lbl_add_bm);
-    lv_obj_set_style_text_font(lbl_add_bm, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_add_bm, p->accent_primary, 0);
-
-    /* 2. Main Terminal Container */
-    terminal_container = lv_obj_create(screen);
-    lv_obj_set_size(terminal_container, DEVOS_SCREEN_WIDTH - DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(terminal_container, DEVOS_PANE_LEFT_WIDTH, 0);
-    lv_obj_set_style_bg_color(terminal_container, p->bg, 0);
-    lv_obj_set_style_radius(terminal_container, 0, 0);
-    lv_obj_set_style_border_width(terminal_container, 0, 0);
-    lv_obj_set_style_pad_all(terminal_container, 0, 0);
-    lv_obj_clear_flag(terminal_container, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Header Bar */
-    term_header = lv_obj_create(terminal_container);
-    lv_obj_set_size(term_header, lv_pct(100), 34);
-    lv_obj_set_pos(term_header, 0, 0);
-    lv_obj_set_style_bg_color(term_header, p->top_bar_bg, 0);
-    lv_obj_set_style_border_color(term_header, p->surface_border, 0);
-    lv_obj_set_style_border_width(term_header, 1, 0);
-    lv_obj_set_style_border_side(term_header, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_radius(term_header, 0, 0);
-    lv_obj_set_style_pad_left(term_header, 10, 0);
-    lv_obj_set_style_pad_right(term_header, 10, 0);
-    lv_obj_clear_flag(term_header, LV_OBJ_FLAG_SCROLLABLE);
-
-    btn_toggle_sidebar = lv_button_create(term_header);
-    lv_obj_set_size(btn_toggle_sidebar, 110, 24);
-    lv_obj_align(btn_toggle_sidebar, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_toggle_sidebar, p->surface, 0);
-    lv_obj_set_style_border_color(btn_toggle_sidebar, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_toggle_sidebar, 1, 0);
-    lv_obj_set_style_radius(btn_toggle_sidebar, 3, 0);
-    lv_obj_add_event_cb(btn_toggle_sidebar, toggle_sidebar_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_toggle_sidebar = lv_label_create(btn_toggle_sidebar);
-    lv_label_set_text(lbl_toggle_sidebar, LV_SYMBOL_BARS " Sidebar");
-    lv_obj_center(lbl_toggle_sidebar);
-    lv_obj_set_style_text_color(lbl_toggle_sidebar, p->text_primary, 0);
-    lv_obj_set_style_text_font(lbl_toggle_sidebar, &lv_font_montserrat_12, 0);
-
-    lbl_term_info = lv_label_create(term_header);
-    lv_label_set_text(lbl_term_info, "SSH: workstation (10.2.132.54:22) - bash");
-    lv_obj_align(lbl_term_info, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_text_color(lbl_term_info, p->accent_primary, 0);
-    lv_obj_set_style_text_font(lbl_term_info, &lv_font_montserrat_12, 0);
-
-    lbl_term_latency = lv_label_create(term_header);
-    lv_label_set_text(lbl_term_latency, "2ms");
-    lv_obj_align(lbl_term_latency, LV_ALIGN_RIGHT_MID, -110, 0);
-    lv_obj_set_style_text_font(lbl_term_latency, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_term_latency, p->accent_secondary, 0);
-
-    lbl_term_cols = lv_label_create(term_header);
-    lv_label_set_text(lbl_term_cols, "128x45 Cols");
-    lv_obj_align(lbl_term_cols, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_text_color(lbl_term_cols, p->text_secondary, 0);
-    lv_obj_set_style_text_font(lbl_term_cols, &lv_font_montserrat_12, 0);
-
-    /* Terminal Body Canvas */
-    term_body = lv_obj_create(terminal_container);
-    lv_obj_set_size(term_body, lv_pct(100), DEVOS_CONTENT_HEIGHT - 34 - 28);
-    lv_obj_set_pos(term_body, 0, 34);
-    lv_obj_set_style_bg_color(term_body, p->code_bg, 0);
-    lv_obj_set_style_radius(term_body, 0, 0);
-    lv_obj_set_style_border_width(term_body, 0, 0);
-    lv_obj_set_style_pad_all(term_body, 12, 0);
-
-    lbl_terminal_text = lv_label_create(term_body);
-    lv_label_set_text(lbl_terminal_text, s_term_buffers[0]);
-    lv_obj_set_style_text_color(lbl_terminal_text, p->text_primary, 0);
-    lv_obj_set_style_text_font(lbl_terminal_text, &lv_font_montserrat_14, 0);
-
-    /* Footer Status */
-    term_footer = lv_obj_create(terminal_container);
-    lv_obj_set_size(term_footer, lv_pct(100), 28);
-    lv_obj_set_pos(term_footer, 0, DEVOS_CONTENT_HEIGHT - 28);
-    lv_obj_set_style_bg_color(term_footer, p->bottom_bar_bg, 0);
-    lv_obj_set_style_border_color(term_footer, p->surface_border, 0);
-    lv_obj_set_style_border_width(term_footer, 1, 0);
-    lv_obj_set_style_border_side(term_footer, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_radius(term_footer, 0, 0);
-    lv_obj_set_style_pad_left(term_footer, 10, 0);
-    lv_obj_clear_flag(term_footer, LV_OBJ_FLAG_SCROLLABLE);
-
-    lbl_term_footer = lv_label_create(term_footer);
-    lv_label_set_text(lbl_term_footer,
-                      "Connected | PTY: TIOCSWINSZ OK | Alt+1..9 Switch | Sym+L Toggle Sidebar | Ctrl+C Interrupt");
-    lv_obj_align(lbl_term_footer, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_text_color(lbl_term_footer, p->text_secondary, 0);
-    lv_obj_set_style_text_font(lbl_term_footer, &lv_font_montserrat_12, 0);
-
-    /* 3. Quick Connect Modal (Redesigned: 540x240, spacious layout) */
-    modal_connect = lv_obj_create(screen);
-    lv_obj_set_size(modal_connect, 540, 240);
-    lv_obj_center(modal_connect);
-    lv_obj_set_style_bg_color(modal_connect, p->surface, 0);
-    lv_obj_set_style_border_color(modal_connect, p->accent_primary, 0);
-    lv_obj_set_style_border_width(modal_connect, 2, 0);
-    lv_obj_set_style_radius(modal_connect, 8, 0);
-    lv_obj_set_style_pad_all(modal_connect, 18, 0);
-    lv_obj_clear_flag(modal_connect, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(modal_connect, LV_OBJ_FLAG_HIDDEN);
-
-    lbl_mtitle = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_mtitle, LV_SYMBOL_SETTINGS " Quick Connect New SSH Session");
-    lv_obj_set_pos(lbl_mtitle, 0, 0);
-    lv_obj_set_style_text_font(lbl_mtitle, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_mtitle, p->accent_primary, 0);
-
-    /* Row 1: Alias, Target Host / IP, and Port */
-    lbl_l_alias = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_alias, "Alias (optional):");
-    lv_obj_set_pos(lbl_l_alias, 0, 28);
-    lv_obj_set_style_text_font(lbl_l_alias, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_l_alias, p->text_secondary, 0);
-
-    ta_alias = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_alias, 140, 36);
-    lv_obj_set_pos(ta_alias, 0, 48);
-    lv_textarea_set_placeholder_text(ta_alias, "e.g. Workstation");
-    lv_textarea_set_one_line(ta_alias, true);
-    lv_obj_set_style_bg_color(ta_alias, p->code_bg, 0);
-    lv_obj_set_style_text_color(ta_alias, p->text_primary, 0);
-    lv_obj_set_style_border_color(ta_alias, p->surface_border, 0);
-    lv_obj_set_style_border_width(ta_alias, 1, 0);
-    lv_obj_set_style_radius(ta_alias, 4, 0);
-    lv_obj_set_style_pad_all(ta_alias, 8, 0);
-    lv_obj_add_event_cb(ta_alias, ta_focus_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_l_host = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_host, "Target Host or IP:");
-    lv_obj_set_pos(lbl_l_host, 150, 28);
-    lv_obj_set_style_text_font(lbl_l_host, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_l_host, p->text_secondary, 0);
-
-    ta_host = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_host, 250, 36);
-    lv_obj_set_pos(ta_host, 150, 48);
-    lv_textarea_set_placeholder_text(ta_host, "10.x.y.z, 192.168.x.x, host");
-    lv_textarea_set_one_line(ta_host, true);
-    lv_obj_set_style_bg_color(ta_host, p->code_bg, 0);
-    lv_obj_set_style_text_color(ta_host, p->text_primary, 0);
-    lv_obj_set_style_border_color(ta_host, p->accent_primary, 0);
-    lv_obj_set_style_border_width(ta_host, 1, 0);
-    lv_obj_set_style_radius(ta_host, 4, 0);
-    lv_obj_set_style_pad_all(ta_host, 8, 0);
-    lv_obj_add_event_cb(ta_host, ta_focus_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_l_port = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_port, "Port:");
-    lv_obj_set_pos(lbl_l_port, 410, 28);
-    lv_obj_set_style_text_font(lbl_l_port, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_l_port, p->text_secondary, 0);
-
-    ta_port = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_port, 94, 36);
-    lv_obj_set_pos(ta_port, 410, 48);
-    lv_textarea_set_text(ta_port, "22");
-    lv_textarea_set_one_line(ta_port, true);
-    lv_obj_set_style_bg_color(ta_port, p->code_bg, 0);
-    lv_obj_set_style_text_color(ta_port, p->text_primary, 0);
-    lv_obj_set_style_border_color(ta_port, p->surface_border, 0);
-    lv_obj_set_style_border_width(ta_port, 1, 0);
-    lv_obj_set_style_radius(ta_port, 4, 0);
-    lv_obj_set_style_pad_all(ta_port, 8, 0);
-    lv_obj_add_event_cb(ta_port, ta_focus_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Row 2: Username & Authentication */
-    lbl_l_user = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_user, "Username:");
-    lv_obj_set_pos(lbl_l_user, 0, 94);
-    lv_obj_set_style_text_font(lbl_l_user, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_l_user, p->text_secondary, 0);
-
-    ta_user = lv_textarea_create(modal_connect);
-    lv_obj_set_size(ta_user, 240, 36);
-    lv_obj_set_pos(ta_user, 0, 114);
-    lv_textarea_set_text(ta_user, "root");
-    lv_textarea_set_placeholder_text(ta_user, "root");
-    lv_textarea_set_one_line(ta_user, true);
-    lv_obj_set_style_bg_color(ta_user, p->code_bg, 0);
-    lv_obj_set_style_text_color(ta_user, p->text_primary, 0);
-    lv_obj_set_style_border_color(ta_user, p->surface_border, 0);
-    lv_obj_set_style_border_width(ta_user, 1, 0);
-    lv_obj_set_style_radius(ta_user, 4, 0);
-    lv_obj_set_style_pad_all(ta_user, 8, 0);
-    lv_obj_add_event_cb(ta_user, ta_focus_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_l_auth = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_l_auth, "Auth Credentials:");
-    lv_obj_set_pos(lbl_l_auth, 258, 94);
-    lv_obj_set_style_text_font(lbl_l_auth, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_l_auth, p->text_secondary, 0);
-
-    lbl_auth_desc = lv_label_create(modal_connect);
-    lv_label_set_text(lbl_auth_desc, LV_SYMBOL_OK " Key (/sdcard/.ssh/) & Pwd");
-    lv_obj_set_pos(lbl_auth_desc, 258, 122);
-    lv_obj_set_style_text_font(lbl_auth_desc, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_auth_desc, p->accent_secondary, 0);
-
-    /* Row 3: Action Buttons */
-    btn_modal_save_bm = lv_button_create(modal_connect);
-    lv_obj_set_size(btn_modal_save_bm, 150, 34);
-    lv_obj_set_pos(btn_modal_save_bm, 0, 168);
-    lv_obj_set_style_bg_color(btn_modal_save_bm, p->surface, 0);
-    lv_obj_set_style_border_color(btn_modal_save_bm, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_modal_save_bm, 1, 0);
-    lv_obj_set_style_radius(btn_modal_save_bm, 4, 0);
-    lv_obj_add_event_cb(btn_modal_save_bm, connect_modal_save_bm_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_modal_save_bm = lv_label_create(btn_modal_save_bm);
-    lv_label_set_text(lbl_modal_save_bm, LV_SYMBOL_SAVE " Save Bookmark");
-    lv_obj_center(lbl_modal_save_bm);
-    lv_obj_set_style_text_color(lbl_modal_save_bm, p->text_primary, 0);
-    lv_obj_set_style_text_font(lbl_modal_save_bm, &lv_font_montserrat_12, 0);
-
-    btn_conn_cancel = lv_button_create(modal_connect);
-    lv_obj_set_size(btn_conn_cancel, 100, 34);
-    lv_obj_set_pos(btn_conn_cancel, 276, 168);
-    lv_obj_set_style_bg_color(btn_conn_cancel, p->surface, 0);
-    lv_obj_set_style_border_color(btn_conn_cancel, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_conn_cancel, 1, 0);
-    lv_obj_set_style_radius(btn_conn_cancel, 4, 0);
-    lv_obj_add_event_cb(btn_conn_cancel, close_connect_modal_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_can = lv_label_create(btn_conn_cancel);
-    lv_label_set_text(lbl_can, "Cancel");
-    lv_obj_center(lbl_can);
-    lv_obj_set_style_text_color(lbl_can, p->text_primary, 0);
-
-    btn_conn_sub = lv_button_create(modal_connect);
-    lv_obj_set_size(btn_conn_sub, 120, 34);
-    lv_obj_set_pos(btn_conn_sub, 384, 168);
-    lv_obj_set_style_bg_color(btn_conn_sub, p->accent_primary, 0);
-    lv_obj_set_style_radius(btn_conn_sub, 4, 0);
-    lv_obj_add_event_cb(btn_conn_sub, connect_modal_submit_cb, LV_EVENT_CLICKED, NULL);
-
-    lbl_conn_sub = lv_label_create(btn_conn_sub);
-    lv_label_set_text(lbl_conn_sub, LV_SYMBOL_OK " Connect");
-    lv_obj_center(lbl_conn_sub);
-    lv_obj_set_style_text_color(lbl_conn_sub,
-        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
-
-    /* 4. Timer for polling terminal I/O */
-    term_poll_timer = lv_timer_create(terminal_poll_cb, 30, NULL);
-
-    /* 5. Theme and initial display */
+    build_dialogs();
+    layout();
     devos_theme_add_listener(apply_theme, NULL);
-    refresh_sidebar();
-    refresh_header();
+    lv_timer_create(poll_cb, 20, NULL);
+    refresh_sidebar(true);
 }
 
 static void terminal_show(void)
 {
-    /* Check if Tailscale peer or another app requested an SSH session to a specific host */
+    /* Another app (Tailscale peer list) may ask for a session to a host. */
     const devos_telemetry_t *t = devos_telemetry_get();
-    if (t && t->terminal_requested_host[0] != '\0') {
-        char target_host[64];
-        snprintf(target_host, sizeof(target_host), "%s", t->terminal_requested_host);
-        target_host[sizeof(target_host) - 1] = '\0';
-
-        /* Clear requested target in telemetry */
-        devos_telemetry_t updated;
-        memcpy(&updated, t, sizeof(devos_telemetry_t));
-        updated.terminal_requested_host[0] = '\0';
-        devos_telemetry_update(&updated);
-
-        /* Check if existing session matches this host */
-        int found_sess = -1;
+    if (t->terminal_requested_host[0]) {
+        char host[64];
+        snprintf(host, sizeof(host), "%s", t->terminal_requested_host);
+        devos_telemetry_t u;
+        memcpy(&u, t, sizeof(u));
+        u.terminal_requested_host[0] = '\0';
+        devos_telemetry_update(&u);
         for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-            ssh_session_t *sess = ssh_port_get_session(i + 1);
-            if (sess && sess->state == SSH_SESSION_CONNECTED && strcmp(sess->host, target_host) == 0) {
-                found_sess = sess->id;
-                break;
+            ssh_session_t *s = ssh_port_get_session(i + 1);
+            if (s_ts[i].vt && s && s->state == SSH_SESSION_CONNECTED && strcmp(s->host, host) == 0) {
+                switch_session(i + 1);
+                return;
             }
         }
-
-        if (found_sess > 0) {
-            app_terminal_switch_session(found_sess);
-        } else {
-            /* Create new session */
-            int new_id = ssh_port_create_session(target_host, target_host, 22, "root",
-                                                 SSH_AUTH_KEY, NULL, current_cols, current_rows);
-            if (new_id > 0) {
-                s_sidebar_tab = 0;
-                app_terminal_switch_session(new_id);
-            }
-        }
+        open_connect_dialog(host);
     }
-
-    refresh_sidebar();
+    term_invalidate_all();
+    refresh_sidebar(true);
     refresh_header();
 }
 
 static void terminal_hide(void)
 {
+    /* Keep a pending host-key prompt visible for when we come back. */
+    if (s_hostkey_for == 0) close_dialogs();
 }
 
 static int terminal_telemetry_lines(char lines[3][64])
 {
     const devos_telemetry_t *t = devos_telemetry_get();
-    snprintf(lines[0], sizeof(lines[0]), "* %d Session%s", t->terminal_sessions,
+    snprintf(lines[0], sizeof(lines[0]), "* %d live session%s", t->terminal_sessions,
              t->terminal_sessions == 1 ? "" : "s");
-    snprintf(lines[1], sizeof(lines[1]), "* %s", t->terminal_host);
-    snprintf(lines[2], sizeof(lines[2]), "* SSH + PTY shell");
+    snprintf(lines[1], sizeof(lines[1]), "* %s", t->terminal_host[0] ? t->terminal_host : "No session");
+    snprintf(lines[2], sizeof(lines[2]), "* SSH + xterm-256color");
     return 3;
 }
 
@@ -1514,13 +1551,12 @@ devos_app_descriptor_t *app_terminal_get_descriptor(void)
     app_descriptor.category = "systems";
     app_descriptor.name = "Terminal";
     app_descriptor.title = "Terminal / SSH";
-    app_descriptor.subtitle = "Multi-Session ANSI PTY Shell";
+    app_descriptor.subtitle = "SSH client + VT100 terminal";
     app_descriptor.screen = screen;
     app_descriptor.init = terminal_init;
     app_descriptor.show = terminal_show;
     app_descriptor.hide = terminal_hide;
     app_descriptor.handle_key = terminal_handle_key;
     app_descriptor.get_telemetry_lines = terminal_telemetry_lines;
-
     return &app_descriptor;
 }
