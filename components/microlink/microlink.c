@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #ifdef ESP_PLATFORM
 #include "nvs_flash.h"
@@ -349,6 +350,23 @@ int microlink_disconnect(void)
 microlink_state_t microlink_get_state(void)
 {
     return s_status.state;
+}
+
+int microlink_resolve(const char *name, char *out_ip, size_t out_len)
+{
+    if (!name || !out_ip || out_len == 0 || s_status.state != MICROLINK_STATE_CONNECTED) return -1;
+    if (strcasecmp(name, "devos") == 0 || strcasecmp(name, s_status.node_name) == 0) {
+        snprintf(out_ip, out_len, "%s", s_status.assigned_ip);
+        return 0;
+    }
+    for (int i = 0; i < s_status.peer_count; i++) {
+        if (strcasecmp(name, s_status.peers[i].name) == 0 ||
+            strcasecmp(name, s_status.peers[i].fqdn) == 0) {
+            snprintf(out_ip, out_len, "%s", s_status.peers[i].ip);
+            return 0;
+        }
+    }
+    return -1;
 }
 
 int microlink_get_status(microlink_status_t *out_status)
