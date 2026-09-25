@@ -417,6 +417,7 @@ struct microlink_s {
     ml_derp_region_t derp_regions[ML_MAX_DERP_REGIONS];
     uint8_t derp_region_count;
     uint16_t derp_home_region;      /* Our PreferredDERP region */
+    uint16_t derp_measured_region;  /* devOS: fastest region by STUN (0 = not yet) */
 
     /* Key expiry (parsed from MapResponse self-node) */
     int64_t key_expiry_epoch;       /* Unix epoch seconds, 0 = no expiry */
@@ -489,6 +490,8 @@ void ml_wg_mgr_update_transport(microlink_t *ml);
 esp_err_t ml_stun_resolve_servers(microlink_t *ml);
 esp_err_t ml_stun_send_probe(microlink_t *ml, const char *server, uint16_t port);
 esp_err_t ml_stun_send_probe_to(microlink_t *ml, uint32_t server_ip, uint16_t port);
+/* devOS: STUN every DERP region once, return the fastest region (0 if none answered). */
+uint16_t ml_stun_pick_derp_region(microlink_t *ml, int timeout_ms, int *best_ms);
 esp_err_t ml_stun_send_probe_ipv6(microlink_t *ml, const uint8_t *server_ip6, uint16_t port);
 bool ml_stun_parse_response(const uint8_t *data, size_t len,
                              uint32_t *out_ip, uint16_t *out_port);

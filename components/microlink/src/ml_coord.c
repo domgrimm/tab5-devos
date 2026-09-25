@@ -22,6 +22,7 @@
  */
 
 #include "microlink_internal.h"
+#include "nvs.h"
 #include "x25519.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -60,6 +61,21 @@ typedef enum {
 /* ============================================================================
  * Helper: hex encoding for keys
  * ========================================================================== */
+
+/* devOS: the region we ask to be homed on — the nearest one once measured
+ * (remembered across boots), upstream's default before that. */
+static uint16_t preferred_derp(const microlink_t *ml) {
+    return ml->derp_measured_region ? ml->derp_measured_region : ML_DERP_REGION;
+}
+
+static void save_measured_derp(uint16_t region) {
+    nvs_handle_t h;
+    if (nvs_open("microlink", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u16(h, "derp_pref", region);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
 
 static void bytes_to_hex(const uint8_t *bytes, size_t len, char *hex) {
     static const char hextab[] = "0123456789abcdef";
@@ -723,7 +739,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     {
         cJSON *netinfo = cJSON_CreateObject();
         if (netinfo) {
-            cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
+            cJSON_AddNumberToObject(netinfo, "PreferredDERP", preferred_derp(ml));
             cJSON_AddItemToObject(hostinfo, "NetInfo", netinfo);
         }
     }
@@ -1014,6 +1030,7 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
             ml->derp_home_region = ML_DERP_REGION;
             ESP_LOGI(TAG, "Home DERP region: %d (default)", ML_DERP_REGION);
         }
+        if (ml->derp_measured_region) ml->derp_home_region = ml->derp_measured_region;
         cJSON *self_key = cJSON_GetObjectItem(node, "Key");
         if (self_key && self_key->valuestring) {
             ESP_LOGI(TAG, "Self-Node Key (from server): %s", self_key->valuestring);
@@ -1365,7 +1382,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * to populate Node.HomeDERP for other peers. */
     cJSON *netinfo = cJSON_CreateObject();
     if (netinfo) {
-        cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
+        cJSON_AddNumberToObject(netinfo, "PreferredDERP", preferred_derp(ml));
         if (ml->stun_nat_checked) {
             cJSON_AddBoolToObject(netinfo, "MappingVariesByDestIP", ml->nat_mapping_varies);
         }
@@ -1677,6 +1694,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                 ml->derp_home_region = ML_DERP_REGION;
                 ESP_LOGI(TAG, "Home DERP region: %d (default)", ML_DERP_REGION);
             }
+            if (ml->derp_measured_region) ml->derp_home_region = ml->derp_measured_region;
             cJSON *self_key = cJSON_GetObjectItem(node, "Key");
             if (self_key && self_key->valuestring) {
                 ESP_LOGI(TAG, "Self-Node Key (server): %.40s...", self_key->valuestring);
@@ -1799,6 +1817,19 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                 ml->derp_region_count++;
             }
             ESP_LOGI(TAG, "DERPMap: parsed %d regions", ml->derp_region_count);
+            /* devOS: home on the nearest region (once per boot, before DERP connects) */
+            static bool s_derp_probed = false;
+            if (!s_derp_probed && ml->derp_region_count > 0) {
+                s_derp_probed = true;
+                int ms = 0;
+                uint16_t nearest = ml_stun_pick_derp_region(ml, 1500, &ms);
+                if (nearest) {
+                    if (nearest != ml->derp_measured_region) save_measured_derp(nearest);
+                    ml->derp_measured_region = nearest;
+                    ml->derp_home_region = nearest;
+                    ESP_LOGI(TAG, "Home DERP region: %d (nearest, %d ms)", nearest, ms);
+                }
+            }
         }
     }
 
@@ -1851,7 +1882,7 @@ static int do_start_long_poll(microlink_t *ml, ml_noise_state_t *noise) {
      * to populate Node.HomeDERP for other peers. */
     cJSON *netinfo = cJSON_CreateObject();
     if (netinfo) {
-        cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
+        cJSON_AddNumberToObject(netinfo, "PreferredDERP", preferred_derp(ml));
         if (ml->stun_nat_checked) {
             cJSON_AddBoolToObject(netinfo, "MappingVariesByDestIP", ml->nat_mapping_varies);
         }
@@ -1952,7 +1983,7 @@ static int do_send_endpoint_update(microlink_t *ml, ml_noise_state_t *noise) {
 
         cJSON *netinfo = cJSON_CreateObject();
         if (netinfo) {
-            cJSON_AddNumberToObject(netinfo, "PreferredDERP", ML_DERP_REGION);
+            cJSON_AddNumberToObject(netinfo, "PreferredDERP", preferred_derp(ml));
             if (ml->stun_nat_checked) {
                 cJSON_AddBoolToObject(netinfo, "MappingVariesByDestIP", ml->nat_mapping_varies);
             }

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 
@@ -28,7 +29,12 @@ static lv_obj_t *btn_connect = NULL;
 static lv_obj_t *lbl_connect = NULL;
 static lv_obj_t *btn_new = NULL;
 static lv_obj_t *lbl_new = NULL;
+static lv_obj_t *lbl_sess_h = NULL;
+static lv_obj_t *sess_list = NULL;          /* scrolling list of every conversation */
+static int s_sess_rows = 0;                 /* rows created so far (grown on demand) */
+static int s_sess_shown_active = -2;
 static lv_obj_t *sess_btns[OPENDEV_SESS_BTNS] = {NULL};
+static lv_obj_t *sess_meta[OPENDEV_SESS_BTNS] = {NULL};
 static lv_obj_t *sess_lbls[OPENDEV_SESS_BTNS] = {NULL};
 
 /* Center: chat + input */
@@ -86,6 +92,7 @@ static uint32_t s_seen_gen = 0;
 static lv_timer_t *poll_timer = NULL;
 
 static void refresh_all(void);
+static void sess_row_create(int i);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 static void srv_focus_paint(void);
 static void srv_open(bool login);
@@ -544,18 +551,31 @@ static void refresh_meta(void)
 
     int n = opendev_client_session_count();
     int active = opendev_client_active();
-    for (int i = 0; i < OPENDEV_SESS_BTNS; i++) {
-        if (!sess_btns[i]) continue;
+    while (s_sess_rows < n && s_sess_rows < OPENDEV_SESS_BTNS) sess_row_create(s_sess_rows++);
+    if (lbl_sess_h) {
+        snprintf(buf, sizeof(buf), n ? "CONVERSATIONS (%d)" : "CONVERSATIONS", n);
+        if (strcmp(lv_label_get_text(lbl_sess_h), buf) != 0) lv_label_set_text(lbl_sess_h, buf);
+    }
+    time_t now = time(NULL);
+    for (int i = 0; i < s_sess_rows; i++) {
         if (i >= n) {
             lv_obj_add_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
         lv_obj_remove_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(sess_btns[i], 4, 178 + i * 52);
         const opendev_session_t *s = opendev_client_session(i);
-        snprintf(buf, sizeof(buf), "%s%s\n%s", s->busy ? LV_SYMBOL_BULLET " " : "", s->title[0] ? s->title : "(untitled)",
-                 i == active ? "active" : "");
+        char age[24] = "";
+        long long secs = (s->updated > 0 && now > 1700000000) ? (long long)now - s->updated / 1000 : -1;
+        if (secs >= 0 && secs < 90) snprintf(age, sizeof(age), "just now");
+        else if (secs >= 0 && secs < 3600) snprintf(age, sizeof(age), "%lldm ago", secs / 60);
+        else if (secs >= 0 && secs < 172800) snprintf(age, sizeof(age), "%lldh ago", secs / 3600);
+        else if (secs >= 0) snprintf(age, sizeof(age), "%lldd ago", secs / 86400);
+        snprintf(buf, sizeof(buf), "%s%s", s->busy ? LV_SYMBOL_BULLET " " : "", s->title[0] ? s->title : "(untitled)");
         if (strcmp(lv_label_get_text(sess_lbls[i]), buf) != 0) lv_label_set_text(sess_lbls[i], buf);
+        snprintf(buf, sizeof(buf), "%s%s%s", age, (age[0] && (s->busy || i == active)) ? "  -  " : "",
+                 s->busy ? "working" : i == active ? "open" : "");
+        if (strcmp(lv_label_get_text(sess_meta[i]), buf) != 0) lv_label_set_text(sess_meta[i], buf);
+        lv_obj_set_style_text_color(sess_meta[i], s->busy ? p->accent_secondary : p->text_secondary, 0);
         if (i == active) {
             lv_obj_set_style_bg_color(sess_btns[i], p->surface_active, 0);
             lv_obj_set_style_border_color(sess_btns[i], p->accent_primary, 0);
@@ -565,6 +585,10 @@ static void refresh_meta(void)
             lv_obj_set_style_border_color(sess_btns[i], p->surface_border, 0);
             lv_obj_set_style_text_color(sess_lbls[i], p->text_primary, 0);
         }
+    }
+    if (active != s_sess_shown_active) {        /* keep the open conversation in view */
+        s_sess_shown_active = active;
+        if (active >= 0 && active < s_sess_rows) lv_obj_scroll_to_view(sess_btns[active], LV_ANIM_OFF);
     }
 
     if (lbl_info) {
@@ -624,6 +648,34 @@ static void sess_btn_cb(lv_event_t *e)
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     opendev_client_select(idx);
     refresh_all();
+}
+
+static void sess_row_create(int i)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_t *b = sess_btns[i] = lv_button_create(sess_list);
+    lv_obj_set_size(b, lv_pct(100), 46);
+    lv_obj_set_style_bg_color(b, p->surface, 0);
+    lv_obj_set_style_border_color(b, p->surface_border, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_pad_hor(b, 8, 0);
+    lv_obj_set_style_pad_ver(b, 0, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, sess_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    for (int k = 0; k < 2; k++) {                   /* title, then age / state */
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, "");
+        lv_obj_set_size(l, lv_pct(100), 17);
+        lv_obj_set_pos(l, 0, k ? 22 : 3);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l, k ? p->text_secondary : p->text_primary, 0);
+        if (k) sess_meta[i] = l;
+        else sess_lbls[i] = l;
+    }
 }
 
 static void new_btn_cb(lv_event_t *e)
@@ -1183,26 +1235,22 @@ static void opendev_init(void)
     lv_obj_set_style_text_font(lbl_new, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_new, p->text_primary, 0);
 
-    /* Left: session buttons (pool) */
-    for (int i = 0; i < OPENDEV_SESS_BTNS; i++) {
-        sess_btns[i] = lv_button_create(left_panel);
-        lv_obj_set_size(sess_btns[i], DEVOS_PANE_LEFT_WIDTH - 28, 46);
-        lv_obj_set_pos(sess_btns[i], 4, 178 + i * 52);
-        lv_obj_set_style_bg_color(sess_btns[i], p->surface, 0);
-        lv_obj_set_style_border_color(sess_btns[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(sess_btns[i], 1, 0);
-        lv_obj_set_style_radius(sess_btns[i], 4, 0);
-        lv_obj_add_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_event_cb(sess_btns[i], sess_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
+    /* Left: every conversation, newest first (rows are created as needed) */
+    lbl_sess_h = lv_label_create(left_panel);
+    lv_label_set_text(lbl_sess_h, "CONVERSATIONS");
+    lv_obj_set_pos(lbl_sess_h, 4, 174);
+    lv_obj_set_style_text_font(lbl_sess_h, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_sess_h, p->accent_secondary, 0);
 
-        sess_lbls[i] = lv_label_create(sess_btns[i]);
-        lv_obj_align(sess_lbls[i], LV_ALIGN_LEFT_MID, 4, 0);
-        lv_obj_set_size(sess_lbls[i], DEVOS_PANE_LEFT_WIDTH - 44, 40);
-        lv_label_set_long_mode(sess_lbls[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(sess_lbls[i], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(sess_lbls[i], p->text_primary, 0);
-    }
+    sess_list = lv_obj_create(left_panel);
+    lv_obj_set_pos(sess_list, 0, 194);
+    lv_obj_set_size(sess_list, DEVOS_PANE_LEFT_WIDTH - 20, DEVOS_CONTENT_HEIGHT - 194 - 20);
+    lv_obj_set_style_bg_opa(sess_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sess_list, 0, 0);
+    lv_obj_set_style_pad_all(sess_list, 4, 0);
+    lv_obj_set_style_pad_row(sess_list, 6, 0);
+    lv_obj_set_flex_flow(sess_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(sess_list, LV_DIR_VER);
 
     /* Center: chat stream */
     chat_scroll = lv_obj_create(center_panel);

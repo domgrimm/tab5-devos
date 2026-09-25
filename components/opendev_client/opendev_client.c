@@ -41,7 +41,7 @@
 #define REFETCH_DEBOUNCE_TICKS 5            /* 500 ms coalescing */
 #define MSG_LIMIT         40
 #define ROLE_MAP_MAX      64
-#define SESSIONS_PATH     "/session?roots=true&limit=40"
+#define SESSIONS_PATH     "/session?roots=true&limit=100"
 
 /* ------------------------------------------------------------------ config */
 /* The server is a URL: http://host:4096 for `opencode serve`, or an
@@ -1401,7 +1401,7 @@ static void workers_start(void)
 }
 
 /* ============================================================ results */
-#define SESS_SCAN (OPENDEV_MAX_SESSIONS * 8)
+#define SESS_SCAN 256
 typedef struct { opendev_session_t s; long long updated; } sess_tmp_t;
 typedef struct { sess_tmp_t *items; int n; } sess_list_t;
 
@@ -1416,6 +1416,7 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     json_str(obj, e, "title", t->s.title, sizeof(t->s.title));
     const char *tp, *te;
     if (json_obj(obj, e, "time", &tp, &te)) t->updated = json_i64(tp, te, "updated");
+    t->s.updated = t->updated;
     l->n++;
 }
 
