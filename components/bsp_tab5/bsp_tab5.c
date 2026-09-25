@@ -23,6 +23,14 @@
 #include "esp_lcd_touch_gt911.h"
 #include "esp_lcd_touch_st7123.h"
 #include "tab5_panel_init_data.h"
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 3)
+#include <math.h>
+#include "esp_clk_tree.h"
+#include "hal/mipi_dsi_host_ll.h"
+#include "hal/mipi_dsi_brg_ll.h"
+#define TAB5_DSI_TIMING_FIXUP 1
+#endif
 
 static const char *TAG = "bsp_tab5";
 
@@ -416,11 +424,9 @@ typedef struct {
 static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
 {
     /* Values taken from M5GFX (m5stack/M5GFX, Panel setup in M5GFX.cpp), which
-     * is the display stack that ships flicker-free on this exact hardware. The
-     * critical one is the MIPI-DSI lane bit rate: esp-bsp uses 965 Mbps for the
-     * ST7121 and that produces continuous scanout flicker on this panel (the DSI
-     * PHY clock the panel's receiver must lock to is marginal). M5GFX uses
-     * 900 Mbps, which locks cleanly. DPI clock + porches otherwise match. */
+     * is the display stack that ships flicker-free on this exact hardware.
+     * NOTE: the ST7121's 70 MHz DPI clock is only programmed correctly on
+     * ESP-IDF >= 5.5.3; on older IDF see tab5_dsi_fixup_horizontal_timing(). */
     switch (panel) {
     case TAB5_PANEL_ILI9881C:
         return (tab5_panel_timing_t){ "ILI9881C", 1040, 80, 40, 140, 40, 4, 20, 20 };
@@ -431,6 +437,74 @@ static tab5_panel_timing_t tab5_timing_for(tab5_panel_t panel)
         return (tab5_panel_timing_t){ "ST7123", 1040, 80, 2, 40, 40, 2, 8, 220 };
     }
 }
+
+#if TAB5_DSI_TIMING_FIXUP
+/* -------------------------------------------------------------------------
+ * Backport of the ESP-IDF v5.5.3 MIPI-DSI horizontal timing fix
+ * (components/hal/mipi_dsi_hal.c: mipi_dsi_hal_host_dpi_set_horizontal_timing).
+ *
+ * Before 5.5.3 the DPI driver truncates the DPI clock divider and then derives
+ * the DSI host line timing from the *resulting* clock, truncating each field to
+ * whole lane-byte clocks without fixing up the total. For the ST7121 (70 MHz
+ * asked of the 240 MHz PLL -> div 3 -> really 80 MHz) that gives a ~65 Hz
+ * refresh instead of ~57 Hz, and a DSI host line ~1.8 lane-byte clocks shorter
+ * than the DPI line: the panel flickers even on a static framebuffer. (80 MHz
+ * panels divide exactly, so ST7123/ILI9881C are barely affected.) M5GFX, which
+ * is flicker-free here, relies on IDF >= 5.5.3 for this.
+ *
+ * Re-program both register sets exactly as 5.5.3 does: host timing from the
+ * *requested* clock (rounded, total compensated), and the bridge front porch
+ * stretched so the real clock still yields the requested line period. Must run
+ * after the DPI panel is created and before esp_lcd_panel_init() starts video.
+ * ----------------------------------------------------------------------- */
+static void tab5_dsi_fixup_horizontal_timing(const esp_lcd_dpi_panel_config_t *dpi,
+                                             uint32_t lane_bit_rate_mbps)
+{
+    soc_module_clk_t clk_src = (soc_module_clk_t)(dpi->dpi_clk_src ? dpi->dpi_clk_src
+                                                                   : MIPI_DSI_DPI_CLK_SRC_DEFAULT);
+    uint32_t src_hz = 0;
+    if (esp_clk_tree_src_get_freq_hz(clk_src, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &src_hz) != ESP_OK
+        || src_hz == 0 || dpi->dpi_clock_freq_mhz == 0) {
+        ESP_LOGW(TAG, "DSI timing fix-up skipped (unknown DPI clock)");
+        return;
+    }
+    /* Same integer divider IDF < 5.5.3 programmed into the hardware. */
+    const uint32_t src_mhz = src_hz / 1000 / 1000;
+    const uint32_t div = src_mhz / dpi->dpi_clock_freq_mhz;
+    const float expect_mhz = (float)dpi->dpi_clock_freq_mhz;
+    const float real_mhz = (float)src_mhz / (float)div;
+
+    const esp_lcd_video_timing_t *t = &dpi->video_timing;
+    const uint32_t htotal = t->hsync_pulse_width + t->hsync_back_porch + t->h_size + t->hsync_front_porch;
+
+    /* DSI host: lane-byte-clock units, derived from the requested DPI clock. */
+    const float ratio = (float)lane_bit_rate_mbps / expect_mhz / 8.0f;
+    const uint32_t host_hsw = (uint32_t)roundf(t->hsync_pulse_width * ratio);
+    const uint32_t host_hbp = (uint32_t)roundf(t->hsync_back_porch * ratio);
+    const uint32_t host_act = (uint32_t)roundf(t->h_size * ratio);
+    const uint32_t host_hfp = (uint32_t)roundf(t->hsync_front_porch * ratio);
+    const int host_comp = (int)roundf(htotal * ratio) - (int)(host_hsw + host_hbp + host_act + host_hfp);
+    mipi_dsi_host_ll_dpi_set_horizontal_timing(MIPI_DSI_LL_GET_HOST(0), host_hsw, host_hbp,
+                                               host_act + host_comp, host_hfp);
+
+    /* DSI bridge: pixel units at the real DPI clock; stretch the front porch so
+     * the line period (and so the refresh rate) is what was requested. */
+    const int brg_comp = (int)roundf(real_mhz / expect_mhz * htotal) - (int)htotal;
+    const uint32_t brg_hfp = t->hsync_front_porch + brg_comp;
+    mipi_dsi_brg_ll_set_horizontal_timing(MIPI_DSI_LL_GET_BRG(0), t->hsync_pulse_width,
+                                          t->hsync_back_porch, t->h_size, brg_hfp);
+    mipi_dsi_brg_ll_update_dpi_config(MIPI_DSI_LL_GET_BRG(0));
+
+    const uint32_t vtotal = t->vsync_pulse_width + t->vsync_back_porch + t->v_size + t->vsync_front_porch;
+    const uint32_t refresh_x10 = (uint32_t)(real_mhz * 1e7f / ((htotal + brg_comp) * vtotal));
+    ESP_LOGI(TAG, "DSI timing fix-up (IDF < 5.5.3): DPI clk %lu MHz (asked %lu), host "
+                  "hsw/hbp/act/hfp=%lu/%lu/%lu/%lu, bridge hfp %lu->%lu, refresh %lu.%lu Hz",
+             (unsigned long)(src_mhz / div), (unsigned long)dpi->dpi_clock_freq_mhz,
+             (unsigned long)host_hsw, (unsigned long)host_hbp, (unsigned long)(host_act + host_comp),
+             (unsigned long)host_hfp, (unsigned long)t->hsync_front_porch, (unsigned long)brg_hfp,
+             (unsigned long)(refresh_x10 / 10), (unsigned long)(refresh_x10 % 10));
+}
+#endif /* TAB5_DSI_TIMING_FIXUP */
 
 /* -------------------------------------------------------------------------
  * Touch input -> LVGL indev (GT911 for the ILI9881C rev, ST7123 TDDI otherwise)
@@ -668,6 +742,11 @@ static esp_err_t bsp_display_init(void)
         ESP_LOGI(TAG, "Creating %s panel...", t.name);
         TAB5_TRY(esp_lcd_new_panel_st7123(dbi_io, &cfg, &s_panel), "create ST7123/ST7121 panel");
     }
+
+#if TAB5_DSI_TIMING_FIXUP
+    /* DPI panel exists (timing registers programmed) but video hasn't started. */
+    tab5_dsi_fixup_horizontal_timing(&dpi_cfg, t.lane_bit_rate_mbps);
+#endif
 
     ESP_LOGI(TAG, "Resetting panel...");
     TAB5_TRY(esp_lcd_panel_reset(s_panel), "panel reset");
