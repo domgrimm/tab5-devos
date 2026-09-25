@@ -93,6 +93,13 @@ static const char *md_find_marker(const char *s, size_t n, const char *m,
     return NULL;
 }
 
+/* Agents link local files as [name](file:///abs/path#L8): the name says it
+ * all, and the path is on another computer, so only web URLs are shown. */
+static bool md_url_shown(const char *u, size_t ulen)
+{
+    return !(ulen >= 7 && strncmp(u, "file://", 7) == 0);
+}
+
 /* Link destination after "](": sets *url and *ulen, returns closing ')', or NULL.
  * Handles <dest> (spaces allowed), balanced parens, and "title" tails. */
 static const char *md_link_end(const char *s, size_t n, const char **url,
@@ -202,9 +209,11 @@ static void md_render_inline(lv_obj_t *sg, const char *s, size_t n,
                 md_render_inline(sg, s + i + 1, k - (s + i + 1), font,
                                  p->accent_primary, decor, p);
                 /* ponytail: device can't tap links, so the URL stays visible */
-                md_add_span(sg, " (", 2, font, p->text_muted, decor);
-                md_add_span(sg, u, ulen, font, p->text_muted, decor);
-                md_add_span(sg, ")", 1, font, p->text_muted, decor);
+                if (md_url_shown(u, ulen)) {
+                    md_add_span(sg, " (", 2, font, p->text_muted, decor);
+                    md_add_span(sg, u, ulen, font, p->text_muted, decor);
+                    md_add_span(sg, ")", 1, font, p->text_muted, decor);
+                }
                 i = (size_t)(e - s) + 1;
                 start = i;
                 continue;
@@ -371,13 +380,15 @@ static size_t md_strip_into(const char *s, size_t n, char *out, size_t cap,
             if (e) {
                 o = md_strip_into(s + i + 1, (size_t)(k - (s + i + 1)), out,
                                   cap, o);
-                if (o + 3 >= cap) break;
-                out[o++] = ' ';
-                out[o++] = '(';
-                if (o + ulen + 1 >= cap) break;
-                memcpy(out + o, u, ulen);
-                o += ulen;
-                out[o++] = ')';
+                if (md_url_shown(u, ulen)) {
+                    if (o + 3 >= cap) break;
+                    out[o++] = ' ';
+                    out[o++] = '(';
+                    if (o + ulen + 1 >= cap) break;
+                    memcpy(out + o, u, ulen);
+                    o += ulen;
+                    out[o++] = ')';
+                }
                 i = (size_t)(e - s) + 1;
                 continue;
             }
