@@ -18,6 +18,10 @@
 #define ROW_Y0          6
 #define ROW_Y1          (ROW_Y0 + TILE_HEIGHT + ROW_GAP) /* 230 */
 #define CAROUSEL_HEIGHT 444
+#define FOOTER_HEIGHT   44
+#define FOOTER_Y        (DEVOS_SCREEN_HEIGHT - DEVOS_BOTTOM_BAR_HEIGHT - 4 - FOOTER_HEIGHT)
+#define INFO_BOTTOM     (DEVOS_TOP_BAR_HEIGHT + 4 + 66)
+#define CAROUSEL_Y      (INFO_BOTTOM + (FOOTER_Y - INFO_BOTTOM - CAROUSEL_HEIGHT) / 2)
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
@@ -1081,10 +1085,10 @@ static void launcher_init(void)
     lv_obj_set_style_text_font(lbl_arrange_banner, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_arrange_banner, p->accent_primary, 0);
 
-    /* 3. Multi-Page Carousel (y: 140, height: 444) */
+    /* 3. Multi-Page Carousel, centred between the info strip and the footer */
     carousel = lv_obj_create(screen);
     lv_obj_set_size(carousel, DEVOS_SCREEN_WIDTH, CAROUSEL_HEIGHT);
-    lv_obj_set_pos(carousel, 0, 140);
+    lv_obj_set_pos(carousel, 0, CAROUSEL_Y);
     lv_obj_set_style_bg_opa(carousel, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(carousel, 0, 0);
     lv_obj_set_style_pad_all(carousel, 0, 0);
@@ -1097,10 +1101,11 @@ static void launcher_init(void)
     /* Build card widgets */
     rebuild_card_widgets();
 
-    /* 4. Pagination Footer Bar (y: 588, height: 46) */
+    /* 4. Pagination Footer Bar: mirrors the info strip (4 px above the hint
+     *    bar, as the strip sits 4 px below the top bar). */
     footer_bar = lv_obj_create(screen);
-    lv_obj_set_size(footer_bar, DEVOS_SCREEN_WIDTH - 32, 44);
-    lv_obj_set_pos(footer_bar, 16, 588);
+    lv_obj_set_size(footer_bar, DEVOS_SCREEN_WIDTH - 32, FOOTER_HEIGHT);
+    lv_obj_set_pos(footer_bar, 16, FOOTER_Y);
     lv_obj_set_style_bg_color(footer_bar, p->telemetry_bg, 0);
     lv_obj_set_style_border_color(footer_bar, p->surface_border, 0);
     lv_obj_set_style_border_width(footer_bar, 1, 0);
@@ -1166,7 +1171,7 @@ static void launcher_init(void)
     /* Arrange Mode Toggle Button */
     btn_arrange_toggle = lv_button_create(footer_bar);
     lv_obj_set_size(btn_arrange_toggle, 110, 34);
-    lv_obj_set_pos(btn_arrange_toggle, 990, 1);
+    lv_obj_align(btn_arrange_toggle, LV_ALIGN_RIGHT_MID, -2, 0);   /* far right */
     lv_obj_set_style_bg_color(btn_arrange_toggle, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_arrange_toggle, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_arrange_toggle, 1, 0);
@@ -1182,7 +1187,7 @@ static void launcher_init(void)
     /* Arrange Reset Button (Defaults) */
     btn_arrange_reset = lv_button_create(footer_bar);
     lv_obj_set_size(btn_arrange_reset, 105, 34);
-    lv_obj_set_pos(btn_arrange_reset, 1110, 1);
+    lv_obj_align_to(btn_arrange_reset, btn_arrange_toggle, LV_ALIGN_OUT_LEFT_MID, -8, 0);
     lv_obj_set_style_bg_color(btn_arrange_reset, p->surface, 0);
     lv_obj_set_style_border_color(btn_arrange_reset, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_arrange_reset, 1, 0);

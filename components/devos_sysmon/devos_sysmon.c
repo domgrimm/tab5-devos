@@ -121,6 +121,7 @@ typedef struct {
     bool     bat_valid;
     bool     bat_present;
     bool     charging;
+    bool     chg_stat;
     uint16_t mv;
     int32_t  ma;
     uint32_t mw;
@@ -196,6 +197,7 @@ static void sample_power(snapshot_t *n)
     n->ma = p.current_ma;
     n->mw = p.power_mw;
     n->charging = p.charging;
+    n->chg_stat = p.chg_stat;
     /* Below ~5.5 V there is no 2S pack on the terminals: running on USB. */
     n->bat_present = p.voltage_mv >= 5500 && p.voltage_mv <= 9000;
 
@@ -352,6 +354,7 @@ void devos_sysmon_apply(void)
     t.battery_power_mw = (uint16_t)(n.mw > 65535 ? 65535 : n.mw);
     t.battery_percent = n.pct;
     t.battery_charging = n.charging;
+    t.charger_signal = n.chg_stat;
     t.runtime_minutes_left = n.runtime_min;
 
     t.wifi_state = (uint8_t)n.wifi.state;

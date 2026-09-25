@@ -55,6 +55,7 @@ typedef struct {
     uint16_t runtime_minutes_left;
     bool     battery_valid;         /* power monitor answered */
     bool     battery_present;       /* a pack is fitted (false = USB power only) */
+    bool     charger_signal;        /* raw charger CHG_STAT line (diagnostic) */
 
     /* Network Telemetry */
     bool     wifi_connected;
