@@ -19,7 +19,8 @@ typedef struct {
     uint16_t voltage_mv;   /* battery pack (2S Li-ion) voltage */
     int32_t  current_ma;   /* + charging, - discharging */
     uint32_t power_mw;     /* |V x I| */
-    bool     charging;     /* charger reports CHG_STAT */
+    bool     charging;     /* current flowing into the pack (> +15 mA) */
+    bool     chg_stat;     /* raw charger CHG_STAT line (IO expander 0x44 P6) */
 } bsp_tab5_power_t;
 
 bool bsp_tab5_read_power(bsp_tab5_power_t *out);

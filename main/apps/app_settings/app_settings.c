@@ -979,7 +979,7 @@ static void sleep_btn_cb(lv_event_t *e)
 
 static void build_power_panel(lv_obj_t *pn)
 {
-    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 230, "BATTERY");
+    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 260, "BATTERY");
     lbl_bat_pct = mk_label(c, &st_title, "--%");
     lv_obj_set_style_text_font(lbl_bat_pct, &lv_font_montserrat_28, 0);
     lv_obj_set_pos(lbl_bat_pct, 0, 30);
@@ -996,7 +996,7 @@ static void build_power_panel(lv_obj_t *pn)
     lv_obj_set_style_text_font(lbl_bat_detail, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_line_space(lbl_bat_detail, 6, 0);
 
-    c = mk_card(pn, 0, 246, PANEL_W, 150, "POWER STATE");
+    c = mk_card(pn, 0, 276, PANEL_W, 150, "POWER STATE");
     lbl_pwr_state = mk_label(c, &st_text, "");
     lv_obj_set_pos(lbl_pwr_state, 0, 30);
     lv_obj_t *b = mk_btn(c, LV_SYMBOL_POWER "  Sleep now", NULL, sleep_btn_cb, NULL, NULL);
@@ -1033,9 +1033,11 @@ static void refresh_power(void)
             snprintf(buf, sizeof(buf), "On battery");
         }
         set_text(lbl_bat_status, buf);
-        snprintf(buf, sizeof(buf), "Voltage  %.2f V   (%.2f V per cell)\nCurrent  %+d mA\nPower    %.2f W",
+        snprintf(buf, sizeof(buf), "Voltage  %.2f V   (%.2f V per cell)\nCurrent  %+d mA  (+ = into the battery)\n"
+                                   "Power    %.2f W\nCharger signal (CHG_STAT)  %s",
                  t->battery_voltage_mv / 1000.0f, t->battery_voltage_mv / 2000.0f,
-                 (int)t->battery_current_ma, t->battery_power_mw / 1000.0f);
+                 (int)t->battery_current_ma, t->battery_power_mw / 1000.0f,
+                 t->charger_signal ? "high" : "low");
         set_text(lbl_bat_detail, buf);
     }
     snprintf(buf, sizeof(buf), "Mode: %s   |   Idle: %u s   |   Backlight: %d%%",

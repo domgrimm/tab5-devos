@@ -964,9 +964,13 @@ bool bsp_tab5_read_power(bsp_tab5_power_t *out)
     int32_t abs_ma = out->current_ma < 0 ? -out->current_ma : out->current_ma;
     out->power_mw = (uint32_t)(((uint64_t)out->voltage_mv * (uint32_t)abs_ma) / 1000);
 
+    /* CHG_STAT reads high permanently on this board (it tracks external power
+     * rather than an active charge), so "charging" means current actually
+     * flowing into the pack. The raw line is kept for diagnostics. */
+    out->charging = out->current_ma > 15;
     uint8_t in = 0;
     if (i2c_read_buf(TAB5_INTERNAL_I2C_PORT, TAB5_I2C_ADDR_PI4IOE2, PI4IO_REG_INPUT_STATUS, &in, 1) == ESP_OK) {
-        out->charging = (in & PI4IO2_BIT_CHG_STAT) != 0;
+        out->chg_stat = (in & PI4IO2_BIT_CHG_STAT) != 0;
     }
     return true;
 #else

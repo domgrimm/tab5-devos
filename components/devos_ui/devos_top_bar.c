@@ -112,7 +112,12 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
 
     /* 1. devOS Home Trigger */
     btn_home = lv_button_create(top_bar_container);
-    lv_obj_set_size(btn_home, 84, 28);
+    lv_obj_set_size(btn_home, 88, 30);
+    /* Touches this close to the panel edge are reported well below where the
+     * finger is (logged taps on this button landed at y~43-64 vs a 5-33 px
+     * button), so extend the hit area generously; it spills a little into the
+     * top-left of the app area, which is where "go home" belongs anyway. */
+    lv_obj_set_ext_click_area(btn_home, 28);
     lv_obj_align(btn_home, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(btn_home, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_home, p->surface_border, 0);
@@ -136,7 +141,7 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(lbl_wifi, p->text_secondary, 0);
     lv_obj_set_style_text_font(lbl_wifi, &lv_font_montserrat_12, 0);
     lv_obj_add_flag(lbl_wifi, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(lbl_wifi, 8);
+    lv_obj_set_ext_click_area(lbl_wifi, 16);
     lv_obj_add_event_cb(lbl_wifi, wifi_label_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* 3. Local Network IP + Optional Tailscale Status Icon */
@@ -159,7 +164,7 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_set_style_pad_all(icon_tailscale, 0, 0);
     lv_obj_clear_flag(icon_tailscale, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(icon_tailscale, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(icon_tailscale, 10);
+    lv_obj_set_ext_click_area(icon_tailscale, 16);
     lv_obj_add_event_cb(icon_tailscale, tailscale_icon_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(icon_tailscale, tailscale_icon_click_cb, LV_EVENT_CLICKED, NULL);
 
