@@ -36,6 +36,7 @@ idf_component_register(
         devos_sysmon
         microlink
         libssh2_port
+        devos_vterm
         opendev_client
         agy_client
         devos_mdview

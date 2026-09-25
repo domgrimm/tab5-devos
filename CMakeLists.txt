@@ -45,6 +45,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_net
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_sysmon
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_vterm
         ${CMAKE_CURRENT_SOURCE_DIR}/components/opendev_client
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_json
         ${CMAKE_CURRENT_SOURCE_DIR}/components/agy_client
@@ -82,6 +83,7 @@ else()
         components/devos_net/devos_net.c
         components/devos_sysmon/devos_sysmon.c
         components/libssh2_port/libssh2_port.c
+        components/devos_vterm/devos_vterm.c
         components/opendev_client/opendev_client.c
         components/devos_json/devos_json.c
         components/agy_client/agy_client.c
