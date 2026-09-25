@@ -129,7 +129,7 @@ static lv_obj_t *s_cards[AGY_MAX_BLOCKS];
 static uint32_t s_card_rev[AGY_MAX_BLOCKS];
 static uint8_t s_card_kind[AGY_MAX_BLOCKS];
 static int s_rendered = -1;
-static char s_hint[400] = "";
+static char s_hint[1200] = "";
 
 static uint32_t s_seen_gen = 0;
 static bool s_dirty = true;
@@ -367,11 +367,31 @@ static lv_obj_t *new_card(const agy_block_t *b, const devos_palette_t *p)
     return card;
 }
 
+#define SETUP_STEPS \
+    "1. On the computer, install the Antigravity CLI (agy) and sign in once by running  agy  " \
+    "(docs: antigravity.google/docs/cli).\n" \
+    "2. Copy the tools/agy_bridge folder from devOS to it and run  pip install websockets\n" \
+    "3. In your project folder run:\n     python3 <path>/agy_bridge/bridge_server.py\n" \
+    "   It prints the address, port and token to use.\n" \
+    "4. Enter them here. The computer must be reachable from the Tab5 (same Wi-Fi or Tailscale)."
+
+static void sess_box_cb(lv_event_t *e);
+
+static void setup_btn_cb(lv_event_t *e)
+{
+    sess_box_cb(e);
+}
+
 static void chat_hint(char *out, size_t cap)
 {
     char host[AGY_HOST_MAX];
     int port = 0;
     agy_client_get_config(host, sizeof(host), &port, NULL, 0);
+    if (!agy_client_configured()) {
+        snprintf(out, cap,
+                 "Antigravity runs on your computer; the Tab5 drives it through a small bridge.\n\n" SETUP_STEPS);
+        return;
+    }
     switch (agy_client_status()) {
     case AGY_UP: {
         const char *ws = agy_client_workspace();
@@ -386,12 +406,19 @@ static void chat_hint(char *out, size_t cap)
         snprintf(out, cap, "%s", agy_client_status_text());
         break;
     default:
+        if (strstr(agy_client_status_text(), "token")) {
+            snprintf(out, cap,
+                     "The bridge at %s:%d turned down the token.\n\n"
+                     "Tap Connection and enter the token bridge_server.py printed when it started "
+                     "(it changes every run unless you start it with --psk).",
+                     host, port);
+            break;
+        }
         snprintf(out, cap,
-                 "No bridge link (%s).\n\nOn your computer, in your project folder, run:\n"
-                 "  python3 tools/agy_bridge/bridge_server.py\n"
-                 "then tap the session card (top left) and enter the computer's address "
-                 "(Tailscale name or IP), port 8420 and the token the bridge prints. Now: %s:%d",
-                 agy_client_status_text(), host, port);
+                 "Can't reach the bridge at %s:%d (%s).\n\n"
+                 "Is bridge_server.py running on that computer? Tap Connection to change the address.\n\n"
+                 SETUP_STEPS,
+                 host, port, agy_client_status_text());
         break;
     }
 }
@@ -416,6 +443,18 @@ static void refresh_chat(bool force)
         lv_obj_set_style_bg_color(card, p->surface, 0);
         lv_obj_set_style_border_color(card, p->surface_border, 0);
         chat_text(card, s_hint, p->text_secondary, &lv_font_montserrat_14);
+        if (agy_client_status() != AGY_UP) {
+            lv_obj_t *b = lv_button_create(card);
+            lv_obj_set_size(b, 220, 36);
+            lv_obj_set_style_bg_color(b, p->accent_primary, 0);
+            lv_obj_set_style_radius(b, 4, 0);
+            lv_obj_add_event_cb(b, setup_btn_cb, LV_EVENT_CLICKED, NULL);
+            lv_obj_t *l = lv_label_create(b);
+            lv_label_set_text(l, agy_client_configured() ? LV_SYMBOL_SETTINGS " Connection"
+                                                         : LV_SYMBOL_PLAY " Set up connection");
+            lv_obj_center(l);
+            lv_obj_set_style_text_color(l, devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
+        }
         s_rendered = 0;
         return;
     }
@@ -532,9 +571,11 @@ static void refresh_meta(void)
     /* Left: session card */
     const char *conv = agy_client_conversation_id();
     if (conv[0]) snprintf(buf, sizeof(buf), "conv %.8s", conv);
+    else if (!agy_client_configured()) snprintf(buf, sizeof(buf), "Tap to connect");
     else snprintf(buf, sizeof(buf), "(new conversation)");
     set_text_if(lbl_conv, buf);
-    set_text_if(lbl_mod, agy_client_model()[0] ? agy_client_model() : "default model");
+    set_text_if(lbl_mod, agy_client_model()[0] ? agy_client_model()
+                         : agy_client_status() == AGY_UP ? "default model" : "");
     const char *ws = agy_client_workspace();
     const char *base = strrchr(ws, '/');
     base = base && base[1] ? base + 1 : ws;
@@ -898,7 +939,7 @@ static void sess_box_cb(lv_event_t *e)
         agy_client_get_config(host, sizeof(host), &port, token, sizeof(token));
         lv_textarea_set_text(ta_srv_host, host);
         char pb[16];
-        snprintf(pb, sizeof(pb), "%d", port);
+        snprintf(pb, sizeof(pb), "%d", port > 0 ? port : 8420);
         lv_textarea_set_text(ta_srv_port, pb);
         lv_textarea_set_text(ta_srv_token, token);
         srv_focus = ta_srv_host;
@@ -1582,19 +1623,20 @@ static void build_modals(const devos_palette_t *p)
 
     /* Server (host / port / token) */
     modal_srv = mk_modal(500, 280, p->accent_primary);
-    lbl_srv_title = mk_label(modal_srv, LV_SYMBOL_SETTINGS " Antigravity bridge", &lv_font_montserrat_16,
-                             p->accent_primary, 0, 0);
+    lbl_srv_title = mk_label(modal_srv, LV_SYMBOL_SETTINGS " Connect to your Antigravity bridge",
+                             &lv_font_montserrat_16, p->accent_primary, 0, 0);
     lbl_srv_hint = mk_label(modal_srv,
-                            "Address of the computer running tools/agy_bridge/bridge_server.py "
-                            "(Tailscale name or IP), its port and the token it printed.",
+                            "The computer running bridge_server.py: its address (Tailscale name, LAN name or IP), "
+                            "the port (8420 unless you chose --port) and the token it printed. "
+                            "Tab moves between fields, Enter connects.",
                             &lv_font_montserrat_12, p->text_secondary, 0, 26);
     lv_obj_set_width(lbl_srv_hint, 468);
     lv_label_set_long_mode(lbl_srv_hint, LV_LABEL_LONG_WRAP);
-    ta_srv_host = mk_field(modal_srv, "host (my-pc.tailnet.ts.net or 100.x.y.z)", 468, 0, 70);
+    ta_srv_host = mk_field(modal_srv, "address, e.g. my-pc.tail1234.ts.net or 192.168.1.20", 468, 0, 70);
     ta_srv_port = mk_field(modal_srv, "port (8420)", 140, 0, 114);
     ta_srv_token = mk_field(modal_srv, "bridge token", 320, 148, 114);
-    mk_modal_button(modal_srv, LV_SYMBOL_OK " Save", 130, 208, 196, p->accent_primary, on_accent, srv_save_cb, 0,
-                    &lbl_srv_save);
+    mk_modal_button(modal_srv, LV_SYMBOL_OK " Connect", 130, 208, 196, p->accent_primary, on_accent, srv_save_cb,
+                    0, &lbl_srv_save);
     lv_obj_t *cancel = mk_modal_button(modal_srv, "Cancel", 110, 350, 196, p->surface, p->text_primary,
                                        srv_cancel_cb, 0, &lbl_srv_cancel);
     lv_obj_set_style_border_color(cancel, p->surface_border, 0);
@@ -1628,9 +1670,16 @@ static void antigravity_init(void)
     refresh_all(true);
 }
 
+static bool s_setup_prompted = false;
+
 static void antigravity_show(void)
 {
     refresh_all(false);
+    /* first visit without a bridge: go straight to the connection dialog */
+    if (!agy_client_configured() && !s_setup_prompted) {
+        s_setup_prompted = true;
+        sess_box_cb(NULL);
+    }
 }
 
 static void antigravity_hide(void)
@@ -1647,6 +1696,12 @@ static void antigravity_hide(void)
 
 static int antigravity_telemetry_lines(char lines[3][64])
 {
+    if (!agy_client_configured()) {
+        snprintf(lines[0], sizeof(lines[0]), "* Not set up yet");
+        snprintf(lines[1], sizeof(lines[1]), "* Open to connect a computer");
+        snprintf(lines[2], sizeof(lines[2]), "* running agy + the bridge");
+        return 3;
+    }
     snprintf(lines[0], sizeof(lines[0]), "* Bridge: %s%s", agy_client_status() == AGY_UP ? "online" : "offline",
              agy_client_busy() ? " (working)" : "");
     if (agy_client_permission_pending(NULL) || agy_client_question_pending(NULL)) {
