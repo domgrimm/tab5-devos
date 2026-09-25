@@ -57,6 +57,10 @@ typedef enum {
 #define OPENDEV_TOKEN_MAX 128
 #define OPENDEV_DIFF_MAX 65536
 #define OPENDEV_DIFF_FILES 32
+#define OPENDEV_DIR_MAX 256
+#define OPENDEV_MAX_PROJECTS 16
+#define OPENDEV_MAX_MODELS 160
+#define OPENDEV_MAX_COMMANDS 40
 
 typedef struct {
     char id[OPENDEV_ID_MAX];
@@ -64,7 +68,17 @@ typedef struct {
     char model[OPENDEV_TITLE_MAX];
     bool busy;
     long long updated;   /* last activity, ms since the epoch (0 = unknown) */
+    char directory[OPENDEV_DIR_MAX];   /* the session's folder (selects its project) */
+    char project[64];    /* project name for grouping ("" = none) */
+    bool group_start;    /* first session of its project in the list */
 } opendev_session_t;
+
+/* A model from the server's configured providers (GET /config/providers). */
+typedef struct {
+    char provider[48];
+    char id[96];
+    char name[96];
+} opendev_model_t;
 
 typedef struct {
     uint8_t role;   /* opendev_role_t */
@@ -97,6 +111,7 @@ const char *opendev_client_status_text(void);
 uint32_t opendev_client_generation(void);   /* bumps on any store mutation */
 uint32_t opendev_client_blocks_generation(void);   /* message blocks changed */
 uint32_t opendev_client_diff_generation(void);     /* diff text changed */
+uint32_t opendev_client_sessions_generation(void); /* session list changed */
 bool opendev_client_loading(void);          /* REST requests in flight */
 bool opendev_client_messages_loading(void); /* the active session is (re)loading */
 
@@ -127,6 +142,23 @@ int opendev_client_refresh_sessions(void);
 int opendev_client_new_session(void);
 int opendev_client_send(const char *text);  /* prompt_async + optimistic block */
 int opendev_client_abort(void);
+
+/* Models: the list comes from the server; the pick applies to the active
+ * session's next prompts. */
+int opendev_client_fetch_models(void);
+bool opendev_client_models_loading(void);
+int opendev_client_model_count(void);
+const opendev_model_t *opendev_client_model(int idx);
+int opendev_client_choose_model(int idx);          /* for the active session */
+/* "provider/model" the active session will use ("" = server default) */
+const char *opendev_client_current_model(void);
+
+/* Slash commands defined on the server (GET /command), and running one. */
+int opendev_client_command_count(void);
+const char *opendev_client_command_name(int idx);
+int opendev_client_run_command(const char *name, const char *arguments);
+/* A note in the chat that only this Tab5 sees (not sent to the server). */
+void opendev_client_note(const char *text);
 
 /* Message blocks of the active session */
 int opendev_client_block_count(void);

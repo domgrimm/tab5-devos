@@ -41,7 +41,10 @@
 #define REFETCH_DEBOUNCE_TICKS 5            /* 500 ms coalescing */
 #define MSG_LIMIT         40
 #define ROLE_MAP_MAX      64
-#define SESSIONS_PATH     "/session?roots=true&limit=100"
+#define SESSIONS_PATH     "/session?roots=true&limit=100"     /* one project (older servers) */
+#define ALL_SESSIONS_PATH "/experimental/session?roots=true&limit=150"   /* every project */
+#define PATH_MAX_LEN      768
+#define GROUP_CAP         20                /* sessions shown per project */
 
 /* ------------------------------------------------------------------ config */
 /* The server is a URL: http://host:4096 for `opencode serve`, or an
@@ -89,6 +92,24 @@ static char *s_pending_send = NULL;         /* prompt waiting for a new session 
 static char *s_pending_password = NULL;     /* used by the next login, then wiped */
 static int s_inflight = 0;
 static int s_msg_inflight = 0;               /* message loads in flight */
+static uint32_t s_sessions_gen = 0;
+
+/* Projects (id -> display name), for grouping the session list */
+typedef struct { char id[64]; char name[64]; } proj_t;
+static EXT_RAM_BSS_ATTR proj_t s_projects[OPENDEV_MAX_PROJECTS * 2];
+static int s_project_count = 0;
+static bool s_all_sessions_api = true;      /* server lists every project's sessions */
+static char s_last_dir[OPENDEV_DIR_MAX] = ""; /* folder of the session last opened */
+
+/* Models and commands (from the server; model picks are per session) */
+static EXT_RAM_BSS_ATTR opendev_model_t s_models[OPENDEV_MAX_MODELS];
+static int s_model_count = 0;
+static bool s_models_loading = false;
+static EXT_RAM_BSS_ATTR struct { char sid[OPENDEV_ID_MAX]; char provider[48]; char model[96]; } s_picks[16];
+static int s_pick_next = 0;
+static char s_current_model[160] = "";
+static EXT_RAM_BSS_ATTR char s_commands[OPENDEV_MAX_COMMANDS][48];
+static int s_command_count = 0;
 
 static EXT_RAM_BSS_ATTR struct { char msg[OPENDEV_ID_MAX]; uint8_t role; } s_roles[ROLE_MAP_MAX];
 static int s_role_next = 0;
@@ -297,12 +318,16 @@ typedef enum {
     JOB_LOGIN,          /* POST /auth/session with the password */
     JOB_EVENT,          /* from the SSE thread: one event (resp = data JSON, NULL = resync) */
     JOB_LINK,           /* from the SSE thread: link state change (status, err) */
+    JOB_PROJECTS,       /* GET /project: names for grouping */
+    JOB_MODELS,         /* GET /config/providers */
+    JOB_COMMANDS,       /* GET /command */
+    JOB_COMMAND,        /* POST /session/:id/command */
 } job_kind_t;
 
 typedef struct job {
     job_kind_t kind;
     char method[8];
-    char path[256];
+    char path[PATH_MAX_LEN];
     char *body;
     char sid[OPENDEV_ID_MAX];
     char aux[OPENDEV_ID_MAX];
@@ -351,7 +376,7 @@ static void http_run(job_t *j)
     devos_conn_t *c = devos_conn_open(j->cfg.host, j->cfg.port, j->cfg.tls, REST_TIMEOUT_MS, j->err, sizeof(j->err));
     if (!c) return;
     size_t blen = j->body ? strlen(j->body) : 0;
-    char auth[200], hosth[96], req[900];
+    char auth[200], hosth[96], req[PATH_MAX_LEN + 400];
     auth_header(&j->cfg, auth, sizeof(auth));
     host_header(&j->cfg, hosth, sizeof(hosth));
     int hlen = snprintf(req, sizeof(req),
@@ -536,6 +561,52 @@ static int enqueue(job_kind_t kind, const char *method, const char *path, const 
     return 0;
 }
 
+/* ============================================================ folders
+ * OpenCode serves every project from one server; a request picks its project
+ * with ?directory=<folder>. Without it the server's default project is used,
+ * so session requests must carry the session's own folder. */
+static void url_enc(const char *in, char *out, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (; *in && o + 4 < n; in++) {
+        unsigned char c = (unsigned char)*in;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/') {
+            out[o++] = (char)c;
+        } else {
+            out[o++] = '%';
+            out[o++] = hex[c >> 4];
+            out[o++] = hex[c & 15];
+        }
+    }
+    out[o] = '\0';
+}
+
+static const char *session_dir(const char *sid)
+{
+    for (int i = 0; sid && *sid && i < s_session_count; i++) {
+        if (strcmp(s_sessions[i].id, sid) == 0) return s_sessions[i].directory;
+    }
+    return s_last_dir;
+}
+
+static void add_dir(char *path, size_t n, const char *dir)
+{
+    if (!dir || !*dir) return;
+    char enc[OPENDEV_DIR_MAX * 3 + 1];
+    url_enc(dir, enc, sizeof(enc));
+    size_t l = strlen(path);
+    snprintf(path + l, n - l, "%cdirectory=%s", strchr(path, '?') ? '&' : '?', enc);
+}
+
+static void fetch_messages(const char *sid)
+{
+    char path[PATH_MAX_LEN];
+    snprintf(path, sizeof(path), "/session/%s/message?limit=%d", sid, MSG_LIMIT);
+    add_dir(path, sizeof(path), session_dir(sid));
+    enqueue(JOB_MESSAGES, "GET", path, NULL, sid, NULL, 768 * 1024);
+}
+
 /* ============================================================ blocks */
 static void role_remember(const char *msg_id, uint8_t role)
 {
@@ -718,11 +789,15 @@ static void set_busy(const char *session_id, bool busy)
     }
 }
 
-static void set_session_model(const char *sid, const char *model)
+static void set_session_model(const char *sid, const char *provider, const char *model)
 {
-    for (int i = 0; i < s_session_count && model && *model; i++) {
-        if (strcmp(s_sessions[i].id, sid) == 0 && strcmp(s_sessions[i].model, model) != 0) {
-            snprintf(s_sessions[i].model, sizeof(s_sessions[i].model), "%s", model);
+    if (!model || !*model) return;
+    char full[OPENDEV_TITLE_MAX];
+    snprintf(full, sizeof(full), "%.40s%s%.50s", provider && *provider ? provider : "",
+             provider && *provider ? "/" : "", model);
+    for (int i = 0; i < s_session_count; i++) {
+        if (strcmp(s_sessions[i].id, sid) == 0 && strcmp(s_sessions[i].model, full) != 0) {
+            snprintf(s_sessions[i].model, sizeof(s_sessions[i].model), "%s", full);
             bump();
         }
     }
@@ -976,6 +1051,13 @@ static void on_part_updated(const char *pp, const char *pe)
 static void on_sse_event(const char *data, size_t dlen)
 {
     const char *end = data + dlen;
+    /* /global/event wraps each event: {"directory","project","payload":{...}} */
+    const char *wp, *we;
+    if (devos_json_find_key(data, end, "payload") && json_obj(data, end, "payload", &wp, &we) && *wp == '{') {
+        data = wp;
+        end = we;
+        dlen = (size_t)(we - wp);
+    }
     char type[48];
     if (json_str(data, end, "type", type, sizeof(type)) != 0) return;
     const char *pp = data, *pe = end;
@@ -1037,13 +1119,14 @@ static void on_sse_event(const char *data, size_t dlen)
     } else if (strcmp(type, "message.updated") == 0) {
         const char *ip = pp, *ie = pe;
         json_obj(pp, pe, "info", &ip, &ie);
-        char mid[OPENDEV_ID_MAX], role[16], model[OPENDEV_TITLE_MAX];
+        char mid[OPENDEV_ID_MAX], role[16], model[OPENDEV_TITLE_MAX], prov[48];
         json_str(ip, ie, "id", mid, sizeof(mid));
         json_str(ip, ie, "role", role, sizeof(role));
         json_str(ip, ie, "sessionID", sid, sizeof(sid));
         role_remember(mid, strcmp(role, "user") == 0 ? OPENDEV_ROLE_USER : OPENDEV_ROLE_ASST);
         if (strcmp(role, "assistant") == 0 && json_str(ip, ie, "modelID", model, sizeof(model)) == 0) {
-            set_session_model(sid, model);
+            json_str(ip, ie, "providerID", prov, sizeof(prov));
+            set_session_model(sid, prov, model);
         }
     } else if (strcmp(type, "message.removed") == 0) {
         char mid[OPENDEV_ID_MAX];
@@ -1270,6 +1353,9 @@ static void sse_run(void)
 {
     static EXT_RAM_BSS_ATTR char rb[4096];
     char err[128], hdr[2048];
+    /* /global/event carries every project's events (live replies in any
+     * session); older servers only have the per-project /event. */
+    bool global = true;
     for (;;) {
         if (!s_link_want) { sleep_ms(200); continue; }
         uint32_t gen = s_link_gen;
@@ -1291,9 +1377,10 @@ static void sse_run(void)
         auth_header(&cfg, auth, sizeof(auth));
         host_header(&cfg, hosth, sizeof(hosth));
         int hlen = snprintf(req, sizeof(req),
-                            "GET %s%s/event HTTP/1.1\r\nHost: %s\r\nAccept: text/event-stream\r\n"
+                            "GET %s%s%s HTTP/1.1\r\nHost: %s\r\nAccept: text/event-stream\r\n"
                             "Cache-Control: no-cache\r\nUser-Agent: devOS-Tab5\r\n%sConnection: keep-alive\r\n\r\n",
-                            cfg.base, cfg.mode == OPENDEV_MODE_CHAMBER ? "/api" : "", hosth, auth);
+                            cfg.base, cfg.mode == OPENDEV_MODE_CHAMBER ? "/api" : "",
+                            global ? "/global/event" : "/event", hosth, auth);
         if (hlen <= 0 || devos_conn_write_all(c, req, (size_t)hlen) != 0) {
             devos_conn_close(c);
             post_link(OPENDEV_DOWN, "Could not subscribe to events");
@@ -1330,6 +1417,12 @@ static void sse_run(void)
             link_wait(gen, -1);                             /* until the user signs in */
             continue;
         }
+        *eoh = '\0';
+        if (global && (code == 404 || (code == 200 && !ci_contains(hdr, "text/event-stream")))) {
+            devos_conn_close(c);
+            global = false;                     /* older server: per-project stream */
+            continue;
+        }
         if (code != 200) {
             devos_conn_close(c);
             snprintf(t, sizeof(t), "Event stream: HTTP %d", code);
@@ -1337,7 +1430,6 @@ static void sse_run(void)
             link_wait(gen, 5000);
             continue;
         }
-        *eoh = '\0';
         if (!ci_contains(hdr, "text/event-stream")) {
             devos_conn_close(c);
             post_link(OPENDEV_DOWN, "Not an OpenCode event stream (check the URL)");
@@ -1402,8 +1494,10 @@ static void workers_start(void)
 
 /* ============================================================ results */
 #define SESS_SCAN 256
-typedef struct { opendev_session_t s; long long updated; } sess_tmp_t;
+typedef struct { opendev_session_t s; long long updated; char project_id[64]; } sess_tmp_t;
 typedef struct { sess_tmp_t *items; int n; } sess_list_t;
+
+int opendev_client_select(int idx);
 
 static void sessions_each_cb(const char *obj, size_t len, void *ud)
 {
@@ -1417,6 +1511,8 @@ static void sessions_each_cb(const char *obj, size_t len, void *ud)
     const char *tp, *te;
     if (json_obj(obj, e, "time", &tp, &te)) t->updated = json_i64(tp, te, "updated");
     t->s.updated = t->updated;
+    json_str(obj, e, "directory", t->s.directory, sizeof(t->s.directory));
+    json_str(obj, e, "projectID", t->project_id, sizeof(t->project_id));
     l->n++;
 }
 
@@ -1426,37 +1522,64 @@ static int sess_cmp(const void *a, const void *b)
     return x < y ? 1 : x > y ? -1 : 0;
 }
 
-static void handle_sessions(job_t *j)
+static EXT_RAM_BSS_ATTR sess_tmp_t s_stage[SESS_SCAN];     /* last fetched list */
+static int s_stage_n = 0;
+
+static const char *basename_of(const char *path)
 {
-    if (j->rc == 0 && j->status == 400 && strchr(j->path, '?')) {
-        /* older server that does not know roots/limit */
-        enqueue(JOB_SESSIONS, "GET", "/session", NULL, NULL, NULL, 256 * 1024);
-        return;
+    const char *b = strrchr(path, '/');
+    return b && b[1] ? b + 1 : path;
+}
+
+static const char *project_name(const char *project_id, const char *dir)
+{
+    if (!project_id[0] || strcmp(project_id, "global") == 0) return dir[0] ? basename_of(dir) : "Other";
+    for (int i = 0; project_id[0] && i < s_project_count; i++) {
+        if (strcmp(s_projects[i].id, project_id) == 0 && s_projects[i].name[0]) return s_projects[i].name;
     }
-    if (j->rc != 0 || j->status != 200) return;
-    static EXT_RAM_BSS_ATTR sess_tmp_t tmp[SESS_SCAN];
-    sess_list_t l = { tmp, 0 };
-    devos_json_array_each(j->resp, j->resp_len, sessions_each_cb, &l);
-    int n = l.n;
-    qsort(tmp, (size_t)n, sizeof(tmp[0]), sess_cmp);                 /* newest first */
-    /* keep the active session listed even if it is not among the newest */
-    if (s_active_id[0] && n > OPENDEV_MAX_SESSIONS) {
-        for (int i = OPENDEV_MAX_SESSIONS; i < n; i++) {
-            if (strcmp(tmp[i].s.id, s_active_id) == 0) { tmp[OPENDEV_MAX_SESSIONS - 1] = tmp[i]; break; }
-        }
+    return dir[0] ? basename_of(dir) : "Other";
+}
+
+/* s_stage (newest first) -> s_sessions grouped by project: projects ordered by
+ * their latest activity, newest sessions first inside each, GROUP_CAP each. */
+static void build_session_list(void)
+{
+    static EXT_RAM_BSS_ATTR opendev_session_t out[OPENDEV_MAX_SESSIONS];
+    static EXT_RAM_BSS_ATTR char keys[OPENDEV_MAX_PROJECTS * 2][OPENDEV_DIR_MAX];
+    int nk = 0, n = 0;
+    /* group key: the project, or the folder for sessions outside any repo */
+    for (int i = 0; i < s_stage_n; i++) {
+        const sess_tmp_t *t = &s_stage[i];
+        const char *key = (t->project_id[0] && strcmp(t->project_id, "global") != 0) ? t->project_id : t->s.directory;
+        int k = 0;
+        while (k < nk && strcmp(keys[k], key) != 0) k++;
+        if (k == nk && nk < OPENDEV_MAX_PROJECTS * 2) snprintf(keys[nk++], sizeof(keys[0]), "%s", key);
     }
-    if (n > OPENDEV_MAX_SESSIONS) n = OPENDEV_MAX_SESSIONS;
-    for (int i = 0; i < n; i++) {
-        for (int k = 0; k < s_session_count; k++) {
-            if (strcmp(tmp[i].s.id, s_sessions[k].id) == 0) {
-                tmp[i].s.busy = s_sessions[k].busy;
-                memcpy(tmp[i].s.model, s_sessions[k].model, sizeof(tmp[i].s.model));
+    for (int k = 0; k < nk && n < OPENDEV_MAX_SESSIONS; k++) {
+        int in_group = 0;
+        for (int i = 0; i < s_stage_n && n < OPENDEV_MAX_SESSIONS; i++) {
+            const sess_tmp_t *t = &s_stage[i];
+            const char *key = (t->project_id[0] && strcmp(t->project_id, "global") != 0) ? t->project_id : t->s.directory;
+            if (strcmp(key, keys[k]) != 0) continue;
+            bool is_open = s_active_id[0] && strcmp(t->s.id, s_active_id) == 0;
+            if (in_group >= GROUP_CAP && !is_open) continue;
+            out[n] = t->s;
+            snprintf(out[n].project, sizeof(out[n].project), "%s", project_name(t->project_id, t->s.directory));
+            out[n].group_start = in_group == 0;
+            for (int o = 0; o < s_session_count; o++) {         /* keep live state */
+                if (strcmp(out[n].id, s_sessions[o].id) == 0) {
+                    out[n].busy = s_sessions[o].busy;
+                    memcpy(out[n].model, s_sessions[o].model, sizeof(out[n].model));
+                }
             }
+            if (!out[n].title[0]) snprintf(out[n].title, sizeof(out[n].title), "%.8s", t->s.id);
+            in_group++;
+            n++;
         }
-        if (!tmp[i].s.title[0]) snprintf(tmp[i].s.title, sizeof(tmp[i].s.title), "%.8s", tmp[i].s.id);
     }
-    for (int i = 0; i < n; i++) s_sessions[i] = tmp[i].s;
+    memcpy(s_sessions, out, sizeof(out[0]) * (size_t)n);
     s_session_count = n;
+    s_sessions_gen++;
     bump();
     if (s_pending_select[0]) {
         for (int i = 0; i < n; i++) {
@@ -1469,19 +1592,65 @@ static void handle_sessions(job_t *j)
     }
 }
 
+static void handle_projects(job_t *j)
+{
+    if (j->rc != 0 || j->status != 200 || !j->resp || j->resp[0] != '[') return;
+    s_project_count = 0;
+    const char *p = j->resp + 1, *end = j->resp + j->resp_len;
+    while (p < end && s_project_count < OPENDEV_MAX_PROJECTS * 2) {
+        while (p < end && *p != '{' && *p != ']') p++;
+        if (p >= end || *p == ']') break;
+        const char *pe = devos_json_span(p, end);
+        if (!pe) break;
+        proj_t *pr = &s_projects[s_project_count];
+        char worktree[OPENDEV_DIR_MAX] = "";
+        json_str(p, pe, "id", pr->id, sizeof(pr->id));
+        json_str(p, pe, "worktree", worktree, sizeof(worktree));
+        if (json_str(p, pe, "name", pr->name, sizeof(pr->name)) != 0 || !pr->name[0]) {
+            snprintf(pr->name, sizeof(pr->name), "%s",
+                     strcmp(worktree, "/") == 0 || !worktree[0] ? "Other" : basename_of(worktree));
+        }
+        if (pr->id[0]) s_project_count++;
+        p = pe;
+    }
+    if (s_stage_n) build_session_list();
+}
+
+static void handle_sessions(job_t *j)
+{
+    bool all = strcmp(j->aux, "all") == 0;
+    if (j->rc == 0 && all && (j->status == 404 || j->status == 400 || (j->status == 200 && j->resp && j->resp[0] != '['))) {
+        s_all_sessions_api = false;             /* older server: one project only */
+        enqueue(JOB_SESSIONS, "GET", SESSIONS_PATH, NULL, NULL, NULL, 256 * 1024);
+        return;
+    }
+    if (j->rc == 0 && j->status == 400 && strchr(j->path, '?')) {
+        /* older server that does not know roots/limit */
+        enqueue(JOB_SESSIONS, "GET", "/session", NULL, NULL, NULL, 256 * 1024);
+        return;
+    }
+    if (j->rc != 0 || j->status != 200) return;
+    sess_list_t l = { s_stage, 0 };
+    devos_json_array_each(j->resp, j->resp_len, sessions_each_cb, &l);
+    s_stage_n = l.n;
+    qsort(s_stage, (size_t)s_stage_n, sizeof(s_stage[0]), sess_cmp);    /* newest first */
+    build_session_list();
+}
+
 static void message_each_cb(const char *obj, size_t len, void *ud)
 {
     (void)ud;
     const char *e = obj + len;
     const char *ip = obj, *ie = e;
     json_obj(obj, e, "info", &ip, &ie);
-    char mid[OPENDEV_ID_MAX], role[16], model[OPENDEV_TITLE_MAX];
+    char mid[OPENDEV_ID_MAX], role[16], model[OPENDEV_TITLE_MAX], prov[48];
     json_str(ip, ie, "id", mid, sizeof(mid));
     json_str(ip, ie, "role", role, sizeof(role));
     uint8_t r = strcmp(role, "user") == 0 ? OPENDEV_ROLE_USER : OPENDEV_ROLE_ASST;
     role_remember(mid, r);
     if (r == OPENDEV_ROLE_ASST && json_str(ip, ie, "modelID", model, sizeof(model)) == 0) {
-        set_session_model(s_active_id, model);
+        json_str(ip, ie, "providerID", prov, sizeof(prov));
+        set_session_model(s_active_id, prov, model);
     }
     const char *pp, *pe;
     if (!json_obj(obj, e, "parts", &pp, &pe) || *pp != '[') return;
@@ -1522,6 +1691,8 @@ static void handle_messages(job_t *j)
 }
 
 static void send_prompt(const char *sid, const char *text);
+static void handle_models(job_t *j);
+static void handle_commands(job_t *j);
 static void link_result(job_t *j);
 static void probe_result(job_t *j);
 static void login_result(job_t *j);
@@ -1552,6 +1723,24 @@ static void handle_result(job_t *j)
     case JOB_SESSIONS:
         handle_sessions(j);
         break;
+    case JOB_PROJECTS:
+        handle_projects(j);
+        break;
+    case JOB_MODELS:
+        handle_models(j);
+        break;
+    case JOB_COMMANDS:
+        handle_commands(j);
+        break;
+    case JOB_COMMAND:
+        if (j->rc != 0 || (j->status != 200 && j->status != 204)) {
+            set_busy(j->sid, false);
+            char line[160];
+            snprintf(line, sizeof(line), "(command failed: %s)",
+                     j->rc ? "server unreachable" : j->status == 404 ? "no such command on the server" : "server error");
+            push_local(OPENDEV_ROLE_ASST, OPENDEV_KIND_TEXT, line);
+        }
+        break;
     case JOB_MESSAGES:
         handle_messages(j);
         break;
@@ -1570,7 +1759,7 @@ static void handle_result(job_t *j)
                 send_prompt(id, t);
                 free(t);
             }
-            enqueue(JOB_SESSIONS, "GET", SESSIONS_PATH, NULL, NULL, NULL, 256 * 1024);
+            opendev_client_refresh_sessions();
         } else {
             free(s_pending_send);
             s_pending_send = NULL;
@@ -1594,8 +1783,9 @@ static void handle_result(job_t *j)
     case JOB_PERM:
         if (j->rc == 0 && j->status == 404) {
             /* older servers: POST /session/:sid/permissions/:id {"response": ...} */
-            char path[192];
+            char path[PATH_MAX_LEN];
             snprintf(path, sizeof(path), "/session/%s/permissions/%s", j->sid[0] ? j->sid : "unknown", j->aux);
+            add_dir(path, sizeof(path), session_dir(j->sid));
             const char *resp = strstr(j->body ? j->body : "", "reject") ? "reject"
                                : strstr(j->body ? j->body : "", "always") ? "always" : "once";
             char body[48];
@@ -1623,6 +1813,14 @@ static void handle_result(job_t *j)
 static void clear_store(void)
 {
     s_session_count = 0;
+    s_stage_n = 0;
+    s_project_count = 0;
+    s_model_count = 0;
+    s_command_count = 0;
+    s_last_dir[0] = '\0';
+    s_all_sessions_api = true;
+    memset(s_picks, 0, sizeof(s_picks));
+    s_sessions_gen++;
     s_active_id[0] = '\0';
     s_block_count = 0;
     s_diff[0] = '\0';
@@ -1814,9 +2012,7 @@ void opendev_client_poll(void)
             }
             if (s_want_messages && s_active_id[0]) {
                 s_want_messages = false;
-                char path[160];
-                snprintf(path, sizeof(path), "/session/%s/message?limit=%d", s_active_id, MSG_LIMIT);
-                enqueue(JOB_MESSAGES, "GET", path, NULL, s_active_id, NULL, 768 * 1024);
+                fetch_messages(s_active_id);
             }
         }
     }
@@ -1827,6 +2023,7 @@ const char *opendev_client_status_text(void) { return s_status_text; }
 uint32_t opendev_client_generation(void) { return s_gen; }
 uint32_t opendev_client_blocks_generation(void) { return s_blocks_gen; }
 uint32_t opendev_client_diff_generation(void) { return s_diff_gen; }
+uint32_t opendev_client_sessions_generation(void) { return s_sessions_gen; }
 bool opendev_client_loading(void) { return s_inflight > 0; }
 bool opendev_client_messages_loading(void) { return s_msg_inflight > 0; }
 bool opendev_client_needs_login(void) { return s_status == OPENDEV_LOGIN; }
@@ -1974,39 +2171,60 @@ int opendev_client_select(int idx)
 {
     if (idx < 0 || idx >= s_session_count) return -1;
     snprintf(s_active_id, sizeof(s_active_id), "%s", s_sessions[idx].id);
+    bool new_dir = strcmp(s_last_dir, s_sessions[idx].directory) != 0;
+    snprintf(s_last_dir, sizeof(s_last_dir), "%s", s_sessions[idx].directory);
+    if (new_dir || !s_command_count) {       /* commands and models are per project */
+        char path[PATH_MAX_LEN] = "/command";
+        add_dir(path, sizeof(path), s_last_dir);
+        enqueue(JOB_COMMANDS, "GET", path, NULL, NULL, NULL, 128 * 1024);
+        if (new_dir) s_model_count = 0;
+    }
     s_block_count = 0;
     s_diff[0] = '\0';
     s_diff_file_count = 0;
     s_diff_requested = false;
     s_diff_gen++;
     bump_blocks();
-    char path[160];
-    snprintf(path, sizeof(path), "/session/%s/message?limit=%d", s_active_id, MSG_LIMIT);
-    return enqueue(JOB_MESSAGES, "GET", path, NULL, s_active_id, NULL, 768 * 1024);
+    fetch_messages(s_active_id);
+    return 0;
 }
 
 int opendev_client_refresh_sessions(void)
 {
+    enqueue(JOB_PROJECTS, "GET", "/project", NULL, NULL, NULL, 128 * 1024);
+    if (s_all_sessions_api) return enqueue(JOB_SESSIONS, "GET", ALL_SESSIONS_PATH, NULL, NULL, "all", 512 * 1024);
     return enqueue(JOB_SESSIONS, "GET", SESSIONS_PATH, NULL, NULL, NULL, 256 * 1024);
 }
 
 int opendev_client_new_session(void)
 {
-    char body[96];
-    snprintf(body, sizeof(body), "{\"title\":\"Tab5 %s\"}", s_cfg.mode == OPENDEV_MODE_CHAMBER ? "chamber" : "session");
-    return enqueue(JOB_NEW_SESSION, "POST", "/session", body, NULL, NULL, 16384);
+    /* in the open session's project; the server titles it from the first prompt */
+    char path[PATH_MAX_LEN] = "/session";
+    const char *dir = session_dir(s_active_id);
+    if (!dir[0] && s_session_count) dir = s_sessions[0].directory;
+    add_dir(path, sizeof(path), dir);
+    if (dir[0] && dir != s_last_dir) snprintf(s_last_dir, sizeof(s_last_dir), "%s", dir);
+    return enqueue(JOB_NEW_SESSION, "POST", path, "{}", NULL, NULL, 16384);
 }
 
 static void send_prompt(const char *sid, const char *text)
 {
     size_t cap = strlen(text) * 6 + 64;
     char *esc = malloc(cap);
-    char *body = malloc(cap + 64);
+    char *body = malloc(cap + 264);
     if (!esc || !body) { free(esc); free(body); return; }
     devos_json_escape(text, esc, cap);
-    snprintf(body, cap + 64, "{\"parts\":[{\"type\":\"text\",\"text\":\"%s\"}]}", esc);
-    char path[160];
+    char model[200] = "";
+    for (int i = 0; i < 16; i++) {                  /* model picked on the Tab5 */
+        if (s_picks[i].sid[0] && strcmp(s_picks[i].sid, sid) == 0) {
+            snprintf(model, sizeof(model), "\"model\":{\"providerID\":\"%.40s\",\"modelID\":\"%.90s\"},",
+                     s_picks[i].provider, s_picks[i].model);
+        }
+    }
+    snprintf(body, cap + 264, "{%s\"parts\":[{\"type\":\"text\",\"text\":\"%s\"}]}", model, esc);
+    char path[PATH_MAX_LEN];
     snprintf(path, sizeof(path), "/session/%s/prompt_async", sid);
+    add_dir(path, sizeof(path), session_dir(sid));
     if (enqueue(JOB_SEND, "POST", path, body, sid, NULL, 4096) == 0) set_busy(sid, true);
     free(esc);
     free(body);
@@ -2029,8 +2247,9 @@ int opendev_client_send(const char *text)
 int opendev_client_abort(void)
 {
     if (!s_active_id[0]) return -1;
-    char path[160];
+    char path[PATH_MAX_LEN];
     snprintf(path, sizeof(path), "/session/%s/abort", s_active_id);
+    add_dir(path, sizeof(path), session_dir(s_active_id));
     return enqueue(JOB_ABORT, "POST", path, "{}", s_active_id, NULL, 4096);
 }
 
@@ -2052,8 +2271,9 @@ int opendev_client_answer_permission(bool allow, bool always)
 {
     if (!s_perm.active) return -1;
     const char *r = !allow ? "reject" : (always ? "always" : "once");
-    char path[160], body[48];
+    char path[PATH_MAX_LEN], body[48];
     snprintf(path, sizeof(path), "/permission/%s/reply", s_perm.id);
+    add_dir(path, sizeof(path), session_dir(s_perm.session_id));
     snprintf(body, sizeof(body), "{\"reply\":\"%s\"}", r);
     int rc = enqueue(JOB_PERM, "POST", path, body, s_perm.session_id, s_perm.id, 4096);
     s_perm.active = false;
@@ -2069,8 +2289,9 @@ int opendev_client_fetch_diff(void)
     s_diff_file_count = 0;
     s_diff_gen++;
     bump();
-    char path[160];
+    char path[PATH_MAX_LEN];
     snprintf(path, sizeof(path), "/session/%s/diff", s_active_id);
+    add_dir(path, sizeof(path), session_dir(s_active_id));
     return enqueue(JOB_DIFF, "GET", path, NULL, s_active_id, NULL, 1536 * 1024);
 }
 
@@ -2080,4 +2301,174 @@ int opendev_client_diff_file_count(void) { return s_diff_file_count; }
 const opendev_diff_file_t *opendev_client_diff_file(int idx)
 {
     return (idx >= 0 && idx < s_diff_file_count) ? &s_diff_files[idx] : NULL;
+}
+
+/* ============================================================ models */
+typedef void (*member_cb)(const char *key, const char *vp, const char *ve, void *ud);
+
+/* Calls cb for each member of the JSON object at p (values that are objects,
+ * arrays or strings; other values are skipped). */
+static void json_members(const char *p, const char *end, member_cb cb, void *ud)
+{
+    if (!p || p >= end || *p != '{') return;
+    p++;
+    while (p < end) {
+        while (p < end && (isspace((unsigned char)*p) || *p == ',')) p++;
+        if (p >= end || *p != '"') return;
+        char key[128];
+        const char *q = devos_json_parse_str(p, end, key, sizeof(key));
+        if (!q) return;
+        while (q < end && (isspace((unsigned char)*q) || *q == ':')) q++;
+        if (q >= end) return;
+        const char *ve;
+        if (*q == '{' || *q == '[') {
+            ve = devos_json_span(q, end);
+            if (!ve) return;
+            cb(key, q, ve, ud);
+        } else if (*q == '"') {
+            char tmp[8];
+            ve = devos_json_parse_str(q, end, tmp, sizeof(tmp));
+            if (!ve) return;
+        } else {
+            ve = q;
+            while (ve < end && *ve != ',' && *ve != '}') ve++;
+        }
+        p = ve;
+    }
+}
+
+static void model_member_cb(const char *key, const char *vp, const char *ve, void *ud)
+{
+    const char *provider = ud;
+    if (s_model_count >= OPENDEV_MAX_MODELS) return;
+    opendev_model_t *m = &s_models[s_model_count];
+    snprintf(m->provider, sizeof(m->provider), "%s", provider);
+    snprintf(m->id, sizeof(m->id), "%s", key);
+    if (json_str(vp, ve, "name", m->name, sizeof(m->name)) != 0 || !m->name[0]) snprintf(m->name, sizeof(m->name), "%s", key);
+    s_model_count++;
+}
+
+static void handle_models(job_t *j)
+{
+    s_models_loading = false;
+    if (j->rc != 0 || j->status != 200) {
+        bump();
+        return;
+    }
+    s_model_count = 0;
+    const char *end = j->resp + j->resp_len, *ap, *ae;
+    if (!json_obj(j->resp, end, "providers", &ap, &ae) || *ap != '[') {
+        bump();
+        return;
+    }
+    const char *p = ap + 1;
+    while (p < ae && s_model_count < OPENDEV_MAX_MODELS) {
+        while (p < ae && *p != '{' && *p != ']') p++;
+        if (p >= ae || *p == ']') break;
+        const char *pe = devos_json_span(p, ae);
+        if (!pe) break;
+        char pid[48] = "";
+        json_str(p, pe, "id", pid, sizeof(pid));
+        const char *mp, *me;
+        if (pid[0] && json_obj(p, pe, "models", &mp, &me)) json_members(mp, me, model_member_cb, pid);
+        p = pe;
+    }
+    bump();
+}
+
+static void handle_commands(job_t *j)
+{
+    if (j->rc != 0 || j->status != 200 || !j->resp || j->resp[0] != '[') return;
+    s_command_count = 0;
+    const char *p = j->resp + 1, *end = j->resp + j->resp_len;
+    while (p < end && s_command_count < OPENDEV_MAX_COMMANDS) {
+        while (p < end && *p != '{' && *p != ']') p++;
+        if (p >= end || *p == ']') break;
+        const char *pe = devos_json_span(p, end);
+        if (!pe) break;
+        if (json_str(p, pe, "name", s_commands[s_command_count], sizeof(s_commands[0])) == 0 &&
+            s_commands[s_command_count][0]) {
+            s_command_count++;
+        }
+        p = pe;
+    }
+    bump();
+}
+
+int opendev_client_fetch_models(void)
+{
+    char path[PATH_MAX_LEN] = "/config/providers";
+    add_dir(path, sizeof(path), session_dir(s_active_id));
+    s_models_loading = true;
+    bump();
+    return enqueue(JOB_MODELS, "GET", path, NULL, NULL, NULL, 2048 * 1024);
+}
+
+bool opendev_client_models_loading(void) { return s_models_loading; }
+int opendev_client_model_count(void) { return s_model_count; }
+
+const opendev_model_t *opendev_client_model(int idx)
+{
+    return (idx >= 0 && idx < s_model_count) ? &s_models[idx] : NULL;
+}
+
+int opendev_client_choose_model(int idx)
+{
+    if (idx < 0 || idx >= s_model_count || !s_active_id[0]) return -1;
+    int slot = -1;
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(s_picks[i].sid, s_active_id) == 0) slot = i;
+    }
+    if (slot < 0) {
+        slot = s_pick_next;
+        s_pick_next = (s_pick_next + 1) % 16;
+    }
+    snprintf(s_picks[slot].sid, sizeof(s_picks[slot].sid), "%s", s_active_id);
+    snprintf(s_picks[slot].provider, sizeof(s_picks[slot].provider), "%s", s_models[idx].provider);
+    snprintf(s_picks[slot].model, sizeof(s_picks[slot].model), "%s", s_models[idx].id);
+    bump();
+    return 0;
+}
+
+const char *opendev_client_current_model(void)
+{
+    for (int i = 0; i < 16; i++) {
+        if (s_active_id[0] && strcmp(s_picks[i].sid, s_active_id) == 0) {
+            snprintf(s_current_model, sizeof(s_current_model), "%s/%s", s_picks[i].provider, s_picks[i].model);
+            return s_current_model;
+        }
+    }
+    int a = active_index();
+    return a >= 0 ? s_sessions[a].model : "";
+}
+
+int opendev_client_command_count(void) { return s_command_count; }
+
+const char *opendev_client_command_name(int idx)
+{
+    return (idx >= 0 && idx < s_command_count) ? s_commands[idx] : NULL;
+}
+
+int opendev_client_run_command(const char *name, const char *arguments)
+{
+    if (!name || !*name || !s_active_id[0]) return -1;
+    char esc_n[96], esc_a[1024];
+    devos_json_escape(name, esc_n, sizeof(esc_n));
+    devos_json_escape(arguments ? arguments : "", esc_a, sizeof(esc_a));
+    char body[1200];
+    snprintf(body, sizeof(body), "{\"command\":\"%s\",\"arguments\":\"%s\"}", esc_n, esc_a);
+    char path[PATH_MAX_LEN];
+    snprintf(path, sizeof(path), "/session/%s/command", s_active_id);
+    add_dir(path, sizeof(path), session_dir(s_active_id));
+    char line[160];
+    snprintf(line, sizeof(line), "/%.60s %.90s", name, arguments ? arguments : "");
+    push_local(OPENDEV_ROLE_USER, OPENDEV_KIND_TEXT, line);
+    int rc = enqueue(JOB_COMMAND, "POST", path, body, s_active_id, NULL, 16384);
+    if (rc == 0) set_busy(s_active_id, true);
+    return rc;
+}
+
+void opendev_client_note(const char *text)
+{
+    if (text && *text) push_local(OPENDEV_ROLE_ASST, OPENDEV_KIND_TEXT, text);
 }

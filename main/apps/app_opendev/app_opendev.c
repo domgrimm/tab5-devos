@@ -30,6 +30,13 @@ static lv_obj_t *lbl_connect = NULL;
 static lv_obj_t *btn_new = NULL;
 static lv_obj_t *lbl_new = NULL;
 static lv_obj_t *lbl_sess_h = NULL;
+static lv_obj_t *btn_hdr_new = NULL;        /* "+" next to the title once connected */
+static int s_compact = -1;                  /* connected layout (status card hidden) */
+static uint32_t s_sess_built_gen = UINT32_MAX;
+static lv_obj_t *btn_model = NULL, *lbl_model_btn = NULL;
+static lv_obj_t *modal_models = NULL, *lbl_models_title = NULL, *models_list = NULL;
+static lv_obj_t *model_rows[OPENDEV_MAX_MODELS];
+static int s_models_sel = 0, s_models_built = -1;
 static lv_obj_t *sess_list = NULL;          /* scrolling list of every conversation */
 static int s_sess_rows = 0;                 /* rows created so far (grown on demand) */
 static int s_sess_shown_active = -2;
@@ -93,6 +100,8 @@ static lv_timer_t *poll_timer = NULL;
 
 static void refresh_all(void);
 static void sess_row_create(int i);
+static void sess_list_rebuild(void);
+static void models_build(void);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 static void srv_focus_paint(void);
 static void srv_open(bool login);
@@ -549,23 +558,43 @@ static void refresh_meta(void)
                                     opendev_client_status() == OPENDEV_UP ? p->accent_secondary : p->text_secondary, 0);
     }
 
+    /* Connected: the server card gives way to the conversations; the title
+     * row keeps the server (tap to change it) and a + for a new one. */
+    int compact = opendev_client_status() == OPENDEV_UP;
+    if (compact != s_compact) {
+        s_compact = compact;
+        if (compact) {
+            lv_obj_add_flag(status_card, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(lbl_sess_h, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(btn_hdr_new, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(sess_list, 0, 30);
+            lv_obj_set_height(sess_list, DEVOS_CONTENT_HEIGHT - 30 - 20);
+        } else {
+            lv_obj_remove_flag(status_card, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(lbl_sess_h, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(btn_hdr_new, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(sess_list, 0, 194);
+            lv_obj_set_height(sess_list, DEVOS_CONTENT_HEIGHT - 194 - 20);
+        }
+    }
+    if (lbl_title) {
+        if (compact) snprintf(buf, sizeof(buf), "%s  %s", mode == OPENDEV_MODE_CHAMBER ? "OPENCHAMBER" : "OPENCODE", host);
+        else snprintf(buf, sizeof(buf), "OPENCODE / OPENCHAMBER");
+        if (strcmp(lv_label_get_text(lbl_title), buf) != 0) lv_label_set_text(lbl_title, buf);
+    }
+
     int n = opendev_client_session_count();
     int active = opendev_client_active();
-    while (s_sess_rows < n && s_sess_rows < OPENDEV_SESS_BTNS) sess_row_create(s_sess_rows++);
+    if (opendev_client_sessions_generation() != s_sess_built_gen || n != s_sess_rows) sess_list_rebuild();
     if (lbl_sess_h) {
         snprintf(buf, sizeof(buf), n ? "CONVERSATIONS (%d)" : "CONVERSATIONS", n);
         if (strcmp(lv_label_get_text(lbl_sess_h), buf) != 0) lv_label_set_text(lbl_sess_h, buf);
     }
     time_t now = time(NULL);
     for (int i = 0; i < s_sess_rows; i++) {
-        if (i >= n) {
-            lv_obj_add_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_remove_flag(sess_btns[i], LV_OBJ_FLAG_HIDDEN);
         const opendev_session_t *s = opendev_client_session(i);
         char age[24] = "";
-        long long secs = (s->updated > 0 && now > 1700000000) ? (long long)now - s->updated / 1000 : -1;
+        long long secs = (s->updated > 946684800000LL && now > 1700000000) ? (long long)now - s->updated / 1000 : -1;
         if (secs >= 0 && secs < 90) snprintf(age, sizeof(age), "just now");
         else if (secs >= 0 && secs < 3600) snprintf(age, sizeof(age), "%lldm ago", secs / 60);
         else if (secs >= 0 && secs < 172800) snprintf(age, sizeof(age), "%lldh ago", secs / 3600);
@@ -594,12 +623,22 @@ static void refresh_meta(void)
     if (lbl_info) {
         const opendev_session_t *s = active >= 0 ? opendev_client_session(active) : NULL;
         if (s) {
-            snprintf(buf, sizeof(buf), "%s\nModel: %s\nState: %s%s", s->title[0] ? s->title : s->id,
-                     s->model[0] ? s->model : "-", s->busy ? "working " : "idle", s->busy ? LV_SYMBOL_BULLET : "");
+            snprintf(buf, sizeof(buf), "%s\n%s%sState: %s%s", s->title[0] ? s->title : s->id,
+                     s->project[0] ? s->project : "", s->project[0] ? "\n" : "", s->busy ? "working " : "idle",
+                     s->busy ? LV_SYMBOL_BULLET : "");
         } else {
             snprintf(buf, sizeof(buf), "No session selected");
         }
         if (strcmp(lv_label_get_text(lbl_info), buf) != 0) lv_label_set_text(lbl_info, buf);
+    }
+    if (lbl_model_btn) {
+        const char *m = opendev_client_current_model();
+        snprintf(buf, sizeof(buf), LV_SYMBOL_SETTINGS " Model: %s", m[0] ? m : "server default");
+        if (strcmp(lv_label_get_text(lbl_model_btn), buf) != 0) lv_label_set_text(lbl_model_btn, buf);
+    }
+    if (modal_models && !lv_obj_has_flag(modal_models, LV_OBJ_FLAG_HIDDEN) &&
+        s_models_built != opendev_client_model_count()) {
+        models_build();
     }
 
     if (opendev_client_needs_login()) {
@@ -640,6 +679,149 @@ static void refresh_all(void)
     s_seen_blocks_gen = opendev_client_blocks_generation();
     refresh_chat(true);
     refresh_diff(true);
+}
+
+/* ---------------------------------------------------------------- lists */
+static void sess_row_create(int i);
+
+/* Conversations grouped by project: a header, then its sessions. */
+static void sess_list_rebuild(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_clean(sess_list);
+    s_sess_rows = 0;
+    s_sess_shown_active = -2;
+    int n = opendev_client_session_count();
+    for (int i = 0; i < n && i < OPENDEV_SESS_BTNS; i++) {
+        const opendev_session_t *s = opendev_client_session(i);
+        if (s->group_start && s->project[0]) {
+            lv_obj_t *h = lv_label_create(sess_list);
+            char t[96];
+            snprintf(t, sizeof(t), LV_SYMBOL_DIRECTORY "  %s", s->project);
+            lv_label_set_text(h, t);
+            lv_obj_set_width(h, lv_pct(100));
+            lv_label_set_long_mode(h, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(h, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(h, p->accent_secondary, 0);
+            lv_obj_set_style_pad_top(h, i ? 8 : 0, 0);
+        }
+        sess_row_create(i);
+        s_sess_rows++;
+    }
+    s_sess_built_gen = opendev_client_sessions_generation();
+}
+
+static void models_close(void)
+{
+    if (modal_models) lv_obj_add_flag(modal_models, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void models_paint(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    const char *cur = opendev_client_current_model();
+    for (int i = 0; i < s_models_built; i++) {
+        const opendev_model_t *m = opendev_client_model(i);
+        char full[160];
+        snprintf(full, sizeof(full), "%s/%s", m->provider, m->id);
+        bool sel = i == s_models_sel, on = strcmp(full, cur) == 0;
+        lv_obj_set_style_bg_color(model_rows[i], sel ? p->surface_active : p->surface, 0);
+        lv_obj_set_style_border_color(model_rows[i], sel || on ? p->accent_primary : p->surface_border, 0);
+    }
+    if (s_models_sel >= 0 && s_models_sel < s_models_built) lv_obj_scroll_to_view(model_rows[s_models_sel], LV_ANIM_OFF);
+}
+
+static void model_row_cb(lv_event_t *e);
+
+static void models_build(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_clean(models_list);
+    int n = opendev_client_model_count();
+    const char *cur = opendev_client_current_model();
+    const char *last_provider = "";
+    s_models_sel = 0;
+    for (int i = 0; i < n; i++) {
+        const opendev_model_t *m = opendev_client_model(i);
+        if (strcmp(m->provider, last_provider) != 0) {
+            last_provider = m->provider;
+            lv_obj_t *h = lv_label_create(models_list);
+            lv_label_set_text(h, m->provider);
+            lv_obj_set_style_text_color(h, p->accent_secondary, 0);
+            lv_obj_set_style_text_font(h, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_pad_top(h, i ? 6 : 0, 0);
+        }
+        lv_obj_t *r = model_rows[i] = lv_button_create(models_list);
+        lv_obj_set_size(r, lv_pct(100), 34);
+        lv_obj_set_style_border_width(r, 1, 0);
+        lv_obj_set_style_radius(r, 4, 0);
+        lv_obj_set_style_shadow_width(r, 0, 0);
+        lv_obj_set_style_pad_hor(r, 10, 0);
+        lv_obj_set_style_pad_ver(r, 0, 0);
+        lv_obj_add_event_cb(r, model_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *l = lv_label_create(r);
+        char t[220];
+        snprintf(t, sizeof(t), "%s   %s", m->name, m->id);
+        lv_label_set_text(l, t);
+        lv_obj_set_width(l, lv_pct(100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_text_color(l, p->text_primary, 0);
+        char full[160];
+        snprintf(full, sizeof(full), "%s/%s", m->provider, m->id);
+        if (strcmp(full, cur) == 0) s_models_sel = i;
+    }
+    s_models_built = n;
+    if (n == 0) {
+        lv_obj_t *l = lv_label_create(models_list);
+        lv_label_set_text(l, opendev_client_models_loading() ? "Loading models from the server..."
+                                                             : "No models (is a provider configured on the server?)");
+        lv_obj_set_style_text_color(l, p->text_secondary, 0);
+    }
+    models_paint();
+}
+
+static void models_open(void)
+{
+    if (!modal_models) return;
+    if (opendev_client_active() < 0) {
+        opendev_client_note("Open a conversation first, then pick its model.");
+        return;
+    }
+    if (opendev_client_model_count() == 0 && !opendev_client_models_loading()) opendev_client_fetch_models();
+    s_models_built = -1;
+    lv_obj_remove_flag(modal_models, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal_models);
+    models_build();
+}
+
+static void models_choose(int idx)
+{
+    if (opendev_client_choose_model(idx) == 0) {
+        const opendev_model_t *m = opendev_client_model(idx);
+        char t[220];
+        snprintf(t, sizeof(t), "Model for this conversation: %s/%s", m->provider, m->id);
+        opendev_client_note(t);
+    }
+    models_close();
+    refresh_all();
+}
+
+static void model_row_cb(lv_event_t *e)
+{
+    models_choose((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void model_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    models_open();
+}
+
+static void models_close_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    models_close();
 }
 
 /* ---------------------------------------------------------------- events */
@@ -692,12 +874,52 @@ static void connect_btn_cb(lv_event_t *e)
     refresh_all();
 }
 
+/* "/word args": Tab5 commands (/model, /new, /help) run here; others go to
+ * the server's commands. Nothing starting with / is sent as a chat message. */
+static void run_slash(const char *t)
+{
+    char word[48] = "";
+    int k = 0;
+    while (t[1 + k] && t[1 + k] != ' ' && k < (int)sizeof(word) - 1) word[k] = t[1 + k], k++;
+    word[k] = '\0';
+    const char *args = t + 1 + k;
+    while (*args == ' ') args++;
+    if (!strcmp(word, "model") || !strcmp(word, "models")) {
+        models_open();
+    } else if (!strcmp(word, "new")) {
+        opendev_client_new_session();
+    } else if (!strcmp(word, "help") || !strcmp(word, "commands") || !word[0]) {
+        char buf[900];
+        int n = snprintf(buf, sizeof(buf), "Commands: /model (pick the model), /new (new conversation), /help");
+        for (int i = 0; i < opendev_client_command_count() && n < (int)sizeof(buf) - 60; i++) {
+            n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%s/%s", i ? ", " : "\nFrom the server: ",
+                          opendev_client_command_name(i));
+        }
+        opendev_client_note(buf);
+    } else {
+        bool known = false;
+        for (int i = 0; i < opendev_client_command_count(); i++) {
+            if (!strcmp(opendev_client_command_name(i), word)) known = true;
+        }
+        char buf[200];
+        if (!known) {
+            snprintf(buf, sizeof(buf), "Unknown command /%s - type /help for the list.", word);
+            opendev_client_note(buf);
+        } else if (opendev_client_active() < 0) {
+            opendev_client_note("Open a conversation first, then run the command.");
+        } else {
+            opendev_client_run_command(word, args);
+        }
+    }
+}
+
 static void send_current(void)
 {
     if (!ta) return;
     const char *t = lv_textarea_get_text(ta);
     if (t && *t) {
-        opendev_client_send(t);
+        if (t[0] == '/') run_slash(t);
+        else opendev_client_send(t);
         lv_textarea_set_text(ta, "");
         refresh_all();
     }
@@ -991,7 +1213,8 @@ static void poll_cb(lv_timer_t *t)
 /* ----------------------------------------------------------------- input */
 static bool modal_open(void)
 {
-    return (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) ||
+    return (modal_models && !lv_obj_has_flag(modal_models, LV_OBJ_FLAG_HIDDEN)) ||
+           (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) ||
            (modal_perm && !lv_obj_has_flag(modal_perm, LV_OBJ_FLAG_HIDDEN)) ||
            (modal_srv && !lv_obj_has_flag(modal_srv, LV_OBJ_FLAG_HIDDEN)) ||
            (modal_cam && !lv_obj_has_flag(modal_cam, LV_OBJ_FLAG_HIDDEN));
@@ -999,6 +1222,14 @@ static bool modal_open(void)
 
 static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
 {
+    /* Model picker: arrows move, Enter picks, Esc closes */
+    if (modal_models && !lv_obj_has_flag(modal_models, LV_OBJ_FLAG_HIDDEN)) {
+        if (key == LV_KEY_ESC) models_close();
+        else if (key == LV_KEY_DOWN && s_models_sel + 1 < s_models_built) s_models_sel++, models_paint();
+        else if (key == LV_KEY_UP && s_models_sel > 0) s_models_sel--, models_paint();
+        else if ((key == '\r' || key == '\n') && s_models_built > 0) models_choose(s_models_sel);
+        return true;
+    }
     /* Full-screen diff: Esc closes, arrows / PgUp / PgDn scroll */
     if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_t *sc = s_cv_full.scroll;
@@ -1029,6 +1260,9 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
             return true;
         } else if (key == 'n' || key == 'N') {
             note_btn_cb(NULL);
+            return true;
+        } else if (key == 'm' || key == 'M') {      /* Sym+M: model picker */
+            models_open();
             return true;
         }
     }
@@ -1174,6 +1408,25 @@ static void opendev_init(void)
     lbl_title = lv_label_create(left_panel);
     lv_label_set_text(lbl_title, "OPENCODE / OPENCHAMBER");
     lv_obj_set_pos(lbl_title, 4, 4);
+    lv_obj_set_width(lbl_title, DEVOS_PANE_LEFT_WIDTH - 70);
+    lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_DOT);
+    lv_obj_add_flag(lbl_title, LV_OBJ_FLAG_CLICKABLE);          /* tap: server settings */
+    lv_obj_set_ext_click_area(lbl_title, 8);
+    lv_obj_add_event_cb(lbl_title, srv_row_cb, LV_EVENT_CLICKED, NULL);
+
+    btn_hdr_new = lv_button_create(left_panel);
+    lv_obj_set_size(btn_hdr_new, 40, 26);
+    lv_obj_set_pos(btn_hdr_new, DEVOS_PANE_LEFT_WIDTH - 64, 0);
+    lv_obj_set_style_bg_color(btn_hdr_new, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_hdr_new, p->accent_primary, 0);
+    lv_obj_set_style_border_width(btn_hdr_new, 1, 0);
+    lv_obj_set_style_radius(btn_hdr_new, 4, 0);
+    lv_obj_add_event_cb(btn_hdr_new, new_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(btn_hdr_new, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *lp = lv_label_create(btn_hdr_new);
+    lv_label_set_text(lp, LV_SYMBOL_PLUS);
+    lv_obj_center(lp);
+    lv_obj_set_style_text_color(lp, p->accent_primary, 0);
     lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_title, p->text_secondary, 0);
 
@@ -1375,15 +1628,66 @@ static void opendev_init(void)
     lv_obj_set_style_text_font(lbl_plan_btn, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_plan_btn, p->text_primary, 0);
 
+    btn_model = lv_button_create(right_panel);
+    lv_obj_set_size(btn_model, DEVOS_PANE_RIGHT_WIDTH - 28, 30);
+    lv_obj_set_pos(btn_model, 4, 140);
+    lv_obj_set_style_bg_color(btn_model, p->surface_active, 0);
+    lv_obj_set_style_border_color(btn_model, p->accent_primary, 0);
+    lv_obj_set_style_border_width(btn_model, 1, 0);
+    lv_obj_set_style_radius(btn_model, 4, 0);
+    lv_obj_set_style_pad_hor(btn_model, 8, 0);
+    lv_obj_add_event_cb(btn_model, model_btn_cb, LV_EVENT_CLICKED, NULL);
+    lbl_model_btn = lv_label_create(btn_model);
+    lv_label_set_text(lbl_model_btn, LV_SYMBOL_SETTINGS " Model");
+    lv_obj_set_width(lbl_model_btn, lv_pct(100));
+    lv_label_set_long_mode(lbl_model_btn, LV_LABEL_LONG_DOT);
+    lv_obj_align(lbl_model_btn, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_font(lbl_model_btn, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_model_btn, p->text_primary, 0);
+
     diff_scroll = lv_obj_create(right_panel);
-    lv_obj_set_pos(diff_scroll, 4, 140);
-    lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28, DEVOS_CONTENT_HEIGHT - 146);
+    lv_obj_set_pos(diff_scroll, 4, 176);
+    lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28, DEVOS_CONTENT_HEIGHT - 182);
     lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
     lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
     lv_obj_set_style_border_width(diff_scroll, 1, 0);
     lv_obj_set_style_radius(diff_scroll, 4, 0);
     devos_codeview_create(&s_cv_pane, diff_scroll);
     lv_obj_add_event_cb(diff_scroll, diff_pane_click_cb, LV_EVENT_CLICKED, NULL);   /* tap: full screen */
+
+    /* Model picker */
+    modal_models = lv_obj_create(screen);
+    lv_obj_set_size(modal_models, 760, 560);
+    lv_obj_align(modal_models, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(modal_models, p->surface, 0);
+    lv_obj_set_style_border_color(modal_models, p->accent_primary, 0);
+    lv_obj_set_style_border_width(modal_models, 2, 0);
+    lv_obj_set_style_radius(modal_models, 8, 0);
+    lv_obj_set_style_pad_all(modal_models, 16, 0);
+    lv_obj_remove_flag(modal_models, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal_models, LV_OBJ_FLAG_HIDDEN);
+    lbl_models_title = lv_label_create(modal_models);
+    lv_label_set_text(lbl_models_title, LV_SYMBOL_SETTINGS " Model for this conversation  (arrows + Enter, Esc closes)");
+    lv_obj_set_style_text_font(lbl_models_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_models_title, p->accent_primary, 0);
+    lv_obj_t *mclose = lv_button_create(modal_models);
+    lv_obj_set_size(mclose, 90, 30);
+    lv_obj_align(mclose, LV_ALIGN_TOP_RIGHT, 0, -4);
+    lv_obj_set_style_bg_color(mclose, p->surface_active, 0);
+    lv_obj_add_event_cb(mclose, models_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *mcl = lv_label_create(mclose);
+    lv_label_set_text(mcl, "Close");
+    lv_obj_center(mcl);
+    lv_obj_set_style_text_color(mcl, p->text_primary, 0);
+    models_list = lv_obj_create(modal_models);
+    lv_obj_set_pos(models_list, 0, 36);
+    lv_obj_set_size(models_list, 728, 560 - 32 - 40);
+    lv_obj_set_style_bg_opa(models_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(models_list, 0, 0);
+    lv_obj_set_style_pad_all(models_list, 2, 0);
+    lv_obj_set_style_pad_row(models_list, 4, 0);
+    lv_obj_set_flex_flow(models_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(models_list, LV_DIR_VER);
 
     /* Permission modal */
     modal_perm = lv_obj_create(screen);
