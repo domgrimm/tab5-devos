@@ -50,6 +50,8 @@ typedef struct {
     lv_obj_t *lbl_line1;
     lv_obj_t *lbl_line2;
     lv_obj_t *lbl_line3;
+    lv_obj_t *btn_hide;         /* arrange mode: hide / show this card */
+    lv_obj_t *lbl_hide;
     int slot_idx;
 } card_widget_t;
 
@@ -76,8 +78,15 @@ static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
 
 /* Slot Mapping & Carousel State */
+/* slot_uids is what the carousel shows: every app in arrange mode, only the
+ * visible ones otherwise. order_uids is the full saved order. */
 static char slot_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
 static int active_app_count = 0;
+static char order_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
+static int order_count = 0;
+static char hidden_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
+static int hidden_count = 0;
+static char s_hide_notice[80] = "";
 static int current_page = 0;
 static int total_pages = 1;
 static bool arrange_mode = false;
@@ -90,18 +99,57 @@ static void update_pagination_ui(void);
 static void rebuild_card_widgets(void);
 
 /* --------------------------------------------------------------------------
- * Persistence: Load and Save Layout (String UIDs with legacy int fallback)
+ * Persistence: order + hidden cards
+ *   {"order": ["opendev", ...], "hidden": ["template"]}
+ * Older files are a bare array of uids (or legacy ints 1..6).
  * -------------------------------------------------------------------------- */
+static bool is_hidden(const char *uid)
+{
+    for (int i = 0; i < hidden_count; i++) {
+        if (strcmp(hidden_uids[i], uid) == 0) return true;
+    }
+    return false;
+}
+
+static void set_hidden(const char *uid, bool hide)
+{
+    int at = -1;
+    for (int i = 0; i < hidden_count; i++) {
+        if (strcmp(hidden_uids[i], uid) == 0) { at = i; break; }
+    }
+    if (hide && at < 0 && hidden_count < DEVOS_MAX_APPS) {
+        snprintf(hidden_uids[hidden_count++], DEVOS_MAX_UID, "%s", uid);
+    } else if (!hide && at >= 0) {
+        memmove(hidden_uids[at], hidden_uids[at + 1], (size_t)(hidden_count - at - 1) * DEVOS_MAX_UID);
+        hidden_count--;
+    }
+}
+
+/* What the carousel shows (see slot_uids). */
+static void rebuild_view(void)
+{
+    active_app_count = 0;
+    for (int i = 0; i < order_count; i++) {
+        if (arrange_mode || !is_hidden(order_uids[i])) {
+            snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", order_uids[i]);
+        }
+    }
+    total_pages = (active_app_count + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
+    if (total_pages < 1) total_pages = 1;
+    if (total_pages > 4) total_pages = 4;
+    if (current_page >= total_pages) current_page = total_pages - 1;
+    if (focused_slot >= active_app_count) focused_slot = active_app_count > 0 ? active_app_count - 1 : 0;
+}
+
 static void save_layout(void)
 {
     FILE *f = fopen(LAYOUT_CONFIG_FILE, "w");
     if (!f) return;
-
-    fprintf(f, "[\n");
-    for (int i = 0; i < active_app_count; i++) {
-        fprintf(f, "  \"%s\"%s\n", slot_uids[i], (i == active_app_count - 1) ? "" : ",");
-    }
-    fprintf(f, "]\n");
+    fprintf(f, "{\n  \"order\": [");
+    for (int i = 0; i < order_count; i++) fprintf(f, "%s\"%s\"", i ? ", " : "", order_uids[i]);
+    fprintf(f, "],\n  \"hidden\": [");
+    for (int i = 0; i < hidden_count; i++) fprintf(f, "%s\"%s\"", i ? ", " : "", hidden_uids[i]);
+    fprintf(f, "]\n}\n");
     fclose(f);
 }
 
@@ -118,106 +166,79 @@ static const char *legacy_id_to_uid(int id)
     }
 }
 
+static int index_of(char list[][DEVOS_MAX_UID], int n, const char *uid)
+{
+    for (int i = 0; i < n; i++) {
+        if (strcmp(list[i], uid) == 0) return i;
+    }
+    return -1;
+}
+
+/* Parse the uid strings of the JSON array starting at p (stops at ']'). */
+static void parse_uid_array(const char *p, char out[][DEVOS_MAX_UID], int *n,
+                            char reg[][DEVOS_MAX_UID], int reg_count)
+{
+    while (*p && *p != ']' && *n < DEVOS_MAX_APPS) {
+        if (*p == '"') {
+            p++;
+            char token[DEVOS_MAX_UID] = {0};
+            int tlen = 0;
+            while (*p && *p != '"' && tlen < (int)sizeof(token) - 1) token[tlen++] = *p++;
+            if (*p == '"') p++;
+            if (index_of(reg, reg_count, token) >= 0 && index_of(out, *n, token) < 0) {
+                snprintf(out[(*n)++], DEVOS_MAX_UID, "%s", token);
+            }
+        } else if (*p >= '1' && *p <= '6') {
+            const char *luid = legacy_id_to_uid(*p - '0');
+            if (luid && index_of(out, *n, luid) < 0) snprintf(out[(*n)++], DEVOS_MAX_UID, "%s", luid);
+            p++;
+        } else {
+            p++;
+        }
+    }
+}
+
 static void load_layout(void)
 {
-    /* 1. Gather all registered valid apps from devos_core (excluding launcher) */
+    /* 1. Registered apps (excluding the launcher itself) */
     char registered_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
     int reg_count = 0;
     int core_count = devos_core_app_count();
-
     for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
         devos_app_descriptor_t *app = devos_core_get_app_at(i);
-        if (!app) continue;
-        if (app->id == DEVOS_APP_LAUNCHER) continue;
+        if (!app || app->id == DEVOS_APP_LAUNCHER) continue;
         if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
-
-        if (app->uid && *app->uid) {
-            snprintf(registered_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
-        }
+        if (app->uid && *app->uid) snprintf(registered_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
     }
 
-    /* 2. Try loading saved order from JSON */
-    active_app_count = 0;
+    /* 2. Saved order + hidden set */
+    order_count = 0;
+    hidden_count = 0;
     FILE *f = fopen(LAYOUT_CONFIG_FILE, "r");
     if (f) {
         char file_buf[2048] = {0};
         size_t n = fread(file_buf, 1, sizeof(file_buf) - 1, f);
         fclose(f);
         file_buf[n] = '\0';
-
-        const char *p = file_buf;
-        while (*p && active_app_count < DEVOS_MAX_APPS) {
-            /* Check for string token: "uid" */
-            if (*p == '"') {
-                p++;
-                char token[DEVOS_MAX_UID] = {0};
-                int tlen = 0;
-                while (*p && *p != '"' && tlen < (int)sizeof(token) - 1) {
-                    token[tlen++] = *p++;
-                }
-                token[tlen] = '\0';
-                if (*p == '"') p++;
-
-                /* Validate token exists in registered apps and not already in slot_uids */
-                bool is_valid = false;
-                for (int i = 0; i < reg_count; i++) {
-                    if (strcmp(registered_uids[i], token) == 0) {
-                        is_valid = true;
-                        break;
-                    }
-                }
-                if (is_valid) {
-                    bool already_present = false;
-                    for (int i = 0; i < active_app_count; i++) {
-                        if (strcmp(slot_uids[i], token) == 0) {
-                            already_present = true;
-                            break;
-                        }
-                    }
-                    if (!already_present) {
-                        snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", token);
-                    }
-                }
-            } else if (*p >= '1' && *p <= '6') {
-                /* Legacy integer ID fallback */
-                const char *luid = legacy_id_to_uid(*p - '0');
-                if (luid) {
-                    bool already_present = false;
-                    for (int i = 0; i < active_app_count; i++) {
-                        if (strcmp(slot_uids[i], luid) == 0) {
-                            already_present = true;
-                            break;
-                        }
-                    }
-                    if (!already_present) {
-                        snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", luid);
-                    }
-                }
-                p++;
-            } else {
-                p++;
-            }
+        const char *ord = strstr(file_buf, "\"order\"");
+        const char *hid = strstr(file_buf, "\"hidden\"");
+        if (ord) ord = strchr(ord, '[');
+        else ord = strchr(file_buf, '[');                        /* legacy bare array */
+        if (ord) parse_uid_array(ord + 1, order_uids, &order_count, registered_uids, reg_count);
+        if (hid && (hid = strchr(hid, '[')) != NULL) {
+            parse_uid_array(hid + 1, hidden_uids, &hidden_count, registered_uids, reg_count);
         }
     }
 
-    /* 3. Append any registered apps that were not in the layout file */
-    for (int i = 0; i < reg_count && active_app_count < DEVOS_MAX_APPS; i++) {
-        bool found = false;
-        for (int j = 0; j < active_app_count; j++) {
-            if (strcmp(slot_uids[j], registered_uids[i]) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", registered_uids[i]);
+    /* 3. Apps not in the file yet go at the end (visible) */
+    for (int i = 0; i < reg_count && order_count < DEVOS_MAX_APPS; i++) {
+        if (index_of(order_uids, order_count, registered_uids[i]) < 0) {
+            snprintf(order_uids[order_count++], DEVOS_MAX_UID, "%s", registered_uids[i]);
         }
     }
-
-    /* Compute total pages (minimum 1) */
-    total_pages = (active_app_count + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
-    if (total_pages < 1) total_pages = 1;
-    if (current_page >= total_pages) current_page = total_pages - 1;
+    /* never hide everything */
+    if (hidden_count >= order_count) hidden_count = 0;
+    rebuild_view();
 }
 
 /* --------------------------------------------------------------------------
@@ -293,34 +314,38 @@ void app_launcher_swap_slots(int slot_a, int slot_b)
         return;
     }
 
-    char tmp[DEVOS_MAX_UID];
-    strlcpy(tmp, slot_uids[slot_a], sizeof(tmp));
-    strlcpy(slot_uids[slot_a], slot_uids[slot_b], sizeof(slot_uids[slot_a]));
-    strlcpy(slot_uids[slot_b], tmp, sizeof(slot_uids[slot_b]));
-
+    int oa = index_of(order_uids, order_count, slot_uids[slot_a]);
+    int ob = index_of(order_uids, order_count, slot_uids[slot_b]);
+    if (oa >= 0 && ob >= 0) {
+        char tmp[DEVOS_MAX_UID];
+        strlcpy(tmp, order_uids[oa], sizeof(tmp));
+        strlcpy(order_uids[oa], order_uids[ob], sizeof(order_uids[oa]));
+        strlcpy(order_uids[ob], tmp, sizeof(order_uids[ob]));
+    }
     selected_slot = -1;
+    rebuild_view();
     save_layout();
     refresh_cards();
 }
 
 void app_launcher_reset_layout(void)
 {
-    /* Reset to core registration order */
+    /* Reset to core registration order, every card visible */
     int reg_count = 0;
     int core_count = devos_core_app_count();
     for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
         devos_app_descriptor_t *app = devos_core_get_app_at(i);
         if (!app || app->id == DEVOS_APP_LAUNCHER) continue;
         if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
-        snprintf(slot_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
+        snprintf(order_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
     }
-    active_app_count = reg_count;
-    total_pages = (active_app_count + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
-    if (total_pages < 1) total_pages = 1;
-
+    order_count = reg_count;
+    hidden_count = 0;
     selected_slot = -1;
     current_page = 0;
+    rebuild_view();
     save_layout();
+    rebuild_card_widgets();
     app_launcher_set_page(0, false);
     refresh_cards();
 }
@@ -347,7 +372,10 @@ void app_launcher_set_arrange_mode(bool active)
     if (arrange_mode != active) {
         arrange_mode = active;
         selected_slot = -1;
-        refresh_cards();
+        s_hide_notice[0] = '\0';
+        rebuild_view();                     /* arrange shows hidden cards too */
+        rebuild_card_widgets();
+        app_launcher_set_page(current_page, false);
     }
 }
 
@@ -359,6 +387,30 @@ void app_launcher_toggle_arrange_mode(void)
 bool app_launcher_is_arrange_mode(void)
 {
     return arrange_mode;
+}
+
+/* Arrange mode: hide or show the card in `slot`. */
+static void toggle_hidden(int slot)
+{
+    if (slot < 0 || slot >= active_app_count) return;
+    const char *uid = slot_uids[slot];
+    bool hide = !is_hidden(uid);
+    if (hide && hidden_count + 1 >= order_count) {
+        snprintf(s_hide_notice, sizeof(s_hide_notice), "Keep at least one app visible.");
+        refresh_cards();
+        return;
+    }
+    set_hidden(uid, hide);
+    devos_app_descriptor_t *app = devos_core_find_app(uid);
+    snprintf(s_hide_notice, sizeof(s_hide_notice), "%s %s on the home screen.",
+             app && app->name ? app->name : uid, hide ? "hidden" : "shown");
+    save_layout();
+    refresh_cards();
+}
+
+static void hide_btn_cb(lv_event_t *e)
+{
+    toggle_hidden((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 static void card_click_cb(lv_event_t *e)
@@ -417,7 +469,8 @@ static void update_pagination_ui(void)
     /* 1. Apps Count badge */
     if (lbl_apps_count) {
         char ac_buf[32];
-        snprintf(ac_buf, sizeof(ac_buf), "%d Apps Installed", active_app_count);
+        if (hidden_count) snprintf(ac_buf, sizeof(ac_buf), "%d apps, %d hidden", order_count, hidden_count);
+        else snprintf(ac_buf, sizeof(ac_buf), "%d Apps Installed", order_count);
         lv_label_set_text(lbl_apps_count, ac_buf);
         lv_obj_set_style_text_color(lbl_apps_count, p->text_secondary, 0);
     }
@@ -504,8 +557,12 @@ static void update_pagination_ui(void)
                          selected_slot + 1, sel_app ? sel_app->name : "App");
                 lv_label_set_text(lbl_arrange_banner, b_buf);
             } else {
-                lv_label_set_text(lbl_arrange_banner,
-                    LV_SYMBOL_SHUFFLE " ARRANGE MODE: Tap a tile to select, then tap destination | [1-8] Keys | [R] Reset | [Done]");
+                char b_buf[160];
+                snprintf(b_buf, sizeof(b_buf), "%s",
+                         s_hide_notice[0] ? s_hide_notice
+                                          : LV_SYMBOL_SHUFFLE " ARRANGE: tap a card, then where it should go  |  "
+                                            LV_SYMBOL_EYE_OPEN " hides / shows a card  |  [R] Reset  |  [Done]");
+                lv_label_set_text(lbl_arrange_banner, b_buf);
             }
         } else {
             lv_obj_add_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
@@ -516,7 +573,7 @@ static void update_pagination_ui(void)
     if (lbl_bottom_hint) {
         if (arrange_mode) {
             lv_label_set_text(lbl_bottom_hint,
-                "[Tap/Click] Select & Swap Across Pages  |  [1-8] Swap Slot  |  [R] Reset Defaults  |  [Esc/Done] Exit");
+                "[Tap] Select & Swap  |  [1-8] Swap Slot  |  [H] Hide / show focused card  |  [R] Reset  |  [Esc/Done] Exit");
         } else {
             lv_label_set_text(lbl_bottom_hint,
                 "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page Flip  |  [Sym+E] Arrange  |  [Sym+T] Theme");
@@ -596,6 +653,20 @@ static void refresh_cards(void)
                 lv_label_set_text(c->lbl_line3, "");
             }
             lv_obj_set_style_text_color(c->lbl_line3, p->text_secondary, 0);
+        }
+
+        /* Hidden cards (only listed in arrange mode) */
+        bool hid = is_hidden(slot_uids[i]);
+        lv_obj_set_style_opa(c->card_btn, (arrange_mode && hid) ? LV_OPA_50 : LV_OPA_COVER, 0);
+        if (c->btn_hide) {
+            lv_label_set_text(c->lbl_hide, hid ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+            lv_obj_set_style_bg_color(c->btn_hide, hid ? p->surface : p->surface_active, 0);
+            lv_obj_set_style_border_color(c->btn_hide, hid ? p->accent_warning : p->surface_border, 0);
+            lv_obj_set_style_text_color(c->lbl_hide, hid ? p->accent_warning : p->text_primary, 0);
+        }
+        if (arrange_mode && hid && c->lbl_subtitle) {
+            lv_label_set_text(c->lbl_subtitle, "Hidden from the home screen");
+            lv_obj_set_style_text_color(c->lbl_subtitle, p->accent_warning, 0);
         }
 
         /* Border & Card styling */
@@ -736,6 +807,10 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
         }
         if (key == 'r' || key == 'R') {
             app_launcher_reset_layout();
+            return true;
+        }
+        if ((key == 'h' || key == 'H') && modifiers == DEVOS_MOD_NONE) {
+            toggle_hidden(selected_slot >= 0 ? selected_slot : focused_slot);
             return true;
         }
         /* 1..8 on active page: select or swap slot */
@@ -952,6 +1027,19 @@ static void rebuild_card_widgets(void)
             lv_label_set_long_mode(c->lbl_line3, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_font(c->lbl_line3, &lv_font_montserrat_12, 0);
             lv_obj_set_style_text_color(c->lbl_line3, p->text_secondary, 0);
+
+            if (arrange_mode) {
+                c->btn_hide = lv_button_create(c->card_btn);
+                lv_obj_set_size(c->btn_hide, 40, 30);
+                lv_obj_align(c->btn_hide, LV_ALIGN_TOP_RIGHT, 4, -6);
+                lv_obj_set_ext_click_area(c->btn_hide, 8);
+                lv_obj_set_style_radius(c->btn_hide, 6, 0);
+                lv_obj_set_style_shadow_width(c->btn_hide, 0, 0);
+                lv_obj_set_style_border_width(c->btn_hide, 1, 0);
+                lv_obj_add_event_cb(c->btn_hide, hide_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
+                c->lbl_hide = lv_label_create(c->btn_hide);
+                lv_obj_center(c->lbl_hide);
+            }
         }
     }
 }
