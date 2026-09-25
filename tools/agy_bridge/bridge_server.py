@@ -280,6 +280,7 @@ class Bridge:
         self.own_turn_until = 0.0               # store updates until then are our own turn
         self.list_stamp = 0.0
         self.instance = ""                      # remote-control instance name
+        self.rejected = {}                      # ip -> [count, last time logged]
 
     # ---- fan-out ----
     async def emit(self, msg, record=True):
@@ -685,7 +686,7 @@ class Bridge:
                 if t == "HELLO":
                     if self.args.psk and not secrets.compare_digest(str(msg.get("token", "")), self.args.psk):
                         await ws.send(wire({"type": "ERROR", "message": "Wrong bridge token"}))
-                        log("rejected client", peer, "(wrong token)")
+                        self.log_rejection(peer)
                         return
                     if not authed:
                         authed = True
@@ -729,6 +730,21 @@ class Bridge:
             self.clients.discard(ws)
             if authed:
                 log("Tab5 disconnected:", peer)
+
+    def log_rejection(self, peer):
+        """Old/misconfigured clients retry every few seconds: say it once,
+        then at most a count per minute."""
+        entry = self.rejected.setdefault(peer, [0, 0.0])
+        entry[0] += 1
+        now = time.time()
+        if entry[0] == 1:
+            log(f"rejected client {peer}: wrong token. Enter this run's token on that device "
+                "(Antigravity > session card); a devOS simulator/firmware from before the setup "
+                "dialog uses an empty token and retries every few seconds.")
+            entry[1] = now
+        elif now - entry[1] >= 60:
+            log(f"rejected client {peer} again ({entry[0]} times so far)")
+            entry[1] = now
 
     async def join(self, ws):
         self.clients.add(ws)
