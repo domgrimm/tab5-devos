@@ -3,6 +3,7 @@
 #include "devos_theme.h"
 #include "devos_agent_viewport.h"
 #include "devos_mdview.h"
+#include "devos_codeview.h"
 #include "apps/app_editor/app_editor.h"
 #include "agy_client.h"
 #include <stdio.h>
@@ -14,19 +15,20 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define AGY_SUB_BTNS AGY_MAX_AGENTS
 #define AGY_ART_BTNS AGY_MAX_ARTIFACTS
 #define AGY_Q_BTNS 4
+#define REFRESH_MS 250            /* redraw at most 4x/s while the agent streams */
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 static devos_agent_viewport_t *viewport = NULL;
 
-/* Thinking accordion + focus */
-static bool thinking_expanded = true;
+static bool thinking_expanded = false;
 
 /* Left: session + subagents + slash */
 static lv_obj_t *lbl_agy_title = NULL;
 static lv_obj_t *sess_box = NULL;
 static lv_obj_t *lbl_conv = NULL;
 static lv_obj_t *lbl_mod = NULL;
+static lv_obj_t *lbl_ws = NULL;
 static lv_obj_t *lbl_link = NULL;
 static lv_obj_t *btn_new = NULL;
 static lv_obj_t *lbl_new = NULL;
@@ -51,12 +53,18 @@ static lv_obj_t *lbl_send = NULL;
 /* Right: artifacts + diffs */
 static lv_obj_t *lbl_insp_title = NULL;
 static lv_obj_t *lbl_art_h = NULL;
+static lv_obj_t *lbl_art_none = NULL;
 static lv_obj_t *art_btns[AGY_ART_BTNS] = {NULL};
 static lv_obj_t *art_lbls[AGY_ART_BTNS] = {NULL};
 static lv_obj_t *lbl_diff_h = NULL;
 static lv_obj_t *btn_save_diff = NULL;
 static lv_obj_t *lbl_save_diff = NULL;
 static lv_obj_t *diff_scroll = NULL;
+static devos_codeview_t s_cv_pane, s_cv_full;
+static lv_obj_t *modal_diff = NULL;
+static lv_obj_t *lbl_diff_title = NULL;
+static EXT_RAM_BSS_ATTR char s_diff_display[AGY_DIFF_MAX + 256];
+static uint32_t s_seen_diff_rev = UINT32_MAX;
 
 /* Permission modal */
 static lv_obj_t *modal_permission = NULL;
@@ -64,6 +72,9 @@ static lv_obj_t *lbl_m_title = NULL;
 static lv_obj_t *lbl_m_desc = NULL;
 static lv_obj_t *perm_btns[3] = {NULL};
 static lv_obj_t *perm_lbls[3] = {NULL};
+static lv_obj_t *perm_prev = NULL;          /* diff of a pending edit */
+static devos_codeview_t s_cv_perm;
+static char s_shown_perm[AGY_NAME_MAX] = "";
 
 /* Question modal */
 static lv_obj_t *modal_question = NULL;
@@ -71,6 +82,13 @@ static lv_obj_t *lbl_q_title = NULL;
 static lv_obj_t *lbl_q_desc = NULL;
 static lv_obj_t *q_btns[AGY_Q_BTNS] = {NULL};
 static lv_obj_t *q_lbls[AGY_Q_BTNS] = {NULL};
+static lv_obj_t *ta_q = NULL;
+static char s_shown_q[AGY_NAME_MAX] = "";
+static int s_q_choices = 0;
+/* keys are ignored briefly after an ask pops up, so a word being typed
+ * into the prompt ("yes", "1.") can't answer it by accident */
+#define ASK_GUARD_MS 700
+static uint32_t s_ask_since = 0;
 
 /* Artifact viewer modal */
 static lv_obj_t *modal_artifact = NULL;
@@ -84,6 +102,7 @@ static int s_open_artifact = -1;
 /* Server modal */
 static lv_obj_t *modal_srv = NULL;
 static lv_obj_t *lbl_srv_title = NULL;
+static lv_obj_t *lbl_srv_hint = NULL;
 static lv_obj_t *ta_srv_host = NULL;
 static lv_obj_t *ta_srv_port = NULL;
 static lv_obj_t *ta_srv_token = NULL;
@@ -91,219 +110,154 @@ static lv_obj_t *srv_focus = NULL;
 static lv_obj_t *lbl_srv_save = NULL;
 static lv_obj_t *lbl_srv_cancel = NULL;
 
+/* Chat: one card per block, re-filled when the block's rev changes */
+static lv_obj_t *s_cards[AGY_MAX_BLOCKS];
+static uint32_t s_card_rev[AGY_MAX_BLOCKS];
+static uint8_t s_card_kind[AGY_MAX_BLOCKS];
+static int s_rendered = -1;
+static char s_hint[400] = "";
+
 static uint32_t s_seen_gen = 0;
+static bool s_dirty = true;
+static uint32_t s_last_refresh = 0;
 static lv_timer_t *poll_timer = NULL;
 
-static void refresh_all(void);
+static void refresh_all(bool force);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 static void srv_focus_paint(void);
 
 /* ------------------------------------------------------------------ theme */
+static void paint_button(lv_obj_t *b, lv_color_t bg, lv_color_t border)
+{
+    if (!b) return;
+    lv_obj_set_style_bg_color(b, bg, 0);
+    lv_obj_set_style_border_color(b, border, 0);
+}
+
+static void paint_text(lv_obj_t *l, lv_color_t c)
+{
+    if (l) lv_obj_set_style_text_color(l, c, 0);
+}
+
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
     if (!screen) return;
-    lv_color_t on_accent =
-        devos_theme_is_dark() ? lv_color_black() : lv_color_white();
+    lv_color_t on_accent = devos_theme_is_dark() ? lv_color_black() : lv_color_white();
 
     lv_obj_set_style_bg_color(screen, p->bg, 0);
-
-    if (lbl_agy_title) {
-        lv_obj_set_style_text_color(lbl_agy_title, p->text_secondary, 0);
-    }
-    if (sess_box) {
-        lv_obj_set_style_bg_color(sess_box, p->surface_active, 0);
-        lv_obj_set_style_border_color(sess_box, p->accent_primary, 0);
-    }
-    if (lbl_conv) lv_obj_set_style_text_color(lbl_conv, p->accent_primary, 0);
-    if (lbl_mod) lv_obj_set_style_text_color(lbl_mod, p->text_primary, 0);
-    if (lbl_link) lv_obj_set_style_text_color(lbl_link, p->text_secondary, 0);
-    if (btn_new) {
-        lv_obj_set_style_bg_color(btn_new, p->surface, 0);
-        lv_obj_set_style_border_color(btn_new, p->surface_border, 0);
-    }
-    if (lbl_new) lv_obj_set_style_text_color(lbl_new, p->text_primary, 0);
-    if (lbl_sub) lv_obj_set_style_text_color(lbl_sub, p->accent_secondary, 0);
-    for (int i = 0; i < AGY_SUB_BTNS; i++) {
-        if (sub_btns[i]) {
-            lv_obj_set_style_bg_color(sub_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(sub_btns[i], p->surface_border, 0);
-        }
-        if (sub_lbls[i]) {
-            lv_obj_set_style_text_color(sub_lbls[i], p->text_secondary, 0);
-        }
-    }
-    if (lbl_slash) {
-        lv_obj_set_style_text_color(lbl_slash, p->text_secondary, 0);
-    }
+    paint_text(lbl_agy_title, p->text_secondary);
+    paint_button(sess_box, p->surface_active, p->accent_primary);
+    paint_text(lbl_conv, p->accent_primary);
+    paint_text(lbl_mod, p->text_primary);
+    paint_text(lbl_ws, p->text_secondary);
+    paint_button(btn_new, p->surface, p->surface_border);
+    paint_text(lbl_new, p->text_primary);
+    paint_text(lbl_sub, p->accent_secondary);
+    for (int i = 0; i < AGY_SUB_BTNS; i++) paint_button(sub_btns[i], p->surface, p->surface_border);
+    paint_text(lbl_slash, p->text_secondary);
     for (int i = 0; i < 4; i++) {
-        if (cmd_btns[i]) {
-            lv_obj_set_style_bg_color(cmd_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(cmd_btns[i], p->surface_border, 0);
-        }
-        if (cmd_lbls[i]) {
-            lv_obj_set_style_text_color(cmd_lbls[i], p->accent_primary, 0);
-        }
+        paint_button(cmd_btns[i], p->surface, p->surface_border);
+        paint_text(cmd_lbls[i], p->accent_primary);
     }
 
-    if (action_strip) {
-        lv_obj_set_style_bg_color(action_strip, p->bg_alt, 0);
-        lv_obj_set_style_border_color(action_strip, p->surface_border, 0);
-    }
-    if (lbl_strip) lv_obj_set_style_text_color(lbl_strip, p->text_secondary, 0);
+    paint_button(action_strip, p->bg_alt, p->surface_border);
+    paint_text(lbl_strip, p->text_secondary);
     if (chat_scroll) lv_obj_set_style_bg_color(chat_scroll, p->bg, 0);
-    if (input_bar) {
-        lv_obj_set_style_bg_color(input_bar, p->surface, 0);
-        lv_obj_set_style_border_color(input_bar, p->surface_border, 0);
-    }
+    paint_button(input_bar, p->surface, p->surface_border);
     if (ta) {
-        lv_obj_set_style_bg_color(ta, p->bg_alt, 0);
-        lv_obj_set_style_border_color(ta, p->surface_border, 0);
-        lv_obj_set_style_text_color(ta, p->text_primary, 0);
+        paint_button(ta, p->bg_alt, p->surface_border);
+        paint_text(ta, p->text_primary);
     }
-    if (btn_note) {
-        lv_obj_set_style_bg_color(btn_note, p->surface, 0);
-        lv_obj_set_style_border_color(btn_note, p->surface_border, 0);
-    }
-    if (lbl_note) lv_obj_set_style_text_color(lbl_note, p->text_primary, 0);
+    paint_button(btn_note, p->surface, p->surface_border);
+    paint_text(lbl_note, p->text_primary);
     if (btn_send) lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
-    if (lbl_send) lv_obj_set_style_text_color(lbl_send, on_accent, 0);
+    paint_text(lbl_send, on_accent);
 
-    if (lbl_insp_title) {
-        lv_obj_set_style_text_color(lbl_insp_title, p->text_secondary, 0);
-    }
-    if (lbl_art_h) lv_obj_set_style_text_color(lbl_art_h, p->accent_primary, 0);
+    paint_text(lbl_insp_title, p->text_secondary);
+    paint_text(lbl_art_h, p->accent_primary);
+    paint_text(lbl_art_none, p->text_secondary);
     for (int i = 0; i < AGY_ART_BTNS; i++) {
-        if (art_btns[i]) {
-            lv_obj_set_style_bg_color(art_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(art_btns[i], p->surface_border, 0);
-        }
-        if (art_lbls[i]) {
-            lv_obj_set_style_text_color(art_lbls[i], p->text_primary, 0);
-        }
+        paint_button(art_btns[i], p->surface, p->surface_border);
+        paint_text(art_lbls[i], p->text_primary);
     }
-    if (lbl_diff_h) {
-        lv_obj_set_style_text_color(lbl_diff_h, p->accent_primary, 0);
-    }
-    if (btn_save_diff) {
-        lv_obj_set_style_bg_color(btn_save_diff, p->surface_active, 0);
-        lv_obj_set_style_border_color(btn_save_diff, p->surface_border, 0);
-    }
-    if (lbl_save_diff) {
-        lv_obj_set_style_text_color(lbl_save_diff, p->text_primary, 0);
-    }
-    if (diff_scroll) {
-        lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
-        lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
-    }
+    paint_text(lbl_diff_h, p->accent_primary);
+    paint_button(btn_save_diff, p->surface_active, p->surface_border);
+    paint_text(lbl_save_diff, p->text_primary);
+    paint_button(diff_scroll, p->code_bg, p->surface_border);
+    if (modal_diff) lv_obj_set_style_bg_color(modal_diff, p->bg, 0);
+    paint_text(lbl_diff_title, p->text_primary);
+    if (s_cv_full.scroll) paint_button(s_cv_full.scroll, p->code_bg, p->surface_border);
 
-    if (modal_permission) {
-        lv_obj_set_style_bg_color(modal_permission, p->surface, 0);
-        lv_obj_set_style_border_color(modal_permission, p->accent_warning, 0);
-    }
-    if (lbl_m_title) {
-        lv_obj_set_style_text_color(lbl_m_title, p->accent_warning, 0);
-    }
+    paint_button(modal_permission, p->surface, p->accent_warning);
+    paint_text(lbl_m_title, p->accent_warning);
+    paint_text(lbl_m_desc, p->text_primary);
+    paint_button(perm_prev, p->code_bg, p->surface_border);
     for (int i = 0; i < 3; i++) {
         if (perm_btns[i]) {
             lv_obj_set_style_bg_color(perm_btns[i],
-                i == 1 ? p->accent_danger
-                       : i == 2 ? p->surface_active : p->accent_secondary,
-                0);
+                i == 1 ? p->accent_danger : i == 2 ? p->surface_active : p->accent_secondary, 0);
         }
-        if (perm_lbls[i]) {
-            lv_obj_set_style_text_color(perm_lbls[i],
-                i == 1 ? lv_color_white()
-                       : i == 2 ? p->text_primary : on_accent,
-                0);
-        }
+        paint_text(perm_lbls[i], i == 1 ? lv_color_white() : i == 2 ? p->text_primary : on_accent);
     }
-    if (modal_question) {
-        lv_obj_set_style_bg_color(modal_question, p->surface, 0);
-        lv_obj_set_style_border_color(modal_question, p->accent_primary, 0);
-    }
-    if (lbl_q_title) {
-        lv_obj_set_style_text_color(lbl_q_title, p->accent_primary, 0);
-    }
+    paint_button(modal_question, p->surface, p->accent_primary);
+    paint_text(lbl_q_title, p->accent_primary);
+    paint_text(lbl_q_desc, p->text_primary);
     for (int i = 0; i < AGY_Q_BTNS; i++) {
-        if (q_btns[i]) {
-            lv_obj_set_style_bg_color(q_btns[i], p->surface_active, 0);
-            lv_obj_set_style_border_color(q_btns[i], p->surface_border, 0);
-        }
-        if (q_lbls[i]) {
-            lv_obj_set_style_text_color(q_lbls[i], p->text_primary, 0);
-        }
+        paint_button(q_btns[i], p->surface_active, p->surface_border);
+        paint_text(q_lbls[i], p->text_primary);
     }
-    if (modal_artifact) {
-        lv_obj_set_style_bg_color(modal_artifact, p->surface, 0);
-        lv_obj_set_style_border_color(modal_artifact, p->accent_primary, 0);
+    if (ta_q) {
+        paint_button(ta_q, p->code_bg, p->accent_primary);
+        paint_text(ta_q, p->text_primary);
     }
-    if (lbl_art_title) {
-        lv_obj_set_style_text_color(lbl_art_title, p->accent_primary, 0);
-    }
+    paint_button(modal_artifact, p->surface, p->accent_primary);
+    paint_text(lbl_art_title, p->accent_primary);
     if (art_scroll) lv_obj_set_style_bg_color(art_scroll, p->code_bg, 0);
-    /* ponytail: re-render an open artifact so its colors follow the theme */
-    if (modal_artifact && !lv_obj_has_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN) &&
-        s_open_artifact >= 0 && art_scroll) {
+    /* re-render an open artifact so its colors follow the theme */
+    if (modal_artifact && !lv_obj_has_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN) && s_open_artifact >= 0 &&
+        art_scroll) {
         const agy_artifact_t *a = agy_client_artifact(s_open_artifact);
         if (a) {
             lv_obj_clean(art_scroll);
             devos_md_render(art_scroll, a->text);
         }
     }
-    if (btn_art_save) {
-        lv_obj_set_style_bg_color(btn_art_save, p->surface_active, 0);
-        lv_obj_set_style_border_color(btn_art_save, p->surface_border, 0);
+    paint_button(btn_art_save, p->surface_active, p->surface_border);
+    paint_text(lbl_art_save, p->text_primary);
+    paint_text(lbl_art_close, p->text_primary);
+    paint_button(modal_srv, p->surface, p->accent_primary);
+    paint_text(lbl_srv_title, p->accent_primary);
+    paint_text(lbl_srv_hint, p->text_secondary);
+    lv_obj_t *fields[3] = {ta_srv_host, ta_srv_port, ta_srv_token};
+    for (int i = 0; i < 3; i++) {
+        if (!fields[i]) continue;
+        lv_obj_set_style_bg_color(fields[i], p->code_bg, 0);
+        paint_text(fields[i], p->text_primary);
     }
-    if (lbl_art_save) {
-        lv_obj_set_style_text_color(lbl_art_save, p->text_primary, 0);
-    }
-    if (lbl_art_close) {
-        lv_obj_set_style_text_color(lbl_art_close, p->text_primary, 0);
-    }
-    if (modal_srv) {
-        lv_obj_set_style_bg_color(modal_srv, p->surface, 0);
-        lv_obj_set_style_border_color(modal_srv, p->accent_primary, 0);
-    }
-    if (lbl_srv_title) {
-        lv_obj_set_style_text_color(lbl_srv_title, p->accent_primary, 0);
-    }
-    if (ta_srv_host) {
-        lv_obj_set_style_bg_color(ta_srv_host, p->code_bg, 0);
-        lv_obj_set_style_text_color(ta_srv_host, p->text_primary, 0);
-    }
-    if (ta_srv_port) {
-        lv_obj_set_style_bg_color(ta_srv_port, p->code_bg, 0);
-        lv_obj_set_style_text_color(ta_srv_port, p->text_primary, 0);
-    }
-    if (ta_srv_token) {
-        lv_obj_set_style_bg_color(ta_srv_token, p->code_bg, 0);
-        lv_obj_set_style_text_color(ta_srv_token, p->text_primary, 0);
-    }
-    if (lbl_srv_save) lv_obj_set_style_text_color(lbl_srv_save, on_accent, 0);
-    if (lbl_srv_cancel) {
-        lv_obj_set_style_text_color(lbl_srv_cancel, p->text_primary, 0);
-    }
+    paint_text(lbl_srv_save, on_accent);
+    paint_text(lbl_srv_cancel, p->text_primary);
     srv_focus_paint();
 
-    refresh_all();
+    s_seen_diff_rev = UINT32_MAX;
+    refresh_all(true);
 }
 
-/* ---------------------------------------------------------------- refresh */
-static lv_obj_t *chat_card(const devos_palette_t *p, lv_color_t border)
+/* ------------------------------------------------------------------- chat */
+static lv_obj_t *chat_card(void)
 {
     lv_obj_t *card = lv_obj_create(chat_scroll);
     lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(card, p->surface, 0);
-    lv_obj_set_style_border_color(card, border, 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_radius(card, 6, 0);
     lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     return card;
 }
 
-static void chat_text(lv_obj_t *card, const char *text, lv_color_t color,
-                      const lv_font_t *font)
+static void chat_text(lv_obj_t *card, const char *text, lv_color_t color, const lv_font_t *font)
 {
     lv_obj_t *lbl = lv_label_create(card);
     lv_label_set_text(lbl, text ? text : "");
@@ -317,85 +271,269 @@ static void toggle_thinking_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     thinking_expanded = !thinking_expanded;
-    refresh_all();
+    refresh_all(true);
 }
 
-static void render_diff_view(const char *raw_diff, const devos_palette_t *p)
+static void fill_card(lv_obj_t *card, const agy_block_t *b, const devos_palette_t *p)
 {
-    if (!diff_scroll) return;
-    lv_obj_clean(diff_scroll);
-    if (!raw_diff || !*raw_diff || strcmp(raw_diff, "(no changes)") == 0 ||
-        strcmp(raw_diff, "(diff unavailable)") == 0) {
-        lv_obj_t *lbl = lv_label_create(diff_scroll);
-        lv_label_set_text(lbl, (raw_diff && *raw_diff) ? raw_diff : "(no changes)");
-        lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_clean(card);
+    char head[96];
+    switch (b->kind) {
+    case AGY_KIND_TOOL: {
+        lv_color_t c = b->state == AGY_TOOL_ERROR ? p->accent_danger
+                     : b->state == AGY_TOOL_RUNNING ? p->accent_primary : p->accent_secondary;
+        lv_obj_set_style_bg_color(card, p->tool_card_bg, 0);
+        lv_obj_set_style_border_color(card, b->state == AGY_TOOL_DONE ? p->tool_card_border : c, 0);
+        snprintf(head, sizeof(head), "%s  %s%s",
+                 b->state == AGY_TOOL_ERROR ? LV_SYMBOL_CLOSE : b->state == AGY_TOOL_RUNNING ? LV_SYMBOL_REFRESH
+                                                                                            : LV_SYMBOL_OK,
+                 b->name, b->state == AGY_TOOL_RUNNING ? "  (running)" : "");
+        chat_text(card, head, c, &lv_font_montserrat_14);
+        if (b->text[0]) chat_text(card, b->text, p->text_secondary, &lv_font_nimbus_mono_14);
+        break;
+    }
+    case AGY_KIND_THINK:
+        lv_obj_set_style_bg_color(card, p->thinking_bg, 0);
+        lv_obj_set_style_border_color(card, p->thinking_border, 0);
+        chat_text(card, thinking_expanded ? LV_SYMBOL_DOWN " Thinking" : LV_SYMBOL_RIGHT " Thinking (tap to expand)",
+                  p->accent_primary, &lv_font_montserrat_14);
+        if (thinking_expanded) chat_text(card, b->text, p->text_secondary, &lv_font_montserrat_12);
+        break;
+    case AGY_KIND_ERROR:
+        lv_obj_set_style_bg_color(card, p->surface, 0);
+        lv_obj_set_style_border_color(card, p->accent_danger, 0);
+        chat_text(card, LV_SYMBOL_WARNING " Problem", p->accent_danger, &lv_font_montserrat_14);
+        chat_text(card, b->text, p->text_primary, &lv_font_montserrat_14);
+        break;
+    default:
+        if (b->role == AGY_ROLE_USER) {
+            lv_obj_set_style_bg_color(card, p->surface_active, 0);
+            lv_obj_set_style_border_color(card, p->accent_primary, 0);
+            chat_text(card, b->text, p->text_primary, &lv_font_montserrat_14);
+            break;
+        }
+        lv_obj_set_style_bg_color(card, p->surface, 0);
+        lv_obj_set_style_border_color(card, p->surface_border, 0);
+        /* agent output renders through the shared markdown engine, which
+         * places blocks absolutely: measured inner box with explicit height */
+        lv_obj_update_layout(card);
+        lv_obj_t *inner = lv_obj_create(card);
+        lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(inner, 0, 0);
+        lv_obj_set_style_pad_all(inner, 0, 0);
+        lv_obj_remove_flag(inner, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_update_layout(inner);
+        int endy = devos_md_render(inner, b->text);
+        if (endy <= 0) {
+            lv_obj_delete(inner);
+            chat_text(card, b->text, p->text_primary, &lv_font_montserrat_14);
+        } else {
+            lv_obj_set_height(inner, endy);
+        }
+        break;
+    }
+}
+
+static lv_obj_t *new_card(const agy_block_t *b, const devos_palette_t *p)
+{
+    lv_obj_t *card = chat_card();
+    if (b->kind == AGY_KIND_THINK) {
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, toggle_thinking_cb, LV_EVENT_CLICKED, NULL);
+    }
+    fill_card(card, b, p);
+    return card;
+}
+
+static void chat_hint(char *out, size_t cap)
+{
+    char host[AGY_HOST_MAX];
+    int port = 0;
+    agy_client_get_config(host, sizeof(host), &port, NULL, 0);
+    switch (agy_client_status()) {
+    case AGY_UP: {
+        const char *ws = agy_client_workspace();
+        snprintf(out, cap,
+                 "Connected to the Antigravity bridge%s%s.\n\nType a prompt below and press Enter. "
+                 "Tap a /command on the left to start with it. Tool calls that change things wait for "
+                 "your Allow / Deny here.",
+                 ws[0] ? " in " : "", ws);
+        break;
+    }
+    case AGY_CONNECTING:
+        snprintf(out, cap, "%s", agy_client_status_text());
+        break;
+    default:
+        snprintf(out, cap,
+                 "No bridge link (%s).\n\nOn your computer, in your project folder, run:\n"
+                 "  python3 tools/agy_bridge/bridge_server.py\n"
+                 "then tap the session card (top left) and enter the computer's address "
+                 "(Tailscale name or IP), port 8420 and the token the bridge prints. Now: %s:%d",
+                 agy_client_status_text(), host, port);
+        break;
+    }
+}
+
+static void refresh_chat(bool force)
+{
+    if (!chat_scroll) return;
+    const devos_palette_t *p = devos_theme_get();
+    int nb = agy_client_block_count();
+    bool near_bottom = lv_obj_get_scroll_bottom(chat_scroll) < 48;
+    bool rebuild = force || s_rendered < 0 || nb < s_rendered || (nb == 0) != (s_rendered == 0);
+    for (int i = 0; !rebuild && i < s_rendered && i < nb; i++) {
+        if (agy_client_block(i)->kind != s_card_kind[i]) rebuild = true;
+    }
+    if (nb == 0) {
+        char hint[sizeof(s_hint)];
+        chat_hint(hint, sizeof(hint));
+        if (!rebuild && strcmp(hint, s_hint) == 0) return;
+        lv_obj_clean(chat_scroll);
+        snprintf(s_hint, sizeof(s_hint), "%s", hint);
+        lv_obj_t *card = chat_card();
+        lv_obj_set_style_bg_color(card, p->surface, 0);
+        lv_obj_set_style_border_color(card, p->surface_border, 0);
+        chat_text(card, s_hint, p->text_secondary, &lv_font_montserrat_14);
+        s_rendered = 0;
         return;
     }
-
-    const char *line = raw_diff;
-    while (*line) {
-        const char *next = strchr(line, '\n');
-        size_t len = next ? (size_t)(next - line) : strlen(line);
-        if (len > 0) {
-            char line_buf[256];
-            size_t take = len < sizeof(line_buf) - 1 ? len : sizeof(line_buf) - 1;
-            memcpy(line_buf, line, take);
-            line_buf[take] = '\0';
-
-            lv_obj_t *lbl = lv_label_create(diff_scroll);
-            lv_label_set_text(lbl, line_buf);
-            lv_obj_set_width(lbl, lv_pct(100));
-            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_font(lbl, &lv_font_nimbus_mono_14, 0);
-
-            if (line_buf[0] == '+' && line_buf[1] != '+') {
-                lv_obj_set_style_text_color(lbl, p->accent_secondary, 0);
-            } else if (line_buf[0] == '-' && line_buf[1] != '-') {
-                lv_obj_set_style_text_color(lbl, p->accent_danger, 0);
-            } else if (line_buf[0] == '@' && line_buf[1] == '@') {
-                lv_obj_set_style_text_color(lbl, p->accent_primary, 0);
-            } else if (strncmp(line_buf, "diff ", 5) == 0 ||
-                       strncmp(line_buf, "index ", 6) == 0 ||
-                       strncmp(line_buf, "---", 3) == 0 ||
-                       strncmp(line_buf, "+++", 3) == 0) {
-                lv_obj_set_style_text_color(lbl, p->text_secondary, 0);
-            } else {
-                lv_obj_set_style_text_color(lbl, p->text_primary, 0);
-            }
+    bool grew = nb > s_rendered;
+    if (rebuild) {
+        lv_obj_clean(chat_scroll);
+        s_rendered = 0;
+        near_bottom = true;
+    }
+    for (int i = 0; i < s_rendered; i++) {
+        const agy_block_t *b = agy_client_block(i);
+        if (b->rev != s_card_rev[i]) {
+            fill_card(s_cards[i], b, p);
+            s_card_rev[i] = b->rev;
         }
-        line = next ? next + 1 : line + len;
+    }
+    for (int i = s_rendered; i < nb; i++) {
+        const agy_block_t *b = agy_client_block(i);
+        s_cards[i] = new_card(b, p);
+        s_card_rev[i] = b->rev;
+        s_card_kind[i] = b->kind;
+    }
+    s_rendered = nb;
+    if (near_bottom || (grew && agy_client_block(nb - 1)->role == AGY_ROLE_USER)) {
+        lv_obj_update_layout(chat_scroll);
+        lv_obj_scroll_to_y(chat_scroll, LV_COORD_MAX, LV_ANIM_OFF);
     }
 }
 
-static void refresh_all(void)
+/* ------------------------------------------------------------------- diff */
+static const char *diff_display_text(void)
 {
-    if (!screen) return;
+    const char *dt = agy_client_diff_text();
+    if (!dt[0]) return "No edits yet.\n\nFile changes appear\nhere as a diff.";
+    int nf = agy_client_diff_file_count();
+    int add = 0, del = 0;
+    for (const char *l = dt; l && *l;) {
+        if (l[0] == '+' && strncmp(l, "+++", 3) != 0) add++;
+        else if (l[0] == '-' && strncmp(l, "---", 3) != 0) del++;
+        l = strchr(l, '\n');
+        if (l) l++;
+    }
+    snprintf(s_diff_display, sizeof(s_diff_display), "%d file%s changed, +%d -%d\n\n%s", nf, nf == 1 ? "" : "s", add,
+             del, dt);
+    return s_diff_display;
+}
+
+static void refresh_diff(void)
+{
+    uint32_t rev = agy_client_diff_rev();
+    if (rev == s_seen_diff_rev) return;
+    s_seen_diff_rev = rev;
+    const char *t = diff_display_text();
+    devos_codeview_set(&s_cv_pane, t);
+    if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) devos_codeview_set(&s_cv_full, t);
+}
+
+static void diff_full_open(void)
+{
+    if (!modal_diff) return;
+    int nf = agy_client_diff_file_count();
+    char t[96];
+    snprintf(t, sizeof(t), "Diff  -  %d file%s  (Esc closes, arrows scroll)", nf, nf == 1 ? "" : "s");
+    lv_label_set_text(lbl_diff_title, t);
+    lv_obj_remove_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal_diff);
+    lv_obj_update_layout(modal_diff);
+    devos_codeview_set(&s_cv_full, diff_display_text());
+}
+
+static void diff_full_close(void)
+{
+    if (modal_diff) lv_obj_add_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void diff_pane_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    diff_full_open();
+}
+
+static void diff_close_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    diff_full_close();
+}
+
+/* ------------------------------------------------------------ meta/modals */
+static void set_text_if(lv_obj_t *l, const char *t)
+{
+    if (l && strcmp(lv_label_get_text(l), t) != 0) lv_label_set_text(l, t);
+}
+
+static void update_send_label(void)
+{
+    if (!lbl_send || !ta) return;
+    const char *t = lv_textarea_get_text(ta);
+    bool stop = agy_client_busy() && (!t || !*t);
+    set_text_if(lbl_send, stop ? LV_SYMBOL_STOP " Stop" : "Send " LV_SYMBOL_RIGHT);
+}
+
+static void fmt_tokens(char *out, size_t cap, int n)
+{
+    if (n >= 1000000) snprintf(out, cap, "%d.%dM", n / 1000000, (n / 100000) % 10);
+    else if (n >= 1000) snprintf(out, cap, "%d.%dk", n / 1000, (n / 100) % 10);
+    else snprintf(out, cap, "%d", n);
+}
+
+static void refresh_meta(void)
+{
     const devos_palette_t *p = devos_theme_get();
-    char buf[600];
+    char buf[300];
 
-    /* Left: conversation card */
+    /* Left: session card */
     const char *conv = agy_client_conversation_id();
-    const char *model = agy_client_model();
-    if (lbl_conv) {
-        snprintf(buf, sizeof(buf), "%.16s",
-                 conv[0] ? conv : "(no session)");
-        lv_label_set_text(lbl_conv, buf);
-    }
-    if (lbl_mod) {
-        lv_label_set_text(lbl_mod, model[0] ? model : "agy-bridge");
-    }
+    if (conv[0]) snprintf(buf, sizeof(buf), "conv %.8s", conv);
+    else snprintf(buf, sizeof(buf), "(new conversation)");
+    set_text_if(lbl_conv, buf);
+    set_text_if(lbl_mod, agy_client_model()[0] ? agy_client_model() : "default model");
+    const char *ws = agy_client_workspace();
+    const char *base = strrchr(ws, '/');
+    base = base && base[1] ? base + 1 : ws;
+    int in = 0, out = 0, total = 0;
+    agy_client_usage(&in, &out, &total);
+    char tok[16] = "";
+    if (total > 0) fmt_tokens(tok, sizeof(tok), total);
+    snprintf(buf, sizeof(buf), "%s%s%s%s", base[0] ? LV_SYMBOL_DIRECTORY " " : "", base,
+             tok[0] ? (base[0] ? "  -  " : "") : "", tok[0] ? tok : "");
+    if (tok[0]) strncat(buf, " tokens", sizeof(buf) - strlen(buf) - 1);
+    set_text_if(lbl_ws, buf);
     if (lbl_link) {
-        const char *st = agy_client_status_text();
-        lv_label_set_text(lbl_link, agy_client_busy() ? "busy" : st);
-        lv_obj_set_style_text_color(lbl_link,
-            agy_client_status() == AGY_UP ? p->accent_secondary
-                                          : p->text_secondary,
-            0);
+        set_text_if(lbl_link, agy_client_busy() ? LV_SYMBOL_BULLET " working..." : agy_client_status_text());
+        lv_obj_set_style_text_color(lbl_link, agy_client_status() == AGY_UP ? p->accent_secondary : p->text_secondary,
+                                    0);
     }
 
-    /* Left: subagents (live states) */
+    /* Left: subagents, then slash commands right below them */
     int na = agy_client_agent_count();
+    int y = 212;
     for (int i = 0; i < AGY_SUB_BTNS; i++) {
         if (!sub_btns[i]) continue;
         if (i >= na) {
@@ -403,116 +541,27 @@ static void refresh_all(void)
             continue;
         }
         lv_obj_remove_flag(sub_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(sub_btns[i], 4, 208 + i * 40);
+        lv_obj_set_pos(sub_btns[i], 4, y);
+        y += 38;
         const agy_agent_t *a = agy_client_agent(i);
-        snprintf(buf, sizeof(buf), "%s %s (%s)",
-                 strcmp(a->state, "running") == 0 ? LV_SYMBOL_BULLET : "-",
-                 a->name, a->state);
-        lv_label_set_text(sub_lbls[i], buf);
-        lv_obj_set_style_text_color(sub_lbls[i],
-            strcmp(a->state, "running") == 0 ? p->accent_secondary
-                                             : p->text_secondary,
-            0);
+        bool run = strcmp(a->state, "running") == 0;
+        snprintf(buf, sizeof(buf), "%s %s  (%s)", run ? LV_SYMBOL_BULLET : "-", a->name, a->state);
+        set_text_if(sub_lbls[i], buf);
+        lv_obj_set_style_text_color(sub_lbls[i], run ? p->accent_secondary : p->text_secondary, 0);
+    }
+    if (na == 0) y += 4;
+    if (lbl_slash) lv_obj_set_pos(lbl_slash, 4, y + 10);
+    for (int i = 0; i < 4; i++) {
+        if (cmd_btns[i]) lv_obj_set_pos(cmd_btns[i], 4, y + 34 + i * 36);
     }
 
     /* Center: status strip */
-    if (lbl_strip) {
-        snprintf(buf, sizeof(buf),
-                 "Bridge: %s%s  |  Sym+F Focus  |  Sym+L Left  |  Sym+R Right",
-                 agy_client_status_text(),
-                 agy_client_busy() ? " (working)" : "");
-        lv_label_set_text(lbl_strip, buf);
-    }
+    snprintf(buf, sizeof(buf), "%s%s  |  Esc stop  |  Sym+D diff  |  Sym+L / Sym+R panes",
+             agy_client_status_text(), agy_client_busy() ? "  (working)" : "");
+    set_text_if(lbl_strip, buf);
+    update_send_label();
 
-    /* Center: chat blocks in chronological order */
-    if (chat_scroll) {
-        lv_obj_clean(chat_scroll);
-        int nb = agy_client_block_count();
-        for (int i = 0; i < nb;) {
-            const agy_block_t *b = agy_client_block(i);
-            if (!b) { i++; continue; }
-            if (b->kind == AGY_KIND_THINK) {
-                lv_obj_t *box = chat_card(p, p->thinking_border);
-                lv_obj_set_style_bg_color(box, p->thinking_bg, 0);
-                lv_obj_add_event_cb(box, toggle_thinking_cb, LV_EVENT_CLICKED,
-                                    NULL);
-                lv_obj_t *arrow = lv_label_create(box);
-                lv_label_set_text(arrow, thinking_expanded
-                                  ? LV_SYMBOL_DOWN " Thinking"
-                                  : LV_SYMBOL_RIGHT " Thinking (collapsed)");
-                lv_obj_set_style_text_color(arrow, p->accent_primary, 0);
-                lv_obj_set_style_text_font(arrow, &lv_font_montserrat_14, 0);
-                if (thinking_expanded) {
-                    lv_obj_t *body = lv_obj_create(box);
-                    lv_obj_set_size(body, lv_pct(100), LV_SIZE_CONTENT);
-                    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_border_width(body, 0, 0);
-                    lv_obj_set_style_pad_all(body, 0, 0);
-                    while (i < nb && agy_client_block(i) &&
-                           agy_client_block(i)->kind == AGY_KIND_THINK) {
-                        chat_text(body, agy_client_block(i)->text,
-                                  p->text_secondary,
-                                  &lv_font_montserrat_12);
-                        i++;
-                    }
-                } else {
-                    while (i < nb && agy_client_block(i) &&
-                           agy_client_block(i)->kind == AGY_KIND_THINK) {
-                        i++;
-                    }
-                }
-                continue;
-            }
-            if (b->kind == AGY_KIND_TOOL) {
-                lv_obj_t *card = chat_card(p, p->tool_card_border);
-                lv_obj_set_style_bg_color(card, p->tool_card_bg, 0);
-                chat_text(card, b->text, p->accent_secondary,
-                          &lv_font_montserrat_12);
-            } else {
-                bool user = b->role == AGY_ROLE_USER;
-                lv_obj_t *card = chat_card(p, user ? p->accent_primary
-                                                  : p->surface_border);
-                if (user) {
-                    lv_obj_set_style_bg_color(card, p->surface_active, 0);
-                    chat_text(card, b->text, p->text_primary,
-                              &lv_font_montserrat_14);
-                } else {
-                    /* ponytail: agent output renders through the shared
-                     * markdown engine; measured inner container + explicit height */
-                    lv_obj_update_layout(card);
-                    lv_obj_t *inner = lv_obj_create(card);
-                    lv_obj_set_size(inner, lv_pct(100), LV_SIZE_CONTENT);
-                    lv_obj_set_style_bg_opa(inner, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_border_width(inner, 0, 0);
-                    lv_obj_set_style_pad_all(inner, 0, 0);
-                    lv_obj_update_layout(inner);
-                    int endy = devos_md_render(inner, b->text);
-                    if (endy <= 0) {
-                        lv_obj_delete(inner);
-                        chat_text(card, b->text, p->text_primary,
-                                  &lv_font_montserrat_14);
-                    } else {
-                        lv_obj_set_height(inner, endy);
-                        lv_obj_set_height(card, endy + 20);
-                    }
-                }
-            }
-            i++;
-        }
-        if (nb == 0) {
-            lv_obj_t *card = chat_card(p, p->surface_border);
-            const char *hint =
-                agy_client_status() == AGY_UP
-                ? "Bridge live. Type below or tap a /command."
-                : "No bridge link. Tap ANTGRAVITY (AGY) card or fix the "
-                  "server row, or start tools/agy_bridge/bridge_server.py "
-                  "--demo on your workstation.";
-            chat_text(card, hint, p->text_secondary, &lv_font_montserrat_14);
-        }
-        lv_obj_scroll_to_y(chat_scroll, LV_COORD_MAX, LV_ANIM_OFF);
-    }
-
-    /* Right: artifacts */
+    /* Right: artifacts, then the diff pane below them */
     int nart = agy_client_artifact_count();
     for (int i = 0; i < AGY_ART_BTNS; i++) {
         if (!art_btns[i]) continue;
@@ -521,48 +570,97 @@ static void refresh_all(void)
             continue;
         }
         lv_obj_remove_flag(art_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(art_btns[i], 4, 56 + i * 40);
         const agy_artifact_t *a = agy_client_artifact(i);
         snprintf(buf, sizeof(buf), "%s %s", LV_SYMBOL_FILE, a->name);
-        lv_label_set_text(art_lbls[i], buf);
+        set_text_if(art_lbls[i], buf);
     }
-    render_diff_view(agy_client_diff_text(), p);
+    if (lbl_art_none) {
+        if (nart) lv_obj_add_flag(lbl_art_none, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(lbl_art_none, LV_OBJ_FLAG_HIDDEN);
+    }
+    int dy = nart ? 52 + nart * 40 + 6 : 80;
+    if (lbl_diff_h) lv_obj_set_pos(lbl_diff_h, 4, dy + 4);
+    if (btn_save_diff) lv_obj_set_pos(btn_save_diff, DEVOS_PANE_RIGHT_WIDTH - 84 - 24, dy);
+    if (diff_scroll) {
+        int avail = lv_obj_get_content_height(lv_obj_get_parent(diff_scroll));
+        if (avail <= 0) avail = DEVOS_CONTENT_HEIGHT - 20;
+        int h = avail - (dy + 32) - 4;
+        if (lv_obj_get_y(diff_scroll) != dy + 32 || lv_obj_get_height(diff_scroll) != h) {
+            lv_obj_set_pos(diff_scroll, 4, dy + 32);
+            lv_obj_set_height(diff_scroll, h);
+        }
+    }
+}
 
-    /* Permission modal */
+static void refresh_modals(void)
+{
+    char buf[700];
     agy_permission_t perm;
     if (agy_client_permission_pending(&perm)) {
-        if (modal_permission) {
-            snprintf(buf, sizeof(buf), "Approve tool?\n%s", perm.text);
-            lv_label_set_text(lbl_m_desc, buf);
-            lv_obj_remove_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(modal_permission);
+        if (strcmp(perm.id, s_shown_perm) != 0) {
+            snprintf(s_shown_perm, sizeof(s_shown_perm), "%s", perm.id);
+            s_ask_since = lv_tick_get();
+            /* first line is the tool name, the rest describes the call */
+            const char *nl = strchr(perm.text, '\n');
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING " Allow %.*s?", nl ? (int)(nl - perm.text) : 60, perm.text);
+            lv_label_set_text(lbl_m_title, buf);
+            lv_label_set_text(lbl_m_desc, nl ? nl + 1 : "");
+            const char *pv = agy_client_permission_preview();
+            if (pv[0]) {
+                lv_obj_set_height(lbl_m_desc, 40);
+                lv_obj_remove_flag(perm_prev, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_update_layout(modal_permission);
+                devos_codeview_set(&s_cv_perm, pv);
+            } else {
+                lv_obj_set_height(lbl_m_desc, 300);
+                lv_obj_add_flag(perm_prev, LV_OBJ_FLAG_HIDDEN);
+                devos_codeview_set(&s_cv_perm, "");
+            }
         }
-    } else if (modal_permission) {
+        lv_obj_remove_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(modal_permission);
+    } else {
+        s_shown_perm[0] = '\0';
         lv_obj_add_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Question modal */
     agy_question_t q;
     if (agy_client_question_pending(&q)) {
-        if (modal_question) {
+        if (strcmp(q.id, s_shown_q) != 0) {
+            snprintf(s_shown_q, sizeof(s_shown_q), "%s", q.id);
+            s_ask_since = lv_tick_get();
+            s_q_choices = q.choice_count;
             lv_label_set_text(lbl_q_desc, q.prompt);
             for (int i = 0; i < AGY_Q_BTNS; i++) {
-                if (!q_btns[i]) continue;
                 if (i >= q.choice_count) {
                     lv_obj_add_flag(q_btns[i], LV_OBJ_FLAG_HIDDEN);
                     continue;
                 }
                 lv_obj_remove_flag(q_btns[i], LV_OBJ_FLAG_HIDDEN);
-                snprintf(buf, sizeof(buf), "[%d] %s", i + 1,
-                         q.choices[i]);
+                snprintf(buf, sizeof(buf), "[%d] %s", i + 1, q.choices[i]);
                 lv_label_set_text(q_lbls[i], buf);
             }
-            lv_obj_remove_flag(modal_question, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(modal_question);
+            lv_textarea_set_text(ta_q, "");
+            lv_textarea_set_placeholder_text(ta_q, q.choice_count ? "...or type your own answer, Enter sends"
+                                                                  : "Type your answer, Enter sends");
         }
-    } else if (modal_question) {
+        lv_obj_remove_flag(modal_question, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(modal_question);
+    } else {
+        s_shown_q[0] = '\0';
         lv_obj_add_flag(modal_question, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void refresh_all(bool force)
+{
+    if (!screen) return;
+    refresh_meta();
+    refresh_chat(force);
+    refresh_diff();
+    refresh_modals();
+    s_dirty = false;
+    s_last_refresh = lv_tick_get();
 }
 
 /* ---------------------------------------------------------------- events */
@@ -570,8 +668,11 @@ static void send_current(void)
 {
     if (!ta) return;
     const char *t = lv_textarea_get_text(ta);
-    if (!t || !*t) return;
-    /* ponytail: leading /word becomes the slash command */
+    if (!t || !*t) {
+        if (agy_client_busy()) agy_client_abort();
+        return;
+    }
+    /* leading /word becomes the slash command */
     char cmd[32] = "";
     const char *body = t;
     if (t[0] == '/') {
@@ -582,15 +683,12 @@ static void send_current(void)
             cmd[k] = '\0';
             body = t + k;
             while (*body == ' ' || *body == '\t') body++;
-            /* bare "/goal" sends literally (keep command intact) */
-            if (!*body) {
-                body = t;
-            }
+            if (!*body) body = t;   /* bare "/goal" is sent as-is */
+            if (body == t) cmd[0] = '\0';
         }
     }
-    agy_client_send(body, cmd[0] ? cmd : NULL);
-    lv_textarea_set_text(ta, "");
-    refresh_all();
+    if (agy_client_send(body, cmd[0] ? cmd : NULL) == 0) lv_textarea_set_text(ta, "");
+    refresh_all(false);
 }
 
 static void send_btn_cb(lv_event_t *e)
@@ -609,7 +707,7 @@ static void note_btn_cb(lv_event_t *e)
         return;
     }
     if (ta) {
-        char prefix[AGY_BLOCK_MAX];
+        static EXT_RAM_BSS_ATTR char prefix[AGY_PROMPT_MAX];
         snprintf(prefix, sizeof(prefix), "[Note: %s]\n%s\n\n", fn, txt);
         lv_textarea_set_text(ta, prefix);
         lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);
@@ -620,10 +718,7 @@ static void save_diff_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     const char *dt = agy_client_diff_text();
-    if (!dt || !*dt || strcmp(dt, "(diff unavailable)") == 0 ||
-        strcmp(dt, "(no changes)") == 0) {
-        return;
-    }
+    if (!dt || !*dt) return;
     const char *conv = agy_client_conversation_id();
     char title[64];
     snprintf(title, sizeof(title), "agy-%.16s", (conv && conv[0]) ? conv : "session");
@@ -637,6 +732,7 @@ static void cmd_btn_cb(lv_event_t *e)
     if (ta && idx >= 0 && idx < 4) {
         lv_textarea_set_text(ta, cmds[idx]);
         lv_textarea_add_char(ta, ' ');
+        update_send_label();
     }
 }
 
@@ -644,31 +740,31 @@ static void new_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     agy_client_new();
-    refresh_all();
+    refresh_all(true);
 }
 
 static void sub_btn_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     const agy_agent_t *a = agy_client_agent(idx);
-    /* ponytail: dead buttons confuse; a tap addresses the agent instead */
+    /* a tap addresses the agent in the prompt */
     if (a && ta) {
         lv_textarea_add_text(ta, "@");
         lv_textarea_add_text(ta, a->name);
         lv_textarea_add_char(ta, ' ');
+        update_send_label();
     }
 }
 
 static void sess_box_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    /* ponytail: the card doubles as the server/PSk editor entry point */
+    /* the card doubles as the server/PSK editor entry point */
     if (modal_srv && ta_srv_host && ta_srv_port && ta_srv_token) {
         char host[AGY_HOST_MAX];
         int port = 0;
         char token[AGY_TOKEN_MAX];
-        agy_client_get_config(host, sizeof(host), &port, token,
-                              sizeof(token));
+        agy_client_get_config(host, sizeof(host), &port, token, sizeof(token));
         lv_textarea_set_text(ta_srv_host, host);
         char pb[16];
         snprintf(pb, sizeof(pb), "%d", port);
@@ -681,19 +777,28 @@ static void sess_box_cb(lv_event_t *e)
     }
 }
 
+static void answer_permission(bool allow, bool always)
+{
+    agy_client_answer_permission(allow, always);
+    refresh_all(false);
+}
+
 static void perm_btn_cb(lv_event_t *e)
 {
     int ans = (int)(intptr_t)lv_event_get_user_data(e);
-    /* ponytail: 1 = once (Y), 2 = always (A), 0 = reject (N) */
-    agy_client_answer_permission(ans > 0, ans == 2);
-    refresh_all();
+    /* 1 = once (Y), 2 = always (A), 0 = deny (N) */
+    answer_permission(ans > 0, ans == 2);
+}
+
+static void answer_question(int choice)
+{
+    agy_client_answer_question(choice);
+    refresh_all(false);
 }
 
 static void question_btn_cb(lv_event_t *e)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    agy_client_answer_question(idx);
-    refresh_all();
+    answer_question((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 static void art_open(int idx)
@@ -702,7 +807,6 @@ static void art_open(int idx)
     if (!a || !modal_artifact || !art_scroll) return;
     s_open_artifact = idx;
     if (lbl_art_title) lv_label_set_text(lbl_art_title, a->name);
-    /* ponytail: artifacts render through the shared markdown engine */
     lv_obj_clean(art_scroll);
     devos_md_render(art_scroll, a->text);
     lv_obj_scroll_to_y(art_scroll, 0, LV_ANIM_OFF);
@@ -739,14 +843,12 @@ static void srv_save_cb(lv_event_t *e)
         const char *h = lv_textarea_get_text(ta_srv_host);
         int port = atoi(lv_textarea_get_text(ta_srv_port));
         const char *tok = lv_textarea_get_text(ta_srv_token);
-        if (h && *h && port > 0) {
-            ok = agy_client_set_server(h, port) == 0;
-        }
         if (tok) agy_client_set_token(tok);
+        if (h && *h && port > 0) ok = agy_client_set_server(h, port) == 0;
     }
-    /* ponytail: bad host/port keeps the modal open instead of vanishing */
+    /* bad host/port keeps the modal open instead of vanishing */
     if (ok && modal_srv) lv_obj_add_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
-    refresh_all();
+    refresh_all(false);
 }
 
 static void srv_cancel_cb(lv_event_t *e)
@@ -762,13 +864,16 @@ static void poll_cb(lv_timer_t *t)
     uint32_t g = agy_client_generation();
     if (g != s_seen_gen) {
         s_seen_gen = g;
+        s_dirty = true;
         devos_telemetry_t telem = *devos_telemetry_get();
         telem.agy_bridge_online = (agy_client_status() == AGY_UP);
         telem.agy_subagents_count = (uint8_t)agy_client_agent_count();
         devos_telemetry_update(&telem);
-        if (screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) {
-            refresh_all();
-        }
+    }
+    if (s_dirty && screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN) &&
+        (!agy_client_busy() || lv_tick_elaps(s_last_refresh) >= REFRESH_MS ||
+         agy_client_permission_pending(NULL) || agy_client_question_pending(NULL))) {
+        refresh_all(false);
     }
 }
 
@@ -778,172 +883,158 @@ static void srv_focus_paint(void)
     lv_obj_t *tas[3] = {ta_srv_host, ta_srv_port, ta_srv_token};
     for (int i = 0; i < 3; i++) {
         if (tas[i]) {
-            lv_obj_set_style_border_color(tas[i],
-                (tas[i] == srv_focus) ? p->accent_primary
-                                      : p->surface_border,
-                0);
+            lv_obj_set_style_border_color(tas[i], (tas[i] == srv_focus) ? p->accent_primary : p->surface_border, 0);
+            lv_obj_set_style_border_width(tas[i], (tas[i] == srv_focus) ? 2 : 1, 0);
         }
     }
 }
 
-/* ----------------------------------------------------------------- input */
+static bool shown(lv_obj_t *o)
+{
+    return o && !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
 static bool any_modal_open(void)
 {
-    return (modal_permission &&
-            !lv_obj_has_flag(modal_permission, LV_OBJ_FLAG_HIDDEN)) ||
-           (modal_question &&
-            !lv_obj_has_flag(modal_question, LV_OBJ_FLAG_HIDDEN)) ||
-           (modal_artifact &&
-            !lv_obj_has_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN)) ||
-           (modal_srv && !lv_obj_has_flag(modal_srv, LV_OBJ_FLAG_HIDDEN));
+    return shown(modal_permission) || shown(modal_question) || shown(modal_artifact) || shown(modal_srv) ||
+           shown(modal_diff);
 }
 
 void app_antigravity_toggle_focus(void)
 {
-    if (viewport) {
-        devos_agent_viewport_toggle_focus(viewport);
-    }
+    if (viewport) devos_agent_viewport_toggle_focus(viewport);
 }
 
 void app_antigravity_toggle_left(void)
 {
-    if (viewport) {
-        devos_agent_viewport_toggle_left(viewport);
-    }
+    if (viewport) devos_agent_viewport_toggle_left(viewport);
 }
 
 void app_antigravity_toggle_right(void)
 {
-    if (viewport) {
-        devos_agent_viewport_toggle_right(viewport);
-    }
+    if (viewport) devos_agent_viewport_toggle_right(viewport);
+}
+
+/* Shared line editing for the one-line text fields. */
+static bool edit_key(lv_obj_t *field, uint32_t key)
+{
+    if (!field) return false;
+    if (key == '\b' || key == 0x7F) lv_textarea_delete_char(field);
+    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(field);
+    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(field);
+    else if (key >= 32 && key <= 126) lv_textarea_add_char(field, (char)key);
+    else return false;
+    return true;
+}
+
+static bool scroll_key(lv_obj_t *sc, uint32_t key, int step)
+{
+    int page = lv_obj_get_height(sc) - 2 * step;
+    if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(sc, 0, -3 * step, LV_ANIM_OFF);
+    else if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(sc, 0, 3 * step, LV_ANIM_OFF);
+    else if (key == DEVOS_KEY_PGDN || key == ' ') lv_obj_scroll_by_bounded(sc, 0, -page, LV_ANIM_OFF);
+    else if (key == DEVOS_KEY_PGUP) lv_obj_scroll_by_bounded(sc, 0, page, LV_ANIM_OFF);
+    else if (key == LV_KEY_RIGHT) lv_obj_scroll_by_bounded(sc, -80, 0, LV_ANIM_OFF);
+    else if (key == LV_KEY_LEFT) lv_obj_scroll_by_bounded(sc, 80, 0, LV_ANIM_OFF);
+    else return false;
+    return true;
 }
 
 static bool antigravity_handle_key(uint32_t key, uint8_t modifiers)
 {
-    if (modifiers & DEVOS_MOD_FN) {
-        if (key == 'f' || key == 'F') {
-            app_antigravity_toggle_focus();
-            return true;
-        } else if (key == 'l' || key == 'L') {      /* Sym+L: left sidebar */
-            app_antigravity_toggle_left();
-            return true;
-        } else if (key == 'r' || key == 'R') {      /* Sym+R: right inspector */
-            app_antigravity_toggle_right();
-            return true;
-        } else if (key == 'n' || key == 'N') {
-            note_btn_cb(NULL);
-            return true;
-        }
+    if ((shown(modal_permission) || shown(modal_question)) && lv_tick_elaps(s_ask_since) < ASK_GUARD_MS) {
+        return true;
     }
 
-    /* Permission modal: Y once, A always, N/Esc reject */
-    if (modal_permission &&
-        !lv_obj_has_flag(modal_permission, LV_OBJ_FLAG_HIDDEN)) {
-        if (key == 'y' || key == 'Y') {
-            agy_client_answer_permission(true, false);
-            refresh_all();
-            return true;
-        }
-        if (key == 'a' || key == 'A') {
-            agy_client_answer_permission(true, true);
-            refresh_all();
-            return true;
-        }
-        if (key == 'n' || key == 'N' || key == LV_KEY_ESC) {
-            agy_client_answer_permission(false, false);
-            refresh_all();
-            return true;
+    /* Permission modal: Y once, A always, N/Esc deny */
+    if (shown(modal_permission)) {
+        if (key == 'y' || key == 'Y') answer_permission(true, false);
+        else if (key == 'a' || key == 'A') answer_permission(true, true);
+        else if (key == 'n' || key == 'N' || key == LV_KEY_ESC) answer_permission(false, false);
+        else if (shown(perm_prev)) scroll_key(perm_prev, key, DEVOS_CODEVIEW_LINE_H);
+        return true;
+    }
+
+    /* Question modal: 1-4 pick, typing answers freely, Esc skips */
+    if (shown(modal_question)) {
+        const char *typed = lv_textarea_get_text(ta_q);
+        bool empty = !typed || !*typed;
+        if (key == LV_KEY_ESC) {
+            answer_question(-1);
+        } else if (empty && key >= '1' && key < '1' + (uint32_t)s_q_choices) {
+            answer_question((int)(key - '1'));
+        } else if (key == '\r' || key == '\n') {
+            if (!empty) {
+                agy_client_answer_question_text(typed);
+                refresh_all(false);
+            } else if (s_q_choices == 1) {
+                answer_question(0);
+            }
+        } else {
+            edit_key(ta_q, key);
         }
         return true;
     }
 
-    /* Question modal: 1-4 pick, Esc picks the first */
-    if (modal_question &&
-        !lv_obj_has_flag(modal_question, LV_OBJ_FLAG_HIDDEN)) {
-        if (key >= '1' && key <= '4') {
-            agy_client_answer_question((int)(key - '1'));
-            refresh_all();
-            return true;
-        }
-        if (key == LV_KEY_ESC) {
-            agy_client_answer_question(0);
-            refresh_all();
-            return true;
-        }
+    /* Full-screen diff: Esc closes, arrows / PgUp / PgDn scroll */
+    if (shown(modal_diff)) {
+        if (key == LV_KEY_ESC || key == 'q' || key == 'Q') diff_full_close();
+        else scroll_key(s_cv_full.scroll, key, DEVOS_CODEVIEW_LINE_H);
         return true;
     }
 
-    /* Artifact viewer: Esc closes */
-    if (modal_artifact &&
-        !lv_obj_has_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN)) {
-        if (key == LV_KEY_ESC) {
-            lv_obj_add_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN);
-            return true;
-        }
+    /* Artifact viewer: Esc closes, arrows scroll */
+    if (shown(modal_artifact)) {
+        if (key == LV_KEY_ESC) art_close_cb(NULL);
+        else scroll_key(art_scroll, key, 18);
         return true;
     }
 
     /* Server modal: Tab cycles the three fields, Enter saves */
-    if (modal_srv && !lv_obj_has_flag(modal_srv, LV_OBJ_FLAG_HIDDEN)) {
+    if (shown(modal_srv)) {
         if (!srv_focus) srv_focus = ta_srv_host;
         if (key == LV_KEY_ESC) {
             lv_obj_add_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
-            return true;
-        }
-        if (key == '\r' || key == '\n') {
+        } else if (key == '\r' || key == '\n') {
             srv_save_cb(NULL);
-            return true;
-        }
-        if (key == '\t') {
+        } else if (key == '\t' || key == LV_KEY_DOWN || key == LV_KEY_UP) {
             if (srv_focus == ta_srv_host) srv_focus = ta_srv_port;
             else if (srv_focus == ta_srv_port) srv_focus = ta_srv_token;
             else srv_focus = ta_srv_host;
             srv_focus_paint();
-            return true;
+        } else {
+            edit_key(srv_focus, key);
         }
-        if (key == '\b' || key == 0x7F) {
-            if (srv_focus) lv_textarea_delete_char(srv_focus);
-            return true;
-        }
-        if (key == LV_KEY_LEFT) {
-            if (srv_focus) lv_textarea_cursor_left(srv_focus);
-            return true;
-        }
-        if (key == LV_KEY_RIGHT) {
-            if (srv_focus) lv_textarea_cursor_right(srv_focus);
-            return true;
-        }
-        if (key >= 32 && key <= 126) {
-            if (srv_focus) lv_textarea_add_char(srv_focus, (char)key);
-            return true;
-        }
+        return true;
+    }
+
+    if (modifiers & DEVOS_MOD_FN) {
+        if (key == 'f' || key == 'F') app_antigravity_toggle_focus();
+        else if (key == 'l' || key == 'L') app_antigravity_toggle_left();     /* Sym+L: left sidebar */
+        else if (key == 'r' || key == 'R') app_antigravity_toggle_right();    /* Sym+R: right inspector */
+        else if (key == 'n' || key == 'N') note_btn_cb(NULL);
+        else if (key == 'd' || key == 'D') diff_full_open();
+        else return false;
         return true;
     }
 
     /* Main prompt input */
     if (!ta || any_modal_open()) return false;
-    if (key == '\b' || key == 0x7F) {
-        lv_textarea_delete_char(ta);
-        return true;
-    }
-    if (key == LV_KEY_LEFT) {
-        lv_textarea_cursor_left(ta);
-        return true;
-    }
-    if (key == LV_KEY_RIGHT) {
-        lv_textarea_cursor_right(ta);
-        return true;
-    }
+    bool handled = true;
     if (key == '\r' || key == '\n') {
         send_current();
-        return true;
+    } else if (key == LV_KEY_ESC) {
+        const char *t = lv_textarea_get_text(ta);
+        if (agy_client_busy()) agy_client_abort();
+        else if (t && *t) lv_textarea_set_text(ta, "");
+        else handled = false;
+    } else if (key == LV_KEY_UP || key == LV_KEY_DOWN || key == DEVOS_KEY_PGUP || key == DEVOS_KEY_PGDN) {
+        handled = scroll_key(chat_scroll, key, 20);
+    } else {
+        handled = edit_key(ta, key);
     }
-    if (key >= 32 && key <= 126) {
-        lv_textarea_add_char(ta, (char)key);
-        return true;
-    }
-    return false;
+    update_send_label();
+    return handled;
 }
 
 /* ------------------------------------------------------------------ init */
@@ -957,16 +1048,30 @@ static lv_obj_t *mk_button(lv_obj_t *parent, int w, int h, int x, int y)
     lv_obj_set_style_border_color(b, p->surface_border, 0);
     lv_obj_set_style_border_width(b, 1, 0);
     lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_pad_hor(b, 10, 0);
+    lv_obj_set_style_pad_ver(b, 0, 0);
     return b;
 }
 
-static lv_obj_t *mk_label_btn(lv_obj_t *btn, const lv_font_t *font,
-                              lv_color_t color)
+static lv_obj_t *mk_label(lv_obj_t *parent, const char *text, const lv_font_t *font, lv_color_t color, int x, int y)
 {
-    lv_obj_t *l = lv_label_create(btn);
-    lv_obj_align(l, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, text);
+    lv_obj_set_pos(l, x, y);
     lv_obj_set_style_text_font(l, font, 0);
     lv_obj_set_style_text_color(l, color, 0);
+    return l;
+}
+
+static lv_obj_t *mk_label_btn(lv_obj_t *btn, const lv_font_t *font, lv_color_t color)
+{
+    lv_obj_t *l = lv_label_create(btn);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_set_style_text_color(l, color, 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_width(l, lv_pct(100));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
     return l;
 }
 
@@ -981,12 +1086,12 @@ static lv_obj_t *mk_modal(int w, int h, lv_color_t border)
     lv_obj_set_style_border_width(m, 2, 0);
     lv_obj_set_style_radius(m, 8, 0);
     lv_obj_set_style_pad_all(m, 16, 0);
+    lv_obj_remove_flag(m, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(m, LV_OBJ_FLAG_HIDDEN);
     return m;
 }
 
-static lv_obj_t *mk_field(lv_obj_t *parent, const char *ph, int w, int x,
-                          int y)
+static lv_obj_t *mk_field(lv_obj_t *parent, const char *ph, int w, int x, int y)
 {
     const devos_palette_t *p = devos_theme_get();
     lv_obj_t *t = lv_textarea_create(parent);
@@ -1003,118 +1108,82 @@ static lv_obj_t *mk_field(lv_obj_t *parent, const char *ph, int w, int x,
     return t;
 }
 
-static void antigravity_init(void)
+static lv_obj_t *mk_modal_button(lv_obj_t *parent, const char *text, int w, int x, int y, lv_color_t bg,
+                                 lv_color_t fg, lv_event_cb_t cb, intptr_t ud, lv_obj_t **lbl_out)
 {
-    const devos_palette_t *p = devos_theme_get();
-    agy_client_init();
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, w, 36);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_bg_color(b, bg, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void *)ud);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    lv_obj_set_style_text_color(l, fg, 0);
+    if (lbl_out) *lbl_out = l;
+    return b;
+}
 
-    /* Screen root container */
-    screen = lv_obj_create(lv_screen_active());
-    app_descriptor.screen = screen;
-    lv_obj_set_size(screen, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(screen, 0, DEVOS_TOP_BAR_HEIGHT);
-    lv_obj_set_style_bg_color(screen, p->bg, 0);
-    lv_obj_set_style_radius(screen, 0, 0);
-    lv_obj_set_style_border_width(screen, 0, 0);
-    lv_obj_set_style_pad_all(screen, 0, 0);
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
+static void build_left(lv_obj_t *left, const devos_palette_t *p)
+{
+    lbl_agy_title = mk_label(left, "ANTIGRAVITY (AGY)", &lv_font_montserrat_12, p->text_secondary, 4, 4);
 
-    /* Create shared responsive Tri-Pane Viewport */
-    viewport = devos_agent_viewport_create(screen);
-
-    lv_obj_t *left_panel = devos_agent_viewport_get_left(viewport);
-    lv_obj_t *center_panel = devos_agent_viewport_get_center(viewport);
-    lv_obj_t *right_panel = devos_agent_viewport_get_right(viewport);
-
-    /* 1. Left: session card (tap = server/PSK editor) */
-    lbl_agy_title = lv_label_create(left_panel);
-    lv_label_set_text(lbl_agy_title, "ANTIGRAVITY (AGY)");
-    lv_obj_set_pos(lbl_agy_title, 4, 4);
-    lv_obj_set_style_text_font(lbl_agy_title, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_agy_title, p->text_secondary, 0);
-
-    sess_box = lv_obj_create(left_panel);
-    lv_obj_set_size(sess_box, DEVOS_PANE_LEFT_WIDTH - 28, 96);
+    sess_box = lv_obj_create(left);
+    lv_obj_set_size(sess_box, DEVOS_PANE_LEFT_WIDTH - 28, 112);
     lv_obj_set_pos(sess_box, 4, 26);
     lv_obj_set_style_bg_color(sess_box, p->surface_active, 0);
     lv_obj_set_style_border_color(sess_box, p->accent_primary, 0);
     lv_obj_set_style_border_width(sess_box, 1, 0);
     lv_obj_set_style_radius(sess_box, 6, 0);
     lv_obj_set_style_pad_all(sess_box, 6, 0);
-    lv_obj_clear_flag(sess_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(sess_box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(sess_box, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(sess_box, sess_box_cb, LV_EVENT_CLICKED, NULL);
 
-    lbl_conv = lv_label_create(sess_box);
-    lv_label_set_text(lbl_conv, "(no session)");
-    lv_obj_set_pos(lbl_conv, 4, 2);
-    lv_obj_set_style_text_font(lbl_conv, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_conv, p->accent_primary, 0);
+    int w = DEVOS_PANE_LEFT_WIDTH - 50;
+    lbl_conv = mk_label(sess_box, "(new conversation)", &lv_font_montserrat_14, p->accent_primary, 4, 2);
+    lbl_mod = mk_label(sess_box, "", &lv_font_montserrat_12, p->text_primary, 4, 26);
+    lbl_ws = mk_label(sess_box, "", &lv_font_montserrat_12, p->text_secondary, 4, 46);
+    lbl_link = mk_label(sess_box, "Offline", &lv_font_montserrat_12, p->text_secondary, 4, 66);
+    lv_obj_t *ls[4] = {lbl_conv, lbl_mod, lbl_ws, lbl_link};
+    for (int i = 0; i < 4; i++) {
+        lv_obj_set_width(ls[i], w);
+        lv_label_set_long_mode(ls[i], LV_LABEL_LONG_DOT);
+    }
 
-    lbl_mod = lv_label_create(sess_box);
-    lv_label_set_text(lbl_mod, "agy-bridge");
-    lv_obj_set_pos(lbl_mod, 4, 26);
-    lv_obj_set_style_text_font(lbl_mod, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_mod, p->text_primary, 0);
-
-    lbl_link = lv_label_create(sess_box);
-    lv_label_set_text(lbl_link, "Offline");
-    lv_obj_set_pos(lbl_link, 4, 48);
-    lv_obj_set_style_text_font(lbl_link, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_link, p->text_secondary, 0);
-
-    btn_new = mk_button(left_panel, 120, 28, 4, 130);
+    btn_new = mk_button(left, 150, 30, 4, 146);
     lv_obj_add_event_cb(btn_new, new_btn_cb, LV_EVENT_CLICKED, NULL);
     lbl_new = lv_label_create(btn_new);
-    lv_label_set_text(lbl_new, LV_SYMBOL_PLUS " New");
+    lv_label_set_text(lbl_new, LV_SYMBOL_PLUS " New conversation");
     lv_obj_center(lbl_new);
     lv_obj_set_style_text_font(lbl_new, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_new, p->text_primary, 0);
 
-    /* Subagents (live pool) */
-    lbl_sub = lv_label_create(left_panel);
-    lv_label_set_text(lbl_sub, "SUBAGENTS");
-    lv_obj_set_pos(lbl_sub, 4, 168);
-    lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_sub, p->accent_secondary, 0);
-
+    lbl_sub = mk_label(left, "AGENTS", &lv_font_montserrat_12, p->accent_secondary, 4, 190);
     for (int i = 0; i < AGY_SUB_BTNS; i++) {
-        sub_btns[i] = mk_button(left_panel, DEVOS_PANE_LEFT_WIDTH - 28, 34,
-                                4, 190 + i * 40);
+        sub_btns[i] = mk_button(left, DEVOS_PANE_LEFT_WIDTH - 28, 34, 4, 212 + i * 38);
         lv_obj_add_flag(sub_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_event_cb(sub_btns[i], sub_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-        sub_lbls[i] = mk_label_btn(sub_btns[i], &lv_font_montserrat_12,
-                                   p->text_secondary);
-        lv_obj_set_size(sub_lbls[i], DEVOS_PANE_LEFT_WIDTH - 44, 30);
-        lv_label_set_long_mode(sub_lbls[i], LV_LABEL_LONG_DOT);
+        lv_obj_add_event_cb(sub_btns[i], sub_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        sub_lbls[i] = mk_label_btn(sub_btns[i], &lv_font_montserrat_12, p->text_secondary);
     }
 
-    /* Slash commands (tap inserts into the prompt box) */
-    lbl_slash = lv_label_create(left_panel);
-    lv_label_set_text(lbl_slash, "SLASH COMMANDS");
-    lv_obj_set_pos(lbl_slash, 4, 190 + AGY_SUB_BTNS * 40);
-    lv_obj_set_style_text_font(lbl_slash, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_slash, p->text_secondary, 0);
-
+    lbl_slash = mk_label(left, "SLASH COMMANDS", &lv_font_montserrat_12, p->text_secondary, 4, 260);
     static const char *cmds[4] = {"/goal", "/plan", "/boost", "/learn"};
-    static const char *hints[4] = {"(autonomous)", "(architecture)",
-                                   "(deep think)", "(save skill)"};
+    static const char *hints[4] = {"(autonomous)", "(plan first)", "(deep think)", "(save skill)"};
     for (int i = 0; i < 4; i++) {
-        cmd_btns[i] = mk_button(left_panel, DEVOS_PANE_LEFT_WIDTH - 28, 30,
-                                4, 214 + AGY_SUB_BTNS * 40 + i * 36);
-        lv_obj_add_event_cb(cmd_btns[i], cmd_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-        cmd_lbls[i] = mk_label_btn(cmd_btns[i], &lv_font_montserrat_12,
-                                   p->accent_primary);
+        cmd_btns[i] = mk_button(left, DEVOS_PANE_LEFT_WIDTH - 28, 30, 4, 284 + i * 36);
+        lv_obj_add_event_cb(cmd_btns[i], cmd_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        cmd_lbls[i] = mk_label_btn(cmd_btns[i], &lv_font_montserrat_12, p->accent_primary);
         char buf[48];
         snprintf(buf, sizeof(buf), "%s %s", cmds[i], hints[i]);
         lv_label_set_text(cmd_lbls[i], buf);
     }
+}
 
-    /* 2. Center: action strip + chat + input */
-    action_strip = lv_obj_create(center_panel);
+static void build_center(lv_obj_t *center, const devos_palette_t *p)
+{
+    action_strip = lv_obj_create(center);
     lv_obj_set_size(action_strip, lv_pct(100), 28);
     lv_obj_set_pos(action_strip, 0, 0);
     lv_obj_set_style_bg_color(action_strip, p->bg_alt, 0);
@@ -1123,22 +1192,28 @@ static void antigravity_init(void)
     lv_obj_set_style_border_side(action_strip, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_radius(action_strip, 0, 0);
     lv_obj_set_style_pad_all(action_strip, 2, 0);
-    lv_obj_clear_flag(action_strip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(action_strip, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_strip = lv_label_create(action_strip);
-    lv_label_set_text(lbl_strip, "Bridge: ...");
+    lv_label_set_text(lbl_strip, "");
+    lv_obj_set_width(lbl_strip, lv_pct(98));
+    lv_label_set_long_mode(lbl_strip, LV_LABEL_LONG_DOT);
     lv_obj_align(lbl_strip, LV_ALIGN_LEFT_MID, 6, 0);
     lv_obj_set_style_text_font(lbl_strip, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_strip, p->text_secondary, 0);
 
-    chat_scroll = lv_obj_create(center_panel);
-    lv_obj_set_size(chat_scroll, lv_pct(100), DEVOS_CONTENT_HEIGHT - 28 - 56);
+    chat_scroll = lv_obj_create(center);
+    lv_obj_set_size(chat_scroll, lv_pct(100), DEVOS_CONTENT_HEIGHT - 28 - 50);
     lv_obj_set_pos(chat_scroll, 0, 28);
     lv_obj_set_style_bg_color(chat_scroll, p->bg, 0);
     lv_obj_set_style_border_width(chat_scroll, 0, 0);
+    lv_obj_set_style_radius(chat_scroll, 0, 0);
     lv_obj_set_style_pad_all(chat_scroll, 8, 0);
+    lv_obj_set_flex_flow(chat_scroll, LV_FLEX_FLOW_COLUMN);   /* cards stack */
+    lv_obj_set_style_pad_row(chat_scroll, 8, 0);
+    lv_obj_set_scroll_dir(chat_scroll, LV_DIR_VER);
 
-    input_bar = lv_obj_create(center_panel);
+    input_bar = lv_obj_create(center);
     lv_obj_set_size(input_bar, lv_pct(100), 50);
     lv_obj_set_pos(input_bar, 0, DEVOS_CONTENT_HEIGHT - 50);
     lv_obj_set_style_bg_color(input_bar, p->surface, 0);
@@ -1147,14 +1222,15 @@ static void antigravity_init(void)
     lv_obj_set_style_border_side(input_bar, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_radius(input_bar, 0, 0);
     lv_obj_set_style_pad_all(input_bar, 6, 0);
-    lv_obj_clear_flag(input_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(input_bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(input_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(input_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_gap(input_bar, 6, 0);
 
     ta = lv_textarea_create(input_bar);
-    lv_textarea_set_placeholder_text(ta, "Prompt or /command (Sym+N adds note)...");
+    lv_textarea_set_placeholder_text(ta, "Prompt or /command, Enter sends (Sym+N adds the open note)");
     lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, AGY_PROMPT_MAX - 1);
     lv_obj_set_size(ta, 0, 38);
     lv_obj_set_flex_grow(ta, 1);
     lv_obj_set_style_bg_color(ta, p->bg_alt, 0);
@@ -1168,7 +1244,6 @@ static void antigravity_init(void)
     lv_obj_set_style_border_width(btn_note, 1, 0);
     lv_obj_set_style_radius(btn_note, 4, 0);
     lv_obj_add_event_cb(btn_note, note_btn_cb, LV_EVENT_CLICKED, NULL);
-
     lbl_note = lv_label_create(btn_note);
     lv_label_set_text(lbl_note, LV_SYMBOL_FILE " Note");
     lv_obj_center(lbl_note);
@@ -1180,247 +1255,214 @@ static void antigravity_init(void)
     lv_obj_set_style_bg_color(btn_send, p->accent_primary, 0);
     lv_obj_set_style_radius(btn_send, 4, 0);
     lv_obj_add_event_cb(btn_send, send_btn_cb, LV_EVENT_CLICKED, NULL);
-
     lbl_send = lv_label_create(btn_send);
     lv_label_set_text(lbl_send, "Send " LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_send);
     lv_obj_set_style_text_font(lbl_send, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_send,
-        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
+    lv_obj_set_style_text_color(lbl_send, devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
+}
 
-    /* 3. Right: artifacts + diffs */
-    lbl_insp_title = lv_label_create(right_panel);
-    lv_label_set_text(lbl_insp_title, "INSPECTOR (Sym+R)");
-    lv_obj_set_pos(lbl_insp_title, 4, 4);
-    lv_obj_set_style_text_font(lbl_insp_title, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_insp_title, p->text_secondary, 0);
-
-    lbl_art_h = lv_label_create(right_panel);
-    lv_label_set_text(lbl_art_h, "ARTIFACTS");
-    lv_obj_set_pos(lbl_art_h, 4, 28);
-    lv_obj_set_style_text_font(lbl_art_h, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_art_h, p->accent_primary, 0);
+static void build_right(lv_obj_t *right, const devos_palette_t *p)
+{
+    lbl_insp_title = mk_label(right, "INSPECTOR (Sym+R)", &lv_font_montserrat_12, p->text_secondary, 4, 4);
+    lbl_art_h = mk_label(right, "ARTIFACTS", &lv_font_montserrat_12, p->accent_primary, 4, 28);
+    lbl_art_none = mk_label(right, "Plans, task lists and walkthroughs appear here.", &lv_font_montserrat_12,
+                            p->text_secondary, 4, 50);
+    lv_obj_set_width(lbl_art_none, DEVOS_PANE_RIGHT_WIDTH - 28);
+    lv_label_set_long_mode(lbl_art_none, LV_LABEL_LONG_DOT);
 
     for (int i = 0; i < AGY_ART_BTNS; i++) {
-        art_btns[i] = mk_button(right_panel, DEVOS_PANE_RIGHT_WIDTH - 28, 34,
-                                4, 52 + i * 40);
+        art_btns[i] = mk_button(right, DEVOS_PANE_RIGHT_WIDTH - 28, 34, 4, 52 + i * 40);
         lv_obj_add_flag(art_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_event_cb(art_btns[i], art_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-        art_lbls[i] = mk_label_btn(art_btns[i], &lv_font_montserrat_12,
-                                   p->text_primary);
-        lv_obj_set_size(art_lbls[i], DEVOS_PANE_RIGHT_WIDTH - 44, 30);
-        lv_label_set_long_mode(art_lbls[i], LV_LABEL_LONG_DOT);
+        lv_obj_add_event_cb(art_btns[i], art_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        art_lbls[i] = mk_label_btn(art_btns[i], &lv_font_montserrat_12, p->text_primary);
     }
 
-    lbl_diff_h = lv_label_create(right_panel);
-    lv_label_set_text(lbl_diff_h, "DIFFS");
-    lv_obj_set_pos(lbl_diff_h, 4, 52 + AGY_ART_BTNS * 40 + 4);
-    lv_obj_set_style_text_font(lbl_diff_h, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_diff_h, p->accent_primary, 0);
+    lbl_diff_h = mk_label(right, "DIFF (tap to enlarge)", &lv_font_montserrat_12, p->accent_primary, 4, 84);
 
-    btn_save_diff = lv_button_create(right_panel);
+    btn_save_diff = lv_button_create(right);
     lv_obj_set_size(btn_save_diff, 84, 26);
-    lv_obj_set_pos(btn_save_diff, DEVOS_PANE_RIGHT_WIDTH - 84 - 24, 52 + AGY_ART_BTNS * 40);
+    lv_obj_set_pos(btn_save_diff, DEVOS_PANE_RIGHT_WIDTH - 84 - 24, 80);
     lv_obj_set_style_bg_color(btn_save_diff, p->surface_active, 0);
     lv_obj_set_style_border_color(btn_save_diff, p->surface_border, 0);
     lv_obj_set_style_border_width(btn_save_diff, 1, 0);
     lv_obj_set_style_radius(btn_save_diff, 4, 0);
     lv_obj_add_event_cb(btn_save_diff, save_diff_cb, LV_EVENT_CLICKED, NULL);
-
     lbl_save_diff = lv_label_create(btn_save_diff);
     lv_label_set_text(lbl_save_diff, LV_SYMBOL_SAVE " Save");
     lv_obj_center(lbl_save_diff);
     lv_obj_set_style_text_font(lbl_save_diff, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_save_diff, p->text_primary, 0);
 
-    diff_scroll = lv_obj_create(right_panel);
-    lv_obj_set_pos(diff_scroll, 4, 82 + AGY_ART_BTNS * 40);
-    lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28,
-                    DEVOS_CONTENT_HEIGHT - (82 + AGY_ART_BTNS * 40) - 10);
+    diff_scroll = lv_obj_create(right);
+    lv_obj_set_pos(diff_scroll, 4, 112);
+    lv_obj_set_size(diff_scroll, DEVOS_PANE_RIGHT_WIDTH - 28, DEVOS_CONTENT_HEIGHT - 112 - 10);
     lv_obj_set_style_bg_color(diff_scroll, p->code_bg, 0);
     lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
     lv_obj_set_style_border_width(diff_scroll, 1, 0);
     lv_obj_set_style_radius(diff_scroll, 4, 0);
-    lv_obj_set_style_pad_all(diff_scroll, 6, 0);
+    lv_obj_add_event_cb(diff_scroll, diff_pane_click_cb, LV_EVENT_CLICKED, NULL);
+    devos_codeview_create(&s_cv_pane, diff_scroll);
+}
 
-    /* 4. Permission modal */
-    modal_permission = mk_modal(460, 190, p->accent_warning);
-    lbl_m_title = lv_label_create(modal_permission);
-    lv_label_set_text(lbl_m_title, LV_SYMBOL_WARNING " Tool Permission");
-    lv_obj_set_style_text_font(lbl_m_title, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_m_title, p->accent_warning, 0);
+static void build_modals(const devos_palette_t *p)
+{
+    lv_color_t on_accent = devos_theme_is_dark() ? lv_color_black() : lv_color_white();
 
-    lbl_m_desc = lv_label_create(modal_permission);
-    lv_label_set_text(lbl_m_desc, "");
-    lv_obj_set_pos(lbl_m_desc, 0, 36);
-    lv_obj_set_size(lbl_m_desc, 428, 60);
-    lv_label_set_long_mode(lbl_m_desc, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(lbl_m_desc, p->text_primary, 0);
+    /* Full-screen diff */
+    modal_diff = lv_obj_create(screen);
+    lv_obj_set_size(modal_diff, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(modal_diff, 0, 0);
+    lv_obj_set_style_bg_color(modal_diff, p->bg, 0);
+    lv_obj_set_style_radius(modal_diff, 0, 0);
+    lv_obj_set_style_border_width(modal_diff, 0, 0);
+    lv_obj_set_style_pad_all(modal_diff, 8, 0);
+    lv_obj_remove_flag(modal_diff, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
+    lbl_diff_title = mk_label(modal_diff, "Diff", &lv_font_montserrat_16, p->text_primary, 4, 6);
+    lv_obj_t *close = mk_modal_button(modal_diff, LV_SYMBOL_CLOSE " Close", 110, 0, 0, p->surface_active,
+                                      p->text_primary, diff_close_cb, 0, NULL);
+    lv_obj_align(close, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_t *sc = lv_obj_create(modal_diff);
+    lv_obj_set_pos(sc, 0, 40);
+    lv_obj_set_size(sc, DEVOS_SCREEN_WIDTH - 16, DEVOS_CONTENT_HEIGHT - 56);
+    lv_obj_set_style_bg_color(sc, p->code_bg, 0);
+    lv_obj_set_style_border_color(sc, p->surface_border, 0);
+    lv_obj_set_style_border_width(sc, 1, 0);
+    lv_obj_set_style_radius(sc, 4, 0);
+    devos_codeview_create(&s_cv_full, sc);
 
-    const char *ynames[3] = {"[Y] Once", "[N] Deny", "[A] Always"};
+    /* Permission: title, what the call does, a diff when it's an edit */
+    modal_permission = mk_modal(780, 470, p->accent_warning);
+    lbl_m_title = mk_label(modal_permission, "", &lv_font_montserrat_16, p->accent_warning, 0, 0);
+    lv_obj_set_width(lbl_m_title, 744);
+    lv_label_set_long_mode(lbl_m_title, LV_LABEL_LONG_DOT);
+    lbl_m_desc = mk_label(modal_permission, "", &lv_font_nimbus_mono_14, p->text_primary, 0, 32);
+    lv_obj_set_size(lbl_m_desc, 744, 300);
+    lv_label_set_long_mode(lbl_m_desc, LV_LABEL_LONG_DOT);
+    perm_prev = lv_obj_create(modal_permission);
+    lv_obj_set_pos(perm_prev, 0, 78);
+    lv_obj_set_size(perm_prev, 744, 300);
+    lv_obj_set_style_bg_color(perm_prev, p->code_bg, 0);
+    lv_obj_set_style_border_color(perm_prev, p->surface_border, 0);
+    lv_obj_set_style_border_width(perm_prev, 1, 0);
+    lv_obj_set_style_radius(perm_prev, 4, 0);
+    lv_obj_add_flag(perm_prev, LV_OBJ_FLAG_HIDDEN);
+    devos_codeview_create(&s_cv_perm, perm_prev);
+    const char *pnames[3] = {"[Y] Allow once", "[N] Deny", "[A] Always allow"};
+    lv_color_t pbg[3] = {p->accent_secondary, p->accent_danger, p->surface_active};
+    lv_color_t pfg[3] = {on_accent, lv_color_white(), p->text_primary};
+    intptr_t pans[3] = {1, 0, 2};
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *b = perm_btns[i] = lv_button_create(modal_permission);
-        lv_obj_set_size(b, 130, 36);
-        lv_obj_set_pos(b, i * 142, 110);
-        lv_obj_set_style_bg_color(b, i == 1 ? p->accent_danger
-                                  : i == 2   ? p->surface_active
-                                             : p->accent_secondary,
-                                  0);
-        lv_obj_add_event_cb(b, perm_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)(i == 0 ? 1 : i == 1 ? 0 : 2));
-        lv_obj_t *l = perm_lbls[i] = lv_label_create(b);
-        lv_label_set_text(l, ynames[i]);
-        lv_obj_center(l);
-        lv_obj_set_style_text_color(l,
-            i == 1 ? lv_color_white()
-                   : i == 2 ? p->text_primary
-                            : devos_theme_is_dark() ? lv_color_black()
-                                                    : lv_color_white(),
-            0);
+        perm_btns[i] = mk_modal_button(modal_permission, pnames[i], 200, i * 272, 392, pbg[i], pfg[i], perm_btn_cb,
+                                       pans[i], &perm_lbls[i]);
     }
 
-    /* 5. Question modal (1-4 choices) */
-    modal_question = mk_modal(460, 280, p->accent_primary);
-    lbl_q_title = lv_label_create(modal_question);
-    lv_label_set_text(lbl_q_title, LV_SYMBOL_SHUFFLE " Agent Question");
-    lv_obj_set_style_text_font(lbl_q_title, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_q_title, p->accent_primary, 0);
-
-    lbl_q_desc = lv_label_create(modal_question);
-    lv_label_set_text(lbl_q_desc, "");
-    lv_obj_set_pos(lbl_q_desc, 0, 36);
-    lv_obj_set_size(lbl_q_desc, 428, 48);
-    lv_label_set_long_mode(lbl_q_desc, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(lbl_q_desc, p->text_primary, 0);
-
+    /* Question */
+    modal_question = mk_modal(520, 340, p->accent_primary);
+    lbl_q_title = mk_label(modal_question, LV_SYMBOL_BELL " The agent asks  (1-4 picks, Esc skips)",
+                           &lv_font_montserrat_16, p->accent_primary, 0, 0);
+    lbl_q_desc = mk_label(modal_question, "", &lv_font_montserrat_14, p->text_primary, 0, 30);
+    lv_obj_set_size(lbl_q_desc, 484, 56);
+    lv_label_set_long_mode(lbl_q_desc, LV_LABEL_LONG_DOT);
     for (int i = 0; i < AGY_Q_BTNS; i++) {
-        lv_obj_t *b = q_btns[i] = lv_button_create(modal_question);
-        lv_obj_set_size(b, 428, 34);
-        lv_obj_set_pos(b, 0, 92 + i * 38);
-        lv_obj_set_style_bg_color(b, p->surface_active, 0);
-        lv_obj_set_style_border_color(b, p->surface_border, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_radius(b, 4, 0);
-        lv_obj_add_event_cb(b, question_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-        lv_obj_t *l = q_lbls[i] = lv_label_create(b);
-        lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(l, p->text_primary, 0);
+        q_btns[i] = mk_button(modal_question, 484, 34, 0, 92 + i * 38);
+        lv_obj_set_style_bg_color(q_btns[i], p->surface_active, 0);
+        lv_obj_add_event_cb(q_btns[i], question_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        q_lbls[i] = mk_label_btn(q_btns[i], &lv_font_montserrat_12, p->text_primary);
     }
+    ta_q = mk_field(modal_question, "Type your answer, Enter sends", 484, 0, 250);
+    lv_obj_set_style_border_color(ta_q, p->accent_primary, 0);
 
-    /* 6. Artifact viewer modal */
-    modal_artifact = mk_modal(640, 420, p->accent_primary);
-    lbl_art_title = lv_label_create(modal_artifact);
-    lv_label_set_text(lbl_art_title, "Artifact");
-    lv_obj_set_style_text_font(lbl_art_title, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_art_title, p->accent_primary, 0);
-
+    /* Artifact viewer */
+    modal_artifact = mk_modal(720, 520, p->accent_primary);
+    lbl_art_title = mk_label(modal_artifact, "Artifact", &lv_font_montserrat_16, p->accent_primary, 0, 0);
     art_scroll = lv_obj_create(modal_artifact);
-    lv_obj_set_size(art_scroll, 608, 300);
-    lv_obj_set_pos(art_scroll, 0, 36);
+    lv_obj_set_size(art_scroll, 688, 400);
+    lv_obj_set_pos(art_scroll, 0, 32);
     lv_obj_set_style_bg_color(art_scroll, p->code_bg, 0);
     lv_obj_set_style_border_width(art_scroll, 0, 0);
     lv_obj_set_style_pad_all(art_scroll, 10, 0);
+    btn_art_save = mk_modal_button(modal_artifact, LV_SYMBOL_SAVE " Save to notes", 170, 390, 444,
+                                   p->surface_active, p->text_primary, art_save_cb, 0, &lbl_art_save);
+    mk_modal_button(modal_artifact, "Close (Esc)", 120, 568, 444, p->surface_active, p->text_primary, art_close_cb,
+                    0, &lbl_art_close);
 
-    btn_art_save = lv_button_create(modal_artifact);
-    lv_obj_set_size(btn_art_save, 110, 32);
-    lv_obj_set_pos(btn_art_save, 360, 344);
-    lv_obj_set_style_bg_color(btn_art_save, p->surface_active, 0);
-    lv_obj_set_style_border_color(btn_art_save, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_art_save, 1, 0);
-    lv_obj_set_style_radius(btn_art_save, 4, 0);
-    lv_obj_add_event_cb(btn_art_save, art_save_cb, LV_EVENT_CLICKED, NULL);
-    lbl_art_save = lv_label_create(btn_art_save);
-    lv_label_set_text(lbl_art_save, LV_SYMBOL_SAVE " Save");
-    lv_obj_center(lbl_art_save);
-    lv_obj_set_style_text_color(lbl_art_save, p->text_primary, 0);
+    /* Server (host / port / token) */
+    modal_srv = mk_modal(500, 280, p->accent_primary);
+    lbl_srv_title = mk_label(modal_srv, LV_SYMBOL_SETTINGS " Antigravity bridge", &lv_font_montserrat_16,
+                             p->accent_primary, 0, 0);
+    lbl_srv_hint = mk_label(modal_srv,
+                            "Address of the computer running tools/agy_bridge/bridge_server.py "
+                            "(Tailscale name or IP), its port and the token it printed.",
+                            &lv_font_montserrat_12, p->text_secondary, 0, 26);
+    lv_obj_set_width(lbl_srv_hint, 468);
+    lv_label_set_long_mode(lbl_srv_hint, LV_LABEL_LONG_WRAP);
+    ta_srv_host = mk_field(modal_srv, "host (my-pc.tailnet.ts.net or 100.x.y.z)", 468, 0, 70);
+    ta_srv_port = mk_field(modal_srv, "port (8420)", 140, 0, 114);
+    ta_srv_token = mk_field(modal_srv, "bridge token", 320, 148, 114);
+    mk_modal_button(modal_srv, LV_SYMBOL_OK " Save", 130, 208, 196, p->accent_primary, on_accent, srv_save_cb, 0,
+                    &lbl_srv_save);
+    lv_obj_t *cancel = mk_modal_button(modal_srv, "Cancel", 110, 350, 196, p->surface, p->text_primary,
+                                       srv_cancel_cb, 0, &lbl_srv_cancel);
+    lv_obj_set_style_border_color(cancel, p->surface_border, 0);
+    lv_obj_set_style_border_width(cancel, 1, 0);
+}
 
-    lv_obj_t *btn_art_close = lv_button_create(modal_artifact);
-    lv_obj_set_size(btn_art_close, 110, 32);
-    lv_obj_set_pos(btn_art_close, 488, 344);
-    lv_obj_set_style_bg_color(btn_art_close, p->surface_active, 0);
-    lv_obj_set_style_border_color(btn_art_close, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_art_close, 1, 0);
-    lv_obj_set_style_radius(btn_art_close, 4, 0);
-    lv_obj_add_event_cb(btn_art_close, art_close_cb, LV_EVENT_CLICKED, NULL);
-    lbl_art_close = lv_label_create(btn_art_close);
-    lv_label_set_text(lbl_art_close, "Close");
-    lv_obj_center(lbl_art_close);
-    lv_obj_set_style_text_color(lbl_art_close, p->text_primary, 0);
+static void antigravity_init(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    agy_client_init();
 
-    /* 7. Server modal (host / port / token) */
-    modal_srv = mk_modal(480, 280, p->accent_primary);
-    lv_obj_clear_flag(modal_srv, LV_OBJ_FLAG_SCROLLABLE);
-    lbl_srv_title = lv_label_create(modal_srv);
-    lv_label_set_text(lbl_srv_title, LV_SYMBOL_SETTINGS " Bridge Server");
-    lv_obj_set_style_text_font(lbl_srv_title, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_srv_title, p->accent_primary, 0);
+    screen = lv_obj_create(lv_screen_active());
+    app_descriptor.screen = screen;
+    lv_obj_set_size(screen, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(screen, 0, DEVOS_TOP_BAR_HEIGHT);
+    lv_obj_set_style_bg_color(screen, p->bg, 0);
+    lv_obj_set_style_radius(screen, 0, 0);
+    lv_obj_set_style_border_width(screen, 0, 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    ta_srv_host = mk_field(modal_srv, "host (100.x.y.z)", 448, 0, 40);
-    ta_srv_port = mk_field(modal_srv, "port (8420)", 140, 0, 84);
-    ta_srv_token = mk_field(modal_srv, "token / PSK (optional)", 300, 148, 84);
-
-    lv_obj_t *btn_srv_save = lv_button_create(modal_srv);
-    lv_obj_set_size(btn_srv_save, 130, 34);
-    lv_obj_set_pos(btn_srv_save, 190, 200);
-    lv_obj_set_style_bg_color(btn_srv_save, p->accent_primary, 0);
-    lv_obj_set_style_radius(btn_srv_save, 4, 0);
-    lv_obj_add_event_cb(btn_srv_save, srv_save_cb, LV_EVENT_CLICKED, NULL);
-    lbl_srv_save = lv_label_create(btn_srv_save);
-    lv_label_set_text(lbl_srv_save, LV_SYMBOL_OK " Save");
-    lv_obj_center(lbl_srv_save);
-    lv_obj_set_style_text_color(lbl_srv_save,
-        devos_theme_is_dark() ? lv_color_black() : lv_color_white(), 0);
-
-    lv_obj_t *btn_srv_cancel = lv_button_create(modal_srv);
-    lv_obj_set_size(btn_srv_cancel, 110, 34);
-    lv_obj_set_pos(btn_srv_cancel, 330, 200);
-    lv_obj_set_style_bg_color(btn_srv_cancel, p->surface, 0);
-    lv_obj_set_style_border_color(btn_srv_cancel, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_srv_cancel, 1, 0);
-    lv_obj_set_style_radius(btn_srv_cancel, 4, 0);
-    lv_obj_add_event_cb(btn_srv_cancel, srv_cancel_cb, LV_EVENT_CLICKED, NULL);
-    lbl_srv_cancel = lv_label_create(btn_srv_cancel);
-    lv_label_set_text(lbl_srv_cancel, "Cancel");
-    lv_obj_center(lbl_srv_cancel);
-    lv_obj_set_style_text_color(lbl_srv_cancel, p->text_primary, 0);
+    viewport = devos_agent_viewport_create(screen);
+    build_left(devos_agent_viewport_get_left(viewport), p);
+    build_center(devos_agent_viewport_get_center(viewport), p);
+    build_right(devos_agent_viewport_get_right(viewport), p);
+    build_modals(p);
 
     devos_theme_add_listener(apply_theme, NULL);
     poll_timer = lv_timer_create(poll_cb, 100, NULL);
-    refresh_all();
+    refresh_all(true);
 }
 
 static void antigravity_show(void)
 {
-    refresh_all();
+    refresh_all(false);
 }
 
 static void antigravity_hide(void)
 {
-    if (modal_permission) {
-        lv_obj_add_flag(modal_permission, LV_OBJ_FLAG_HIDDEN);
+    /* pending asks stay pending: they reappear when the app is opened */
+    lv_obj_t *ms[5] = {modal_permission, modal_question, modal_artifact, modal_srv, modal_diff};
+    for (int i = 0; i < 5; i++) {
+        if (ms[i]) lv_obj_add_flag(ms[i], LV_OBJ_FLAG_HIDDEN);
     }
-    if (modal_question) {
-        lv_obj_add_flag(modal_question, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (modal_artifact) {
-        lv_obj_add_flag(modal_artifact, LV_OBJ_FLAG_HIDDEN);
-    }
-    if (modal_srv) {
-        lv_obj_add_flag(modal_srv, LV_OBJ_FLAG_HIDDEN);
-    }
+    s_shown_perm[0] = '\0';
+    s_shown_q[0] = '\0';
+    s_open_artifact = -1;
 }
 
 static int antigravity_telemetry_lines(char lines[3][64])
 {
-    snprintf(lines[0], sizeof(lines[0]), "* Bridge: %s",
-             agy_client_status() == AGY_UP ? "online" : "offline");
-    snprintf(lines[1], sizeof(lines[1]), "* Subagents: %d",
-             agy_client_agent_count());
-    snprintf(lines[2], sizeof(lines[2]), "* %s",
-             agy_client_model()[0] ? agy_client_model() : "native client");
+    snprintf(lines[0], sizeof(lines[0]), "* Bridge: %s%s", agy_client_status() == AGY_UP ? "online" : "offline",
+             agy_client_busy() ? " (working)" : "");
+    if (agy_client_permission_pending(NULL) || agy_client_question_pending(NULL)) {
+        snprintf(lines[1], sizeof(lines[1]), "* Waiting for you");
+    } else {
+        snprintf(lines[1], sizeof(lines[1]), "* Agents: %d", agy_client_agent_count());
+    }
+    snprintf(lines[2], sizeof(lines[2]), "* %s", agy_client_model()[0] ? agy_client_model() : "native client");
     return 3;
 }
 
@@ -1432,7 +1474,7 @@ devos_app_descriptor_t *app_antigravity_get_descriptor(void)
     app_descriptor.category = "agents";
     app_descriptor.name = "Antigravity";
     app_descriptor.title = "Google Antigravity";
-    app_descriptor.subtitle = "Native AGY Client (Path B)";
+    app_descriptor.subtitle = "agy on your computer, driven from here";
     app_descriptor.screen = screen;
     app_descriptor.init = antigravity_init;
     app_descriptor.show = antigravity_show;

@@ -3,6 +3,7 @@
 #include "devos_theme.h"
 #include "devos_agent_viewport.h"
 #include "devos_mdview.h"
+#include "devos_codeview.h"
 #include "opendev_client.h"
 #include "app_editor.h"
 #include "bsp_tab5_camera.h"
@@ -281,109 +282,9 @@ static void toggle_think_cb(lv_event_t *e)
     refresh_all();
 }
 
-/* ---- monospace diff view: a tall object that draws only visible lines ---- */
-#define CV_LINE_H    16
-#define CV_MAX_LINES 6000
-
-typedef struct {
-    lv_obj_t *scroll;       /* scrollable container */
-    lv_obj_t *view;         /* drawn by cv_draw_cb */
-    const char *text;
-    int *off;               /* line start offsets */
-    int n;
-} code_view_t;
-
-static code_view_t s_cv_pane, s_cv_full;
+static devos_codeview_t s_cv_pane, s_cv_full;
 static lv_obj_t *modal_diff = NULL, *lbl_diff_title = NULL;
 static EXT_RAM_BSS_ATTR char s_diff_display[OPENDEV_DIFF_MAX + 2048];
-
-static void cv_draw_cb(lv_event_t *e)
-{
-    code_view_t *cv = lv_event_get_user_data(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-    if (!cv->text || cv->n == 0) return;
-    const devos_palette_t *p = devos_theme_get();
-    lv_area_t a;
-    lv_obj_get_coords(cv->view, &a);
-    const lv_area_t *clip = &layer->_clip_area;
-    int r0 = (clip->y1 - a.y1) / CV_LINE_H, r1 = (clip->y2 - a.y1) / CV_LINE_H;
-    if (r0 < 0) r0 = 0;
-    if (r1 >= cv->n) r1 = cv->n - 1;
-    lv_draw_label_dsc_t ld;
-    lv_draw_label_dsc_init(&ld);
-    ld.font = &lv_font_nimbus_mono_14;
-    ld.flag = LV_TEXT_FLAG_EXPAND;
-    ld.text_local = 1;
-    lv_draw_rect_dsc_t rd;
-    lv_draw_rect_dsc_init(&rd);
-    rd.bg_opa = LV_OPA_20;
-    char line[300];
-    for (int r = r0; r <= r1; r++) {
-        const char *s = cv->text + cv->off[r];
-        const char *nl = strchr(s, '\n');
-        size_t len = nl ? (size_t)(nl - s) : strlen(s);
-        if (len > sizeof(line) - 1) len = sizeof(line) - 1;
-        for (size_t i = 0; i < len; i++) line[i] = (s[i] == '\t' || (unsigned char)s[i] < 32) ? ' ' : s[i];
-        line[len] = '\0';
-        lv_color_t col = p->text_primary;
-        bool band = false;
-        if (line[0] == '+' && line[1] != '+') { col = p->accent_secondary; band = true; }
-        else if (line[0] == '-' && line[1] != '-') { col = p->accent_danger; band = true; }
-        else if (line[0] == '@' && line[1] == '@') col = p->accent_primary;
-        else if (!strncmp(line, "diff ", 5) || !strncmp(line, "---", 3) || !strncmp(line, "+++", 3) ||
-                 !strncmp(line, "index ", 6)) col = p->text_secondary;
-        int y = a.y1 + r * CV_LINE_H;
-        if (band) {
-            rd.bg_color = col;
-            lv_area_t br = { a.x1, y, a.x2, y + CV_LINE_H - 1 };
-            lv_draw_rect(layer, &rd, &br);
-        }
-        ld.color = col;
-        ld.text = line;
-        lv_area_t tr = { a.x1 + 4, y, a.x1 + 12 + (int32_t)len * 8, y + CV_LINE_H - 1 };
-        lv_draw_label(layer, &ld, &tr);
-    }
-}
-
-static void cv_set(code_view_t *cv, const char *text)
-{
-    if (!cv->view) return;
-    if (!cv->off) cv->off = malloc(sizeof(int) * CV_MAX_LINES);
-    cv->text = text;
-    cv->n = 0;
-    int longest = 0;
-    if (text && *text && cv->off) {
-        cv->off[cv->n++] = 0;
-        const char *line = text;
-        for (const char *q = text; *q && cv->n < CV_MAX_LINES; q++) {
-            if (*q == '\n') {
-                if ((int)(q - line) > longest) longest = (int)(q - line);
-                line = q + 1;
-                if (q[1]) cv->off[cv->n++] = (int)(q + 1 - text);
-            }
-        }
-        if ((int)strlen(line) > longest) longest = (int)strlen(line);
-    }
-    if (longest > 299) longest = 299;
-    int w = lv_obj_get_content_width(cv->scroll);
-    int want = longest * 8 + 16;
-    lv_obj_set_size(cv->view, want > w ? want : w, cv->n * CV_LINE_H + 8);
-    lv_obj_scroll_to(cv->scroll, 0, 0, LV_ANIM_OFF);
-    lv_obj_invalidate(cv->view);
-}
-
-static void cv_create(code_view_t *cv, lv_obj_t *scroll)
-{
-    cv->scroll = scroll;
-    lv_obj_set_scroll_dir(scroll, LV_DIR_ALL);
-    lv_obj_set_style_pad_all(scroll, 0, 0);
-    cv->view = lv_obj_create(scroll);
-    lv_obj_remove_style_all(cv->view);
-    lv_obj_add_flag(cv->view, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_remove_flag(cv->view, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(cv->view, 10, 10);
-    lv_obj_add_event_cb(cv->view, cv_draw_cb, LV_EVENT_DRAW_MAIN, cv);
-}
 
 /* Summary of changed files on top of the unified diff. */
 static const char *diff_display_text(void)
@@ -423,7 +324,7 @@ static void diff_full_open(void)
     lv_obj_remove_flag(modal_diff, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(modal_diff);
     lv_obj_update_layout(modal_diff);
-    cv_set(&s_cv_full, diff_display_text());
+    devos_codeview_set(&s_cv_full, diff_display_text());
 }
 
 static void diff_pane_click_cb(lv_event_t *e)
@@ -469,7 +370,7 @@ static void build_diff_modal(const devos_palette_t *p)
     lv_obj_set_style_border_color(sc, p->surface_border, 0);
     lv_obj_set_style_border_width(sc, 1, 0);
     lv_obj_set_style_radius(sc, 4, 0);
-    cv_create(&s_cv_full, sc);
+    devos_codeview_create(&s_cv_full, sc);
 }
 
 /* ---- chat ---- */
@@ -704,8 +605,8 @@ static void refresh_diff(bool force)
     uint32_t g = opendev_client_diff_generation();
     if (!force && g == s_seen_diff_gen) return;
     s_seen_diff_gen = g;
-    cv_set(&s_cv_pane, diff_display_text());
-    if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) cv_set(&s_cv_full, diff_display_text());
+    devos_codeview_set(&s_cv_pane, diff_display_text());
+    if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) devos_codeview_set(&s_cv_full, diff_display_text());
 }
 
 static void refresh_all(void)
@@ -1049,10 +950,10 @@ static bool opendev_handle_key(uint32_t key, uint8_t modifiers)
     /* Full-screen diff: Esc closes, arrows / PgUp / PgDn scroll */
     if (modal_diff && !lv_obj_has_flag(modal_diff, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_t *sc = s_cv_full.scroll;
-        int page = lv_obj_get_height(sc) - 2 * CV_LINE_H;
+        int page = lv_obj_get_height(sc) - 2 * DEVOS_CODEVIEW_LINE_H;
         if (key == LV_KEY_ESC || key == 'q' || key == 'Q') diff_full_close();
-        else if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(sc, 0, -3 * CV_LINE_H, LV_ANIM_OFF);
-        else if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(sc, 0, 3 * CV_LINE_H, LV_ANIM_OFF);
+        else if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(sc, 0, -3 * DEVOS_CODEVIEW_LINE_H, LV_ANIM_OFF);
+        else if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(sc, 0, 3 * DEVOS_CODEVIEW_LINE_H, LV_ANIM_OFF);
         else if (key == DEVOS_KEY_PGDN || key == ' ') lv_obj_scroll_by_bounded(sc, 0, -page, LV_ANIM_OFF);
         else if (key == DEVOS_KEY_PGUP) lv_obj_scroll_by_bounded(sc, 0, page, LV_ANIM_OFF);
         else if (key == LV_KEY_RIGHT) lv_obj_scroll_by_bounded(sc, -80, 0, LV_ANIM_OFF);
@@ -1433,7 +1334,7 @@ static void opendev_init(void)
     lv_obj_set_style_border_color(diff_scroll, p->surface_border, 0);
     lv_obj_set_style_border_width(diff_scroll, 1, 0);
     lv_obj_set_style_radius(diff_scroll, 4, 0);
-    cv_create(&s_cv_pane, diff_scroll);
+    devos_codeview_create(&s_cv_pane, diff_scroll);
     lv_obj_add_event_cb(diff_scroll, diff_pane_click_cb, LV_EVENT_CLICKED, NULL);   /* tap: full screen */
 
     /* Permission modal */
