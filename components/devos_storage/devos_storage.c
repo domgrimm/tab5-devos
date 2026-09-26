@@ -38,7 +38,8 @@ static const char *WELCOME_MD_CONTENT =
 "## Global Keyboard Shortcuts\n\n"
 "The Tab5 keyboard has no Fn key: hold **`Sym`** for system shortcuts.\n"
 "Tap **`Aa`** for caps lock, hold it for Shift.\n\n"
-"- **`Sym + 1`** Terminal, **`Sym + 2`** Editor, **`Sym + 3`** Tailscale, **`Sym + 4`** Settings\n"
+"- **`Sym + 1`** Terminal, **`Sym + 2`** Editor, **`Sym + 3`** Tailscale, **`Sym + 4`** WireGuard, "
+"**`Sym + 5`** MQTT, **`Sym + 6`** Settings\n"
 "- **`Sym + H`** or **`Esc`**: Home Screen (Esc goes to the remote shell in Terminal)\n"
 "- **`1` .. `8`**: Launch an app from the Home Screen\n"
 "- **`Sym + T`**: Toggle Dark Cyberdeck / High-Contrast Light theme\n"
@@ -56,7 +57,8 @@ static const char *WELCOME_MD_CONTENT =
 "### Features\n\n"
 "- [x] Multi-session SSH terminal\n"
 "- [x] Markdown editor and SD card file browser\n"
-"- [x] Tailscale\n";
+"- [x] Tailscale and WireGuard (put wg-quick .conf files in /wireguard)\n"
+"- [x] MQTT monitor & publisher\n";
 
 /* Saved SSH hosts start empty: add them from the Terminal app. */
 static const char *BOOKMARKS_JSON_CONTENT = "[\n]\n";
@@ -99,6 +101,9 @@ bool devos_storage_bootstrap(const char *mount_point)
     make_dir_if_missing(path_buf);
 
     snprintf(path_buf, sizeof(path_buf), "%s/notes", mount_point);
+    make_dir_if_missing(path_buf);
+
+    snprintf(path_buf, sizeof(path_buf), "%s/wireguard", mount_point);
     make_dir_if_missing(path_buf);
 
     snprintf(path_buf, sizeof(path_buf), "%s/.devos", mount_point);

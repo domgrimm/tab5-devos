@@ -32,6 +32,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_terminal
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_editor
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_tailscale
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_mqtt
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_wireguard
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
@@ -45,6 +47,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/libssh2_port
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_vterm
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_json
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mqtt
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_wireguard
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_power
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ota
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mdview
@@ -57,6 +61,8 @@ else()
         main/apps/app_terminal/app_terminal.c
         main/apps/app_editor/app_editor.c
         main/apps/app_tailscale/app_tailscale.c
+        main/apps/app_mqtt/app_mqtt.c
+        main/apps/app_wireguard/app_wireguard.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
@@ -73,6 +79,8 @@ else()
         components/libssh2_port/libssh2_port.c
         components/devos_vterm/devos_vterm.c
         components/devos_json/devos_json.c
+        components/devos_mqtt/devos_mqtt.c
+        components/devos_wireguard/devos_wireguard.c
         components/devos_power/devos_power.c
         components/devos_ota/devos_ota.c
         components/devos_mdview/devos_mdview.c

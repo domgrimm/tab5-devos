@@ -4,6 +4,8 @@ set(APP_SRCS
     "apps/app_terminal/app_terminal.c"
     "apps/app_editor/app_editor.c"
     "apps/app_tailscale/app_tailscale.c"
+    "apps/app_mqtt/app_mqtt.c"
+    "apps/app_wireguard/app_wireguard.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
 )
@@ -17,6 +19,8 @@ idf_component_register(
         "apps/app_terminal"
         "apps/app_editor"
         "apps/app_tailscale"
+        "apps/app_mqtt"
+        "apps/app_wireguard"
         "apps/app_settings"
         "apps/app_template"
     REQUIRES
@@ -34,6 +38,9 @@ idf_component_register(
         libssh2_port
         devos_vterm
         devos_mdview
+        devos_mqtt
+        devos_wireguard
+        devos_json
         lvgl
         nvs_flash
 )

@@ -93,7 +93,9 @@ typedef enum {
     DEVOS_APP_TERMINAL = 1,     /* Sym+1 Terminal/SSH: Multi-session ANSI PTY shell */
     DEVOS_APP_EDITOR = 2,       /* Sym+2 Editor: SD card Markdown & text editor */
     DEVOS_APP_TAILSCALE = 3,    /* Sym+3 Tailscale: Mesh network manager */
-    DEVOS_APP_SETTINGS = 4,     /* Sym+4 Settings: Wi-Fi, Display, Power, NVS */
+    DEVOS_APP_WIREGUARD = 4,    /* Sym+4 WireGuard: tunnel from a wg-quick config */
+    DEVOS_APP_MQTT = 5,         /* Sym+5 MQTT: broker monitor & publisher */
+    DEVOS_APP_SETTINGS = 6,     /* Sym+6 Settings: Wi-Fi, Display, Power, NVS */
     DEVOS_APP_COUNT,
     DEVOS_APP_NONE = 255        /* no app shown yet */
 } devos_app_id_t;
