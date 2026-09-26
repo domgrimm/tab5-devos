@@ -18,8 +18,8 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define MD_CELL_PAD 6
 
 /* --------------------------------------------------------------------------
- * Markdown renderer (CommonMark subset, shared by the editor preview,
- * agent artifact viewer, and future rich-text surfaces).
+ * Markdown renderer (CommonMark subset, shared by the editor preview and
+ * any future rich-text surfaces).
  *
  * Blocks: ATX headings, fenced code, tables, hr, quotes, ul/ol/task lists,
  * paragraphs. Inline: **bold**, *italic*, ~~strike~~, `code`, links, images,

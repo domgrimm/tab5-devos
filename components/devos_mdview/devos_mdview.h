@@ -2,8 +2,7 @@
 
 /* devos_mdview: shared CommonMark-subset renderer for LVGL.
  *
- * Used by the editor preview, the agent artifact viewer, and future
- * rich-text surfaces. Single-threaded LVGL use only (shared buffers).
+ * Used by the editor preview and any future rich-text surfaces. Single-threaded LVGL use only (shared buffers).
  */
 
 #include "lvgl.h"
