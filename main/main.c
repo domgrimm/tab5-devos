@@ -225,6 +225,14 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
 static void power_backlight_cb(int percent)
 {
     bsp_tab5_set_brightness((uint8_t)percent);
+    tab5_keyboard_lights_suspend(percent == 0);   /* keyboard lights sleep too */
+}
+
+/* The keyboard lights' "theme accent" colour follows the theme. */
+static void kbd_accent_cb(const devos_palette_t *palette, void *user_data)
+{
+    (void)user_data;
+    tab5_keyboard_set_accent(lv_color_to_u32(palette->accent_primary));
 }
 
 /* OpenDev and Antigravity were removed: forget the server tokens they kept
@@ -274,6 +282,8 @@ static void devos_system_bringup(void)
     /* 4. devOS Theme Engine initialization */
     printf("[devOS] 4/8 Initializing Theme Engine...\n");
     devos_theme_init();
+    devos_theme_add_listener(kbd_accent_cb, NULL);
+    kbd_accent_cb(devos_theme_get(), NULL);
 
     /* 5. devOS Core engine initialization */
     printf("[devOS] 5/8 Initializing Core Event Bus...\n");
