@@ -16,11 +16,13 @@ typedef struct {
     const char *text;
     int *off;               /* line start offsets */
     int n;
+    bool plain;             /* true: plain text (no diff colours) */
 } devos_codeview_t;
 
 /* Turn `scroll` (an empty lv_obj) into a code view. */
 void devos_codeview_create(devos_codeview_t *cv, lv_obj_t *scroll);
-/* Show `text` (kept by pointer: it must stay valid) and scroll to the top. */
+/* Show `text` (kept by pointer: it must stay valid) and scroll to the top.
+ * Set cv->plain first for ordinary text files. */
 void devos_codeview_set(devos_codeview_t *cv, const char *text);
 
 #ifdef __cplusplus

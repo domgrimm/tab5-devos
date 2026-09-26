@@ -1,8 +1,25 @@
+/* Markdown editor with an SD-card file browser.
+ *
+ * Left: browse the whole card (folders, sizes; new file / folder, rename,
+ * delete). Right: the editor (Markdown gets a live preview; code files a
+ * monospace font), a find bar, and a status line. Files up to ED_EDIT_MAX
+ * are edited in place; larger text files open read-only in the fast code
+ * viewer; binary files are refused.
+ *
+ * Keys (editor): Ctrl+S save, Ctrl+N new, Ctrl+F find, Ctrl+G next match,
+ * Ctrl+Z undo, Ctrl+X/C/V cut/copy/paste (selection or whole line),
+ * Ctrl+K delete line, Ctrl+D duplicate line, Ctrl+A select all, Ctrl+P
+ * Edit/Split/Preview, Ctrl+B bold, Sym+Left/Right line start/end,
+ * Sym+Up/Down page, Alt+Left/Right word, Tab indent, Esc -> file list.
+ * Keys (file list): arrows, Enter open, Backspace up a folder, N new file,
+ * F new folder, R rename, D/Del delete, H hidden files, Esc -> editor.
+ */
 #include "app_editor.h"
 #include "devos_config.h"
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_mdview.h"
+#include "devos_codeview.h"
 #include "opendev_client.h"
 #include "agy_client.h"
 #include <stdio.h>
@@ -10,482 +27,1310 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <strings.h>
 
-#define EDITOR_MAX_FILES 12
-#define EDITOR_NAME_MAX 64
-#define EDITOR_BUF_MAX (16 * 1024)
+LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 
-typedef enum {
-    EDITOR_VIEW_EDIT = 0,   /* Full editor */
-    EDITOR_VIEW_SPLIT,      /* Editor + preview side by side */
-    EDITOR_VIEW_PREVIEW     /* Full preview */
-} editor_view_t;
+#define ED_MAX_ENTRIES 300
+#define ED_PATH_MAX 256
+#define ED_NAME_MAX 96
+#define ED_EDIT_MAX (48 * 1024)          /* edited in the text area */
+#define ED_VIEW_MAX (512 * 1024)         /* larger text files: read-only viewer */
+#define ED_UNDO_MAX 24
+#define ED_CLIP_MAX (32 * 1024)
+#define ED_AUTOSAVE_MS 30000
+#define ED_STATUS_H 24
+#define ED_FIND_H 40
+#define ED_CONFIG_FILE TAB5_SD_MOUNT_POINT "/.devos/editor.json"
+
+typedef enum { VIEW_EDIT = 0, VIEW_SPLIT, VIEW_PREVIEW } ed_view_t;
+typedef enum { MODAL_NONE = 0, MODAL_NEW_FILE, MODAL_NEW_DIR, MODAL_RENAME, MODAL_DELETE } ed_modal_t;
+
+typedef struct {
+    char name[ED_NAME_MAX];
+    bool dir;
+    uint32_t size;
+} ed_entry_t;
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
 
-/* Theme-tracked widgets */
-static lv_obj_t *sidebar = NULL;
-static lv_obj_t *lbl_files = NULL;
-static lv_obj_t *file_btns[EDITOR_MAX_FILES] = {NULL};
-static lv_obj_t *file_lbls[EDITOR_MAX_FILES] = {NULL};
-static lv_obj_t *main_area = NULL;
-static lv_obj_t *top_bar = NULL;
-static lv_obj_t *lbl_fn = NULL;
-static lv_obj_t *btn_tree = NULL;
-static lv_obj_t *lbl_btn_tree = NULL;
-static lv_obj_t *btn_new = NULL;
-static lv_obj_t *lbl_btn_new = NULL;
-static lv_obj_t *btn_save = NULL;
-static lv_obj_t *lbl_btn_save = NULL;
-static lv_obj_t *btn_attach = NULL;
-static lv_obj_t *lbl_btn_attach = NULL;
-static lv_obj_t *btn_mode = NULL;
-static lv_obj_t *lbl_btn_mode = NULL;
-static lv_obj_t *ta_editor = NULL;
-static lv_obj_t *preview_scroll = NULL;
+/* widgets */
+static lv_obj_t *sidebar, *lbl_side_title, *lbl_path, *file_list, *lbl_side_hint;
+static lv_obj_t *btn_add_file, *btn_add_dir;
+static lv_obj_t *main_area, *top_bar, *lbl_fn;
+static lv_obj_t *btn_tree, *btn_save, *btn_find, *btn_attach, *btn_mode;
+static lv_obj_t *lbl_btn_tree, *lbl_btn_save, *lbl_btn_find, *lbl_btn_attach, *lbl_btn_mode;
+static lv_obj_t *ta_editor, *preview_scroll, *viewer_scroll, *lbl_empty;
+static lv_obj_t *find_bar, *ta_find, *lbl_find_info;
+static lv_obj_t *status_bar, *lbl_status;
+static lv_obj_t *modal, *lbl_modal_title, *lbl_modal_desc, *ta_modal, *btn_modal_ok, *lbl_modal_ok;
+static devos_codeview_t s_viewer;
 
-/* State */
-static char s_files[EDITOR_MAX_FILES][EDITOR_NAME_MAX];
-static int s_file_count = 0;
-static int s_active = -1;          /* open file index, -1 = none */
-static int s_sel = 0;              /* keyboard cursor in file list */
-static bool s_focus_list = false;  /* Tab toggles list <-> editor */
-static bool s_sidebar_visible = true;
+/* file browser */
+static EXT_RAM_BSS_ATTR ed_entry_t s_ents[ED_MAX_ENTRIES];
+static int s_ent_count = 0;
+static lv_obj_t *s_rows[ED_MAX_ENTRIES + 1];
+static int s_row_ent[ED_MAX_ENTRIES + 1];     /* entry index, -1 = ".." */
+static int s_row_count = 0;
+static int s_sel = 0;
+static char s_dir[ED_PATH_MAX] = "";          /* relative to the card root */
+static bool s_show_hidden = false;
+static bool s_focus_list = false;
+
+/* open file */
+static char s_file[ED_PATH_MAX] = "";         /* relative path, "" = none */
+static bool s_readonly = false;               /* shown in the viewer */
+static bool s_markdown = false;
 static bool s_dirty = false;
 static bool s_preview_stale = false;
-static editor_view_t s_view = EDITOR_VIEW_EDIT;
+static uint32_t s_last_edit = 0;
+static ed_view_t s_view = VIEW_EDIT;
+static ed_view_t s_md_view = VIEW_EDIT;       /* remembered for Markdown files */
+static EXT_RAM_BSS_ATTR char s_buf[ED_VIEW_MAX + 1];
 
-static void refresh_file_list(void);
-static void render_preview(bool preserve_scroll);
+/* editing helpers */
+static struct { char *text; uint32_t cursor; } s_undo[ED_UNDO_MAX];
+static int s_undo_n = 0;
+static EXT_RAM_BSS_ATTR char s_clip[ED_CLIP_MAX];
+static char s_find[128] = "";
+static bool s_find_open = false;
+static ed_modal_t s_modal = MODAL_NONE;
+static char s_modal_target[ED_PATH_MAX] = "";
+static char s_flash[96] = "";
+static uint32_t s_flash_until = 0;
+
 static void apply_layout(void);
-static void update_title(void);
-static void update_telemetry(void);
-static void open_file(int idx);
-static void save_file(void);
-static void flash_msg(const char *msg);
+static void refresh_status(void);
+static void list_rebuild(void);
+static void list_paint(void);
+static void render_preview(bool keep_scroll);
+static void open_path(const char *rel);
+static bool save_file(void);
 static void apply_theme(const devos_palette_t *p, void *user_data);
 
-/* ponytail: 400ms debounce so typing in split view doesn't rebuild per key */
-static void preview_timer_cb(lv_timer_t *t)
+/* ------------------------------------------------------------------ paths */
+static void abs_path(const char *rel, char *out, size_t n)
 {
-    LV_UNUSED(t);
-    if (s_preview_stale && s_view != EDITOR_VIEW_EDIT && preview_scroll &&
-        ta_editor) {
-        s_preview_stale = false;
-        render_preview(true);
-    }
+    if (rel && *rel) snprintf(out, n, "%s/%s", TAB5_SD_MOUNT_POINT, rel);
+    else snprintf(out, n, "%s", TAB5_SD_MOUNT_POINT);
 }
 
-/* --------------------------------------------------------------------------
- * File I/O (POSIX: FATFS on target, ./sim_sdcard in simulation)
- * -------------------------------------------------------------------------- */
-static void notes_path(const char *name, char *out, size_t out_len)
+static void join(const char *dir, const char *name, char *out, size_t n)
 {
-    snprintf(out, out_len, "%s/notes/%s", TAB5_SD_MOUNT_POINT, name ? name : "");
+    if (dir && *dir) snprintf(out, n, "%s/%s", dir, name);
+    else snprintf(out, n, "%s", name);
 }
 
-static void scan_notes(void)
+static const char *base_name(const char *rel)
 {
-    s_file_count = 0;
-    char dir[256];
-    notes_path(NULL, dir, sizeof(dir));
+    const char *b = strrchr(rel, '/');
+    return b ? b + 1 : rel;
+}
 
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        size_t n = strlen(ent->d_name);
-        if (n < 4 || strcmp(ent->d_name + n - 3, ".md") != 0) continue;
-        if (s_file_count >= EDITOR_MAX_FILES) break;
-        snprintf(s_files[s_file_count], EDITOR_NAME_MAX, "%s", ent->d_name);
-        s_files[s_file_count][EDITOR_NAME_MAX - 1] = '\0';
-        s_file_count++;
+static void parent_of(char *rel)
+{
+    char *b = strrchr(rel, '/');
+    if (b) *b = '\0';
+    else rel[0] = '\0';
+}
+
+static bool has_ext(const char *name, const char *const *exts)
+{
+    const char *dot = strrchr(name, '.');
+    if (!dot) return false;
+    for (int i = 0; exts[i]; i++) {
+        if (strcasecmp(dot + 1, exts[i]) == 0) return true;
     }
-    closedir(d);
+    return false;
+}
 
-    /* Alphabetical, welcome.md first is a nice-to-have; plain sort is fine */
-    for (int i = 0; i < s_file_count; i++) {
-        for (int j = i + 1; j < s_file_count; j++) {
-            if (strcmp(s_files[i], s_files[j]) > 0) {
-                char tmp[EDITOR_NAME_MAX];
-                memcpy(tmp, s_files[i], sizeof(tmp));
-                memcpy(s_files[i], s_files[j], sizeof(s_files[i]));
-                memcpy(s_files[j], tmp, sizeof(s_files[j]));
-            }
+static bool is_markdown_name(const char *name)
+{
+    static const char *const md[] = {"md", "markdown", "mdown", "txt", NULL};
+    return has_ext(name, md);
+}
+
+static bool valid_name(const char *n)
+{
+    if (!n || !*n || strcmp(n, ".") == 0 || strcmp(n, "..") == 0) return false;
+    for (const char *p = n; *p; p++) {
+        if (*p == '/' || *p == '\\' || *p == ':' || *p == '*' || *p == '?' || *p == '"' || *p == '<' ||
+            *p == '>' || *p == '|') {
+            return false;
         }
     }
-    if (s_sel >= s_file_count) s_sel = s_file_count > 0 ? s_file_count - 1 : 0;
-    if (s_active >= s_file_count) s_active = -1;
-}
-
-static size_t read_file(const char *name, char *buf, size_t buf_len)
-{
-    if (!buf || buf_len == 0) return 0;
-    buf[0] = '\0';
-    char path[256];
-    notes_path(name, path, sizeof(path));
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-    size_t n = fread(buf, 1, buf_len - 1, f);
-    fclose(f);
-    /* ponytail: only back off a split codepoint when actually truncated */
-    if (n == buf_len - 1) n = devos_md_trunc_ok(buf, n);
-    buf[n] = '\0';
-    return n;
-}
-
-static bool write_file(const char *name, const char *text)
-{
-    char path[256];
-    notes_path(name, path, sizeof(path));
-    FILE *f = fopen(path, "w");
-    if (!f) return false;
-    fputs(text, f);
-    fclose(f);
     return true;
 }
 
-static void open_file(int idx)
+static void size_str(uint32_t b, char *out, size_t n)
 {
-    if (idx < 0 || idx >= s_file_count || !ta_editor) return;
-    if (s_dirty && s_active >= 0 && s_active != idx) {
-        save_file();
-    }
-    static char buf[EDITOR_BUF_MAX];
-    read_file(s_files[idx], buf, sizeof(buf));
-    lv_textarea_set_text(ta_editor, buf);
-    lv_textarea_set_cursor_pos(ta_editor, 0);
-    s_active = idx;
-    s_sel = idx;
-    s_dirty = false;
-    s_focus_list = false;
-    update_title();
-    refresh_file_list();
-    update_telemetry();
-    if (s_view != EDITOR_VIEW_EDIT) render_preview(false);
+    if (b < 1024) snprintf(out, n, "%u B", (unsigned)b);
+    else if (b < 1024 * 1024) snprintf(out, n, "%.1f KB", b / 1024.0);
+    else snprintf(out, n, "%.1f MB", b / (1024.0 * 1024.0));
 }
 
-static void save_file(void)
+/* ------------------------------------------------------------------ UTF-8 */
+/* The text area counts characters; the text is UTF-8. */
+static uint32_t char_to_byte(const char *t, uint32_t ci)
 {
-    if (s_active < 0 || s_active >= s_file_count || !ta_editor) return;
-    const char *text = lv_textarea_get_text(ta_editor);
-    if (write_file(s_files[s_active], text ? text : "")) {
-        s_dirty = false;
-        update_title();
-        update_telemetry();
-    } else {
-        flash_msg("SAVE FAILED - check SD card");
+    uint32_t b = 0, c = 0;
+    while (t[b] && c < ci) {
+        b++;
+        while (t[b] && ((unsigned char)t[b] & 0xC0) == 0x80) b++;
+        c++;
     }
+    return b;
 }
 
-static void new_file(void)
+static uint32_t byte_to_char(const char *t, uint32_t bi)
 {
-    if (s_dirty && s_active >= 0) {
-        save_file();
+    uint32_t c = 0;
+    for (uint32_t b = 0; b < bi && t[b]; b++) {
+        if (((unsigned char)t[b] & 0xC0) != 0x80) c++;
     }
-    if (s_file_count >= EDITOR_MAX_FILES) {
-        flash_msg("File list full (12 max)");
+    return c;
+}
+
+/* ----------------------------------------------------------------- config */
+static void config_save(void)
+{
+    FILE *f = fopen(ED_CONFIG_FILE, "w");
+    if (!f) return;
+    fprintf(f, "{\n  \"dir\": \"%s\",\n  \"file\": \"%s\",\n  \"view\": %d,\n  \"hidden\": %d\n}\n", s_dir,
+            s_readonly ? "" : s_file, (int)s_md_view, s_show_hidden ? 1 : 0);
+    fclose(f);
+}
+
+static void config_load(char *file_out, size_t n)
+{
+    file_out[0] = '\0';
+    FILE *f = fopen(ED_CONFIG_FILE, "r");
+    if (!f) return;
+    char line[ED_PATH_MAX + 32], val[ED_PATH_MAX];
+    int iv;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, " \"dir\": \"%255[^\"]\"", val) == 1) snprintf(s_dir, sizeof(s_dir), "%s", val);
+        else if (sscanf(line, " \"file\": \"%255[^\"]\"", val) == 1) snprintf(file_out, n, "%s", val);
+        else if (sscanf(line, " \"view\": %d", &iv) == 1 && iv >= 0 && iv <= 2) s_md_view = (ed_view_t)iv;
+        else if (sscanf(line, " \"hidden\": %d", &iv) == 1) s_show_hidden = iv != 0;
+    }
+    fclose(f);
+}
+
+/* ------------------------------------------------------------------ flash */
+static void flash(const char *msg)
+{
+    snprintf(s_flash, sizeof(s_flash), "%s", msg);
+    s_flash_until = lv_tick_get() + 3000;
+    refresh_status();
+}
+
+/* -------------------------------------------------------------- directory */
+static int ent_cmp(const void *a, const void *b)
+{
+    const ed_entry_t *x = a, *y = b;
+    if (x->dir != y->dir) return x->dir ? -1 : 1;
+    return strcasecmp(x->name, y->name);
+}
+
+static bool load_dir(void)
+{
+    char path[ED_PATH_MAX + 32];
+    abs_path(s_dir, path, sizeof(path));
+    DIR *d = opendir(path);
+    if (!d) {
+        if (s_dir[0]) {                 /* folder vanished: go to the root */
+            s_dir[0] = '\0';
+            return load_dir();
+        }
+        s_ent_count = 0;
+        return false;
+    }
+    s_ent_count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && s_ent_count < ED_MAX_ENTRIES) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        if (e->d_name[0] == '.' && !s_show_hidden) continue;
+        ed_entry_t *en = &s_ents[s_ent_count];
+        snprintf(en->name, sizeof(en->name), "%s", e->d_name);
+        char full[ED_PATH_MAX * 2];
+        snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0) {
+            en->dir = S_ISDIR(st.st_mode);
+            en->size = (uint32_t)st.st_size;
+        } else {
+            en->dir = false;
+            en->size = 0;
+        }
+        s_ent_count++;
+    }
+    closedir(d);
+    qsort(s_ents, (size_t)s_ent_count, sizeof(s_ents[0]), ent_cmp);
+    return true;
+}
+
+static void enter_dir(const char *rel, const char *select_name)
+{
+    if (rel != s_dir) snprintf(s_dir, sizeof(s_dir), "%s", rel);   /* callers may pass s_dir */
+    load_dir();
+    s_sel = 0;
+    list_rebuild();
+    if (select_name) {
+        for (int r = 0; r < s_row_count; r++) {
+            int ei = s_row_ent[r];
+            if (ei >= 0 && strcmp(s_ents[ei].name, select_name) == 0) s_sel = r;
+        }
+        list_paint();
+    }
+    config_save();
+}
+
+static void row_cb(lv_event_t *e);
+
+static void list_rebuild(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_clean(file_list);
+    s_row_count = 0;
+    char path[ED_PATH_MAX + 2];
+    snprintf(path, sizeof(path), "/%s", s_dir);
+    lv_label_set_text(lbl_path, path);
+
+    int total = s_ent_count + (s_dir[0] ? 1 : 0);
+    for (int r = 0; r < total && s_row_count < ED_MAX_ENTRIES + 1; r++) {
+        int ei = s_dir[0] ? r - 1 : r;
+        lv_obj_t *row = lv_button_create(file_list);
+        lv_obj_set_size(row, lv_pct(100), 32);
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_shadow_width(row, 0, 0);
+        lv_obj_set_style_pad_hor(row, 8, 0);
+        lv_obj_set_style_pad_ver(row, 0, 0);
+        lv_obj_add_event_cb(row, row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)s_row_count);
+        lv_obj_t *l = lv_label_create(row);
+        char t[ED_NAME_MAX + 16];
+        if (ei < 0) snprintf(t, sizeof(t), LV_SYMBOL_UP "  ..");
+        else snprintf(t, sizeof(t), "%s  %s", s_ents[ei].dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE, s_ents[ei].name);
+        lv_label_set_text(l, t);
+        lv_obj_set_width(l, lv_pct(ei >= 0 && !s_ents[ei].dir ? 72 : 100));
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l, ei >= 0 && s_ents[ei].dir ? p->accent_secondary : p->text_primary, 0);
+        if (ei >= 0 && !s_ents[ei].dir) {
+            lv_obj_t *sz = lv_label_create(row);
+            char b[16];
+            size_str(s_ents[ei].size, b, sizeof(b));
+            lv_label_set_text(sz, b);
+            lv_obj_align(sz, LV_ALIGN_RIGHT_MID, 0, 0);
+            lv_obj_set_style_text_font(sz, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(sz, p->text_secondary, 0);
+        }
+        s_rows[s_row_count] = row;
+        s_row_ent[s_row_count] = ei;
+        s_row_count++;
+    }
+    if (total == 0) {
+        lv_obj_t *l = lv_label_create(file_list);
+        lv_label_set_text(l, "(empty folder)\nN: new file   F: new folder");
+        lv_obj_set_style_text_color(l, p->text_secondary, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    }
+    if (s_sel >= s_row_count) s_sel = s_row_count ? s_row_count - 1 : 0;
+    list_paint();
+}
+
+static void list_paint(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    for (int r = 0; r < s_row_count; r++) {
+        int ei = s_row_ent[r];
+        char rel[ED_PATH_MAX];
+        rel[0] = '\0';
+        if (ei >= 0) join(s_dir, s_ents[ei].name, rel, sizeof(rel));
+        bool open = ei >= 0 && s_file[0] && strcmp(rel, s_file) == 0;
+        bool sel = r == s_sel;
+        lv_obj_set_style_bg_color(s_rows[r], open ? p->surface_active : p->surface, 0);
+        lv_obj_set_style_border_color(s_rows[r],
+                                      sel && s_focus_list ? p->accent_warning
+                                      : open              ? p->accent_primary
+                                                          : p->surface_border,
+                                      0);
+    }
+    if (s_focus_list && s_sel >= 0 && s_sel < s_row_count) lv_obj_scroll_to_view(s_rows[s_sel], LV_ANIM_OFF);
+    lv_obj_set_style_border_color(sidebar, s_focus_list ? p->accent_primary : p->surface_border, 0);
+}
+
+static void activate_row(int r)
+{
+    if (r < 0 || r >= s_row_count) return;
+    int ei = s_row_ent[r];
+    if (ei < 0) {
+        char up[ED_PATH_MAX], was[ED_NAME_MAX];
+        snprintf(was, sizeof(was), "%s", base_name(s_dir));
+        snprintf(up, sizeof(up), "%s", s_dir);
+        parent_of(up);
+        enter_dir(up, was);
         return;
     }
-    /* ponytail: first free untitled-N.md wins, no dialog */
-    for (int n = 1; n < 100; n++) {
-        char name[EDITOR_NAME_MAX];
-        snprintf(name, sizeof(name), "untitled-%d.md", n);
-        bool taken = false;
-        for (int i = 0; i < s_file_count; i++) {
-            if (strcmp(s_files[i], name) == 0) { taken = true; break; }
+    char rel[ED_PATH_MAX];
+    join(s_dir, s_ents[ei].name, rel, sizeof(rel));
+    if (s_ents[ei].dir) {
+        enter_dir(rel, NULL);
+    } else {
+        s_sel = r;
+        open_path(rel);
+    }
+}
+
+static void row_cb(lv_event_t *e)
+{
+    int r = (int)(intptr_t)lv_event_get_user_data(e);
+    s_focus_list = true;
+    s_sel = r;
+    activate_row(r);
+}
+
+/* ------------------------------------------------------------------ files */
+static void set_editor_text(const char *t)
+{
+    lv_textarea_set_text(ta_editor, t ? t : "");
+    lv_textarea_set_cursor_pos(ta_editor, 0);
+}
+
+static void undo_clear(void)
+{
+    for (int i = 0; i < s_undo_n; i++) free(s_undo[i].text);
+    s_undo_n = 0;
+}
+
+static void close_file(void)
+{
+    s_file[0] = '\0';
+    s_readonly = false;
+    s_dirty = false;
+    undo_clear();
+    set_editor_text("");
+    apply_layout();
+    refresh_status();
+    list_paint();
+}
+
+static void open_path(const char *rel)
+{
+    char path[ED_PATH_MAX + 32];
+    abs_path(rel, path, sizeof(path));
+    struct stat st;
+    if (stat(path, &st) != 0 || S_ISDIR(st.st_mode)) {
+        flash("Can't open that file");
+        return;
+    }
+    if (st.st_size > ED_VIEW_MAX) {
+        char m[96], b[16];
+        size_str((uint32_t)st.st_size, b, sizeof(b));
+        snprintf(m, sizeof(m), "Too large to open here (%s)", b);
+        flash(m);
+        return;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        flash("Can't read that file");
+        return;
+    }
+    /* sniff first: s_buf may still be on screen in the viewer */
+    static char probe[4096];
+    size_t pn = fread(probe, 1, sizeof(probe), f);
+    if (memchr(probe, '\0', pn)) {
+        fclose(f);
+        flash("Binary file - not a text file");
+        return;
+    }
+    if (s_dirty && !save_file()) {
+        fclose(f);
+        return;
+    }
+    rewind(f);
+    size_t n = fread(s_buf, 1, ED_VIEW_MAX, f);
+    fclose(f);
+    s_buf[n] = '\0';
+    snprintf(s_file, sizeof(s_file), "%s", rel);
+    s_markdown = is_markdown_name(rel);
+    s_readonly = n > ED_EDIT_MAX;
+    s_dirty = false;
+    undo_clear();
+    if (s_readonly) {
+        set_editor_text("");
+        s_viewer.plain = true;
+        lv_obj_remove_flag(viewer_scroll, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_update_layout(main_area);
+        devos_codeview_set(&s_viewer, s_buf);
+        s_view = VIEW_EDIT;
+    } else {
+        lv_obj_set_style_text_font(ta_editor, s_markdown ? &lv_font_montserrat_14 : &lv_font_nimbus_mono_14, 0);
+        set_editor_text(s_buf);
+        s_view = s_markdown ? s_md_view : VIEW_EDIT;
+    }
+    s_focus_list = false;
+    apply_layout();
+    if (!s_readonly) {                      /* start at the top once sized */
+        lv_obj_update_layout(ta_editor);
+        lv_textarea_set_cursor_pos(ta_editor, 0);
+        lv_obj_scroll_to_y(ta_editor, 0, LV_ANIM_OFF);
+    }
+    if (s_view != VIEW_EDIT) render_preview(false);
+    refresh_status();
+    list_paint();
+    config_save();
+}
+
+static bool write_file(const char *rel, const char *text)
+{
+    char path[ED_PATH_MAX + 32], tmp[ED_PATH_MAX + 40];
+    abs_path(rel, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp~", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    size_t len = strlen(text), w = fwrite(text, 1, len, f);
+    bool ok = w == len && fflush(f) == 0;
+    fclose(f);
+    if (!ok) {
+        unlink(tmp);
+        return false;
+    }
+    unlink(path);                           /* FAT can't rename over a file */
+    if (rename(tmp, path) != 0) {
+        /* fall back to writing in place */
+        f = fopen(path, "wb");
+        if (!f) return false;
+        ok = fwrite(text, 1, len, f) == len;
+        fclose(f);
+        unlink(tmp);
+        return ok;
+    }
+    return true;
+}
+
+static bool save_file(void)
+{
+    if (!s_file[0] || s_readonly) return true;
+    const char *t = lv_textarea_get_text(ta_editor);
+    if (!write_file(s_file, t ? t : "")) {
+        flash("SAVE FAILED - check the SD card");
+        return false;
+    }
+    s_dirty = false;
+    /* the listing shows sizes: refresh the entry */
+    load_dir();
+    list_rebuild();
+    refresh_status();
+    return true;
+}
+
+/* ------------------------------------------------------------------ undo */
+static void undo_push(void)
+{
+    const char *t = lv_textarea_get_text(ta_editor);
+    if (s_undo_n == ED_UNDO_MAX) {
+        free(s_undo[0].text);
+        memmove(s_undo, s_undo + 1, sizeof(s_undo[0]) * (ED_UNDO_MAX - 1));
+        s_undo_n--;
+    }
+    size_t n = strlen(t ? t : "");
+    char *c = malloc(n + 1);
+    if (!c) return;
+    memcpy(c, t ? t : "", n + 1);
+    s_undo[s_undo_n].text = c;
+    s_undo[s_undo_n].cursor = lv_textarea_get_cursor_pos(ta_editor);
+    s_undo_n++;
+}
+
+static void undo(void)
+{
+    if (!s_undo_n) {
+        flash("Nothing to undo");
+        return;
+    }
+    s_undo_n--;
+    lv_textarea_set_text(ta_editor, s_undo[s_undo_n].text);
+    lv_textarea_set_cursor_pos(ta_editor, (int32_t)s_undo[s_undo_n].cursor);
+    free(s_undo[s_undo_n].text);
+    s_dirty = true;
+    s_preview_stale = true;
+    refresh_status();
+}
+
+/* Call before changing the text: snapshots at the start of each burst. */
+static void before_edit(bool force)
+{
+    uint32_t now = lv_tick_get();
+    if (force || now - s_last_edit > 800 || s_undo_n == 0) undo_push();
+    s_last_edit = now;
+}
+
+static void after_edit(void)
+{
+    s_dirty = true;
+    s_preview_stale = true;
+    s_last_edit = lv_tick_get();
+    refresh_status();
+}
+
+/* ------------------------------------------------------------- selection */
+static bool get_selection(uint32_t *bs, uint32_t *be)
+{
+    lv_obj_t *lbl = lv_textarea_get_label(ta_editor);
+    uint32_t s = lv_label_get_text_selection_start(lbl), e = lv_label_get_text_selection_end(lbl);
+    if (s == LV_LABEL_TEXT_SELECTION_OFF || e == LV_LABEL_TEXT_SELECTION_OFF || s == e) return false;
+    if (s > e) {
+        uint32_t t = s;
+        s = e;
+        e = t;
+    }
+    const char *t = lv_textarea_get_text(ta_editor);
+    *bs = char_to_byte(t, s);
+    *be = char_to_byte(t, e);
+    return true;
+}
+
+static void clear_selection(void)
+{
+    lv_textarea_clear_selection(ta_editor);
+}
+
+/* Replace bytes [bs, be) with `ins` and put the cursor after it. */
+static void replace_range(uint32_t bs, uint32_t be, const char *ins)
+{
+    const char *t = lv_textarea_get_text(ta_editor);
+    size_t len = strlen(t), il = strlen(ins);
+    if (be > len) be = (uint32_t)len;
+    if (len - (be - bs) + il > ED_EDIT_MAX) {
+        flash("File would get too large to edit here");
+        return;
+    }
+    char *n = malloc(len - (be - bs) + il + 1);
+    if (!n) return;
+    memcpy(n, t, bs);
+    memcpy(n + bs, ins, il);
+    memcpy(n + bs + il, t + be, len - be + 1);
+    uint32_t cur = byte_to_char(n, (uint32_t)(bs + il));
+    clear_selection();
+    lv_textarea_set_text(ta_editor, n);
+    lv_textarea_set_cursor_pos(ta_editor, (int32_t)cur);
+    free(n);
+}
+
+/* Byte range of the cursor's line (end includes the newline if any). */
+static void line_range(uint32_t *ls, uint32_t *le)
+{
+    const char *t = lv_textarea_get_text(ta_editor);
+    uint32_t b = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+    uint32_t s = b, e = b;
+    while (s > 0 && t[s - 1] != '\n') s--;
+    while (t[e] && t[e] != '\n') e++;
+    if (t[e] == '\n') e++;
+    *ls = s;
+    *le = e;
+}
+
+/* Ctrl+Enter: tick/untick the line's task box; a plain line or bullet
+ * becomes a task. The cursor stays on the same text. */
+static void toggle_task(void)
+{
+    uint32_t s, e;
+    line_range(&s, &e);
+    const char *t = lv_textarea_get_text(ta_editor);
+    uint32_t i = s;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    int32_t cur = (int32_t)lv_textarea_get_cursor_pos(ta_editor);
+    bool bullet = (t[i] == '-' || t[i] == '*' || t[i] == '+') && t[i + 1] == ' ';
+    uint32_t d = i;
+    while (t[d] >= '0' && t[d] <= '9') d++;
+    if (d > i && (t[d] == '.' || t[d] == ')') && t[d + 1] == ' ') {
+        i = d;                  /* "1. item" is treated like "- item" */
+        bullet = true;
+    }
+    before_edit(true);
+    if (bullet && t[i + 2] == '[' && t[i + 3] && strchr(" xX", t[i + 3]) && t[i + 4] == ']') {
+        replace_range(i + 3, i + 4, t[i + 3] == ' ' ? "x" : " ");
+    } else if (bullet) {
+        replace_range(i + 2, i + 2, "[ ] ");
+        cur += 4;
+    } else {
+        replace_range(i, i, "- [ ] ");
+        cur += 6;
+    }
+    lv_textarea_set_cursor_pos(ta_editor, cur);
+    after_edit();
+}
+
+static void copy_or_cut(bool cut)
+{
+    uint32_t s, e;
+    bool sel = get_selection(&s, &e);
+    if (!sel) line_range(&s, &e);
+    const char *t = lv_textarea_get_text(ta_editor);
+    size_t n = e - s < ED_CLIP_MAX - 1 ? e - s : ED_CLIP_MAX - 1;
+    memcpy(s_clip, t + s, n);
+    s_clip[n] = '\0';
+    if (cut && !s_readonly) {
+        before_edit(true);
+        replace_range(s, e, "");
+        after_edit();
+    }
+    flash(cut ? (sel ? "Cut" : "Cut line") : (sel ? "Copied" : "Copied line"));
+}
+
+static void paste(void)
+{
+    if (!s_clip[0]) {
+        flash("Clipboard is empty");
+        return;
+    }
+    before_edit(true);
+    uint32_t s, e;
+    if (!get_selection(&s, &e)) {
+        const char *t = lv_textarea_get_text(ta_editor);
+        s = e = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+    }
+    replace_range(s, e, s_clip);
+    after_edit();
+}
+
+/* ---------------------------------------------------------------- cursor */
+static void cursor_to_byte(uint32_t b)
+{
+    const char *t = lv_textarea_get_text(ta_editor);
+    lv_textarea_set_cursor_pos(ta_editor, (int32_t)byte_to_char(t, b));
+}
+
+static void cursor_line_edge(bool end)
+{
+    uint32_t s, e;
+    line_range(&s, &e);
+    const char *t = lv_textarea_get_text(ta_editor);
+    if (end && e > s && t[e - 1] == '\n') e--;
+    cursor_to_byte(end ? e : s);
+}
+
+static void cursor_word(bool right)
+{
+    const char *t = lv_textarea_get_text(ta_editor);
+    uint32_t b = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+    if (right) {
+        while (t[b] && !isalnum((unsigned char)t[b])) b++;
+        while (t[b] && (isalnum((unsigned char)t[b]) || (unsigned char)t[b] >= 0x80)) b++;
+    } else {
+        while (b > 0 && !isalnum((unsigned char)t[b - 1])) b--;
+        while (b > 0 && (isalnum((unsigned char)t[b - 1]) || (unsigned char)t[b - 1] >= 0x80)) b--;
+    }
+    cursor_to_byte(b);
+}
+
+/* Enter: keep the indent; continue Markdown lists ("- ", "* ", "1. ",
+ * "- [ ] "); an empty list item ends the list instead. */
+static void newline_indent(void)
+{
+    uint32_t ls, le;
+    line_range(&ls, &le);
+    const char *t = lv_textarea_get_text(ta_editor);
+    uint32_t cur = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+    char prefix[64];
+    size_t pn = 0;
+    uint32_t i = ls;
+    while (i < cur && (t[i] == ' ' || t[i] == '\t') && pn < sizeof(prefix) - 8) prefix[pn++] = t[i++];
+    uint32_t marker_start = i;
+    if (s_markdown && i < cur) {
+        if ((t[i] == '-' || t[i] == '*' || t[i] == '+') && t[i + 1] == ' ') {
+            prefix[pn++] = t[i];
+            prefix[pn++] = ' ';
+            i += 2;
+            if (t[i] == '[' && (t[i + 1] == ' ' || t[i + 1] == 'x' || t[i + 1] == 'X') && t[i + 2] == ']' &&
+                t[i + 3] == ' ') {
+                memcpy(prefix + pn, "[ ] ", 4);
+                pn += 4;
+                i += 4;
+            }
+        } else if (isdigit((unsigned char)t[i])) {
+            int num = 0;
+            uint32_t j = i;
+            while (isdigit((unsigned char)t[j])) num = num * 10 + (t[j++] - '0');
+            if ((t[j] == '.' || t[j] == ')') && t[j + 1] == ' ') {
+                pn += (size_t)snprintf(prefix + pn, sizeof(prefix) - pn, "%d%c ", num + 1, t[j]);
+                i = j + 2;
+            }
         }
-        if (!taken) {
-            if (!write_file(name, "# Untitled\n\n")) {
-                flash_msg("CREATE FAILED - check SD card");
-                return;
-            }
-            scan_notes();
-            for (int i = 0; i < s_file_count; i++) {
-                if (strcmp(s_files[i], name) == 0) { open_file(i); break; }
-            }
+    }
+    prefix[pn] = '\0';
+    before_edit(true);                          /* undo steps back line by line */
+    /* marker with nothing after it: end the list */
+    uint32_t line_end = le;
+    if (line_end > ls && t[line_end - 1] == '\n') line_end--;
+    if (i > marker_start && i >= line_end && cur >= line_end) {
+        replace_range(marker_start, line_end, "");
+    } else {
+        char ins[72];
+        snprintf(ins, sizeof(ins), "\n%s", prefix);
+        replace_range(cur, cur, ins);
+    }
+    after_edit();
+}
+
+/* ------------------------------------------------------------------ find */
+static int count_matches(void)
+{
+    if (!s_find[0]) return 0;
+    const char *t = s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
+    int n = 0;
+    size_t fl = strlen(s_find);
+    for (const char *p = t; *p; p++) {
+        if (strncasecmp(p, s_find, fl) == 0) n++;
+    }
+    return n;
+}
+
+static void find_next(void)
+{
+    if (!s_find[0] || s_readonly) return;
+    const char *t = lv_textarea_get_text(ta_editor);
+    size_t fl = strlen(s_find), len = strlen(t);
+    uint32_t start = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+    for (size_t k = 0; k < len; k++) {
+        size_t i = (start + k) % len;
+        /* the cursor sits after the previous match, so this finds the next */
+        if (i + fl <= len && strncasecmp(t + i, s_find, fl) == 0) {
+            uint32_t cs = byte_to_char(t, (uint32_t)i), ce = byte_to_char(t, (uint32_t)(i + fl));
+            lv_textarea_set_cursor_pos(ta_editor, (int32_t)ce);
+            lv_obj_t *lbl = lv_textarea_get_label(ta_editor);
+            lv_label_set_text_selection_start(lbl, cs);
+            lv_label_set_text_selection_end(lbl, ce);
+            char info[48];
+            snprintf(info, sizeof(info), "%d match%s", count_matches(), count_matches() == 1 ? "" : "es");
+            lv_label_set_text(lbl_find_info, info);
             return;
         }
     }
+    lv_label_set_text(lbl_find_info, "No match");
 }
 
-/* --------------------------------------------------------------------------
- * UI refresh (all use the live palette, so Fn+T heals everything)
- * -------------------------------------------------------------------------- */
-static void update_telemetry(void)
+static bool s_find_fresh;   /* the last query is shown: typing replaces it */
+
+static void find_open(bool open)
 {
-    devos_telemetry_t t = *devos_telemetry_get();
-    if (s_active >= 0 && s_active < s_file_count) {
-        snprintf(t.editor_file, sizeof(t.editor_file), "%s", s_files[s_active]);
-        t.editor_file[sizeof(t.editor_file) - 1] = '\0';
-        const char *text = ta_editor ? lv_textarea_get_text(ta_editor) : "";
-        size_t bytes = strlen(text ? text : "");
-        t.editor_file_kb = (uint32_t)((bytes + 1023) / 1024);
-        if (bytes > 0 && t.editor_file_kb == 0) t.editor_file_kb = 1;
-    } else {
-        snprintf(t.editor_file, sizeof(t.editor_file), "%s", "(none)");
-        t.editor_file[sizeof(t.editor_file) - 1] = '\0';
-        t.editor_file_kb = 0;
+    s_find_open = open;
+    s_find_fresh = open && s_find[0];
+    if (open) {
+        s_focus_list = false;
+        list_paint();
+        lv_textarea_set_text(ta_find, s_find);
+        lv_label_set_text(lbl_find_info, "Enter: next   Esc: close");
     }
-    devos_telemetry_update(&t);
+    apply_layout();
 }
 
-static void update_title(void)
+/* ------------------------------------------------------------------ modal */
+static void modal_close(void)
 {
-    if (!lbl_fn) return;
-    const char *mode = s_view == EDITOR_VIEW_SPLIT ? "Split"
-                     : s_view == EDITOR_VIEW_PREVIEW ? "Preview" : "Edit";
-    char buf[128];
-    if (s_active >= 0 && s_active < s_file_count) {
-        const char *text = ta_editor ? lv_textarea_get_text(ta_editor) : "";
-        size_t bytes = strlen(text ? text : "");
-        char size[16];
-        if (bytes < 1024) snprintf(size, sizeof(size), "%zu B", bytes);
-        else snprintf(size, sizeof(size), "%zu KB", bytes / 1024);
-        snprintf(buf, sizeof(buf), "%s  (%s) - %s%s",
-                 s_files[s_active], size, mode, s_dirty ? " [*]" : "");
-    } else {
-        snprintf(buf, sizeof(buf), "(no file) - %s", mode);
-    }
-    lv_label_set_text(lbl_fn, buf);
-    if (lbl_btn_mode) {
-        char mbuf[32];
-        snprintf(mbuf, sizeof(mbuf), "Mode: %s", mode);
-        lv_label_set_text(lbl_btn_mode, mbuf);
-    }
+    s_modal = MODAL_NONE;
+    lv_obj_add_flag(modal, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* Transient status line (next update_title overwrites it) */
-static void flash_msg(const char *msg)
+static bool s_modal_fresh;   /* the suggested name is untouched: typing replaces it */
+
+static void modal_open(ed_modal_t kind, const char *target_rel)
 {
-    if (lbl_fn) lv_label_set_text(lbl_fn, msg);
+    s_modal = kind;
+    s_modal_fresh = kind == MODAL_NEW_FILE;
+    snprintf(s_modal_target, sizeof(s_modal_target), "%s", target_rel ? target_rel : "");
+    char title[ED_PATH_MAX + 32];
+    const char *ok = "Create";
+    bool input = true;
+    switch (kind) {
+    case MODAL_NEW_FILE: {
+        snprintf(title, sizeof(title), LV_SYMBOL_FILE "  New file in /%s", s_dir);
+        char name[ED_NAME_MAX] = "untitled.md";
+        for (int k = 2; k < 100; k++) {
+            char rel[ED_PATH_MAX], path[ED_PATH_MAX + 32];
+            join(s_dir, name, rel, sizeof(rel));
+            abs_path(rel, path, sizeof(path));
+            struct stat st;
+            if (stat(path, &st) != 0) break;
+            snprintf(name, sizeof(name), "untitled-%d.md", k);
+        }
+        lv_textarea_set_text(ta_modal, name);
+        break;
+    }
+    case MODAL_NEW_DIR:
+        snprintf(title, sizeof(title), LV_SYMBOL_DIRECTORY "  New folder in /%s", s_dir);
+        lv_textarea_set_text(ta_modal, "");
+        break;
+    case MODAL_RENAME:
+        snprintf(title, sizeof(title), LV_SYMBOL_EDIT "  Rename %s", base_name(s_modal_target));
+        lv_textarea_set_text(ta_modal, base_name(s_modal_target));
+        ok = "Rename";
+        break;
+    case MODAL_DELETE:
+        snprintf(title, sizeof(title), LV_SYMBOL_TRASH "  Delete /%s?", s_modal_target);
+        ok = "Delete";
+        input = false;
+        break;
+    default:
+        return;
+    }
+    lv_label_set_text(lbl_modal_title, title);
+    lv_label_set_text(lbl_modal_desc, kind == MODAL_NEW_FILE ? "No extension = Markdown (.md).  Enter creates, Esc cancels"
+                                      : input ? "Enter confirms, Esc cancels"
+                                              : "This can't be undone. Folders must be empty.  Y / Enter deletes, Esc cancels");
+    if (input) lv_obj_remove_flag(ta_modal, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ta_modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_y(lbl_modal_desc, input ? 82 : 40);
+    lv_label_set_text(lbl_modal_ok, ok);
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_set_style_bg_color(btn_modal_ok, kind == MODAL_DELETE ? p->accent_danger : p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_modal_ok, kind == MODAL_DELETE ? lv_color_white() : lv_color_black(), 0);
+    lv_obj_remove_flag(modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(modal);
 }
 
-static void refresh_file_list(void)
+static void modal_confirm(void)
+{
+    char name[ED_NAME_MAX];
+    snprintf(name, sizeof(name), "%s", lv_textarea_get_text(ta_modal));
+    /* trim spaces */
+    char *nm = name;
+    while (*nm == ' ') nm++;
+    for (size_t l = strlen(nm); l && nm[l - 1] == ' '; l--) nm[l - 1] = '\0';
+    char rel[ED_PATH_MAX], path[ED_PATH_MAX + 32], path2[ED_PATH_MAX + 32];
+    ed_modal_t kind = s_modal;
+    if (kind != MODAL_DELETE && !valid_name(nm)) {
+        lv_label_set_text(lbl_modal_desc, "Not a valid name (no / \\ : * ? \" < > |)");
+        return;
+    }
+    switch (kind) {
+    case MODAL_NEW_FILE: {
+        char named[ED_NAME_MAX + 4];
+        snprintf(named, sizeof(named), "%s%s", nm, strchr(nm, '.') ? "" : ".md");   /* bare name = Markdown */
+        if (strlen(named) >= ED_NAME_MAX) {
+            lv_label_set_text(lbl_modal_desc, "That name is too long");
+            return;
+        }
+        nm = strcpy(name, named);
+        join(s_dir, nm, rel, sizeof(rel));
+        abs_path(rel, path, sizeof(path));
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            lv_label_set_text(lbl_modal_desc, "That name is taken");
+            return;
+        }
+        const char *seed = is_markdown_name(nm) ? "# " : "";
+        char first[ED_NAME_MAX + 8];
+        snprintf(first, sizeof(first), "%s", seed);
+        if (seed[0]) {
+            /* title from the file name */
+            char title[ED_NAME_MAX];
+            snprintf(title, sizeof(title), "%s", nm);
+            char *dot = strrchr(title, '.');
+            if (dot) *dot = '\0';
+            snprintf(first, sizeof(first), "# %s\n\n", title);
+        }
+        if (!write_file(rel, first)) {
+            lv_label_set_text(lbl_modal_desc, "Could not create it (SD card?)");
+            return;
+        }
+        modal_close();
+        load_dir();
+        list_rebuild();
+        open_path(rel);
+        lv_textarea_set_cursor_pos(ta_editor, LV_TEXTAREA_CURSOR_LAST);
+        return;
+    }
+    case MODAL_NEW_DIR:
+        join(s_dir, nm, rel, sizeof(rel));
+        abs_path(rel, path, sizeof(path));
+        if (mkdir(path, 0755) != 0) {
+            lv_label_set_text(lbl_modal_desc, errno == EEXIST ? "That name is taken" : "Could not create the folder");
+            return;
+        }
+        modal_close();
+        enter_dir(s_dir, nm);
+        flash("Folder created");
+        return;
+    case MODAL_RENAME: {
+        char dir[ED_PATH_MAX];
+        snprintf(dir, sizeof(dir), "%s", s_modal_target);
+        parent_of(dir);
+        join(dir, nm, rel, sizeof(rel));
+        abs_path(s_modal_target, path, sizeof(path));
+        abs_path(rel, path2, sizeof(path2));
+        struct stat st;
+        if (strcmp(path, path2) != 0 && stat(path2, &st) == 0) {
+            lv_label_set_text(lbl_modal_desc, "That name is taken");
+            return;
+        }
+        bool was_open = strcmp(s_file, s_modal_target) == 0;
+        if (was_open && s_dirty) save_file();
+        if (rename(path, path2) != 0) {
+            lv_label_set_text(lbl_modal_desc, "Rename failed");
+            return;
+        }
+        if (was_open) {
+            snprintf(s_file, sizeof(s_file), "%s", rel);
+            s_markdown = is_markdown_name(rel);
+        }
+        modal_close();
+        enter_dir(s_dir, nm);
+        refresh_status();
+        flash("Renamed");
+        return;
+    }
+    case MODAL_DELETE: {
+        abs_path(s_modal_target, path, sizeof(path));
+        struct stat st;
+        bool dir = stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+        int rc = dir ? rmdir(path) : unlink(path);
+        if (rc != 0) {
+            lv_label_set_text(lbl_modal_desc, dir ? "Folder isn't empty (delete its files first)" : "Delete failed");
+            return;
+        }
+        if (strcmp(s_file, s_modal_target) == 0 ||
+            (dir && strncmp(s_file, s_modal_target, strlen(s_modal_target)) == 0)) {
+            close_file();
+        }
+        modal_close();
+        load_dir();
+        list_rebuild();
+        flash("Deleted");
+        return;
+    }
+    default:
+        modal_close();
+    }
+}
+
+static void modal_ok_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    modal_confirm();
+}
+
+static void modal_cancel_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    modal_close();
+}
+
+/* Selected browser entry as a relative path ("" if none / ".."). */
+static bool selected_rel(char *out, size_t n)
+{
+    if (s_sel < 0 || s_sel >= s_row_count || s_row_ent[s_sel] < 0) return false;
+    join(s_dir, s_ents[s_row_ent[s_sel]].name, out, n);
+    return true;
+}
+
+/* ----------------------------------------------------------------- layout */
+static void set_btn_active(lv_obj_t *b, lv_obj_t *l, bool on)
 {
     const devos_palette_t *p = devos_theme_get();
-    for (int i = 0; i < EDITOR_MAX_FILES; i++) {
-        if (!file_btns[i]) continue;
-        if (i >= s_file_count) {
-            lv_obj_add_flag(file_btns[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_remove_flag(file_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(file_btns[i], 4, 28 + i * 40);
-        lv_label_set_text(file_lbls[i], s_files[i]);
-        if (i == s_active) {
-            lv_obj_set_style_bg_color(file_btns[i], p->surface_active, 0);
-            lv_obj_set_style_border_color(file_btns[i], p->accent_primary, 0);
-            lv_obj_set_style_text_color(file_lbls[i], p->accent_primary, 0);
-        } else if (s_focus_list && i == s_sel) {
-            /* ponytail: keyboard cursor = amber border, same language as launcher */
-            lv_obj_set_style_bg_color(file_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(file_btns[i], p->accent_warning, 0);
-            lv_obj_set_style_text_color(file_lbls[i], p->text_primary, 0);
-        } else {
-            lv_obj_set_style_bg_color(file_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(file_btns[i], p->surface_border, 0);
-            lv_obj_set_style_text_color(file_lbls[i], p->text_primary, 0);
-        }
-    }
+    if (!b) return;
+    lv_obj_set_style_bg_color(b, on ? p->surface_active : p->surface, 0);
+    lv_obj_set_style_border_color(b, on ? p->accent_primary : p->surface_border, 0);
+    if (l) lv_obj_set_style_text_color(l, on ? p->accent_primary : p->text_primary, 0);
 }
 
-static void update_tree_button(void)
-{
-    if (!btn_tree || !lbl_btn_tree) return;
-    const devos_palette_t *p = devos_theme_get();
-    if (s_sidebar_visible) {
-        lv_obj_set_style_bg_color(btn_tree, p->surface_active, 0);
-        lv_obj_set_style_border_color(btn_tree, p->accent_primary, 0);
-        lv_obj_set_style_text_color(lbl_btn_tree, p->accent_primary, 0);
-    } else {
-        lv_obj_set_style_bg_color(btn_tree, p->surface, 0);
-        lv_obj_set_style_border_color(btn_tree, p->surface_border, 0);
-        lv_obj_set_style_text_color(lbl_btn_tree, p->text_secondary, 0);
-    }
-}
+static bool s_sidebar_visible = true;
 
 static void apply_layout(void)
 {
-    int main_x = 0;
-    int main_w = DEVOS_SCREEN_WIDTH;
-    if (s_sidebar_visible) {
-        if (sidebar) lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
-        main_x = DEVOS_PANE_LEFT_WIDTH;
-        main_w = DEVOS_SCREEN_WIDTH - DEVOS_PANE_LEFT_WIDTH;
-    } else if (sidebar) {
-        lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    int main_x = s_sidebar_visible ? DEVOS_PANE_LEFT_WIDTH : 0;
+    int main_w = DEVOS_SCREEN_WIDTH - main_x;
+    if (s_sidebar_visible) lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_size(main_area, main_w, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_pos(main_area, main_x, 0);
+
+    lv_obj_align(btn_mode, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_align_to(btn_attach, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    lv_obj_align_to(btn_find, btn_attach, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    lv_obj_align_to(btn_save, btn_find, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    lv_obj_align_to(btn_tree, btn_save, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    int lbl_w = main_w - 460;
+    lv_obj_set_width(lbl_fn, lbl_w < 120 ? 120 : lbl_w);
+    set_btn_active(btn_tree, lbl_btn_tree, s_sidebar_visible);
+    set_btn_active(btn_find, lbl_btn_find, s_find_open);
+
+    int top = 34 + (s_find_open ? ED_FIND_H : 0);
+    int h = DEVOS_CONTENT_HEIGHT - top - ED_STATUS_H;
+    if (s_find_open) {
+        lv_obj_remove_flag(find_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(find_bar, main_w, ED_FIND_H);
+    } else {
+        lv_obj_add_flag(find_bar, LV_OBJ_FLAG_HIDDEN);
     }
-    if (main_area) {
-        lv_obj_set_size(main_area, main_w, DEVOS_CONTENT_HEIGHT);
-        lv_obj_set_pos(main_area, main_x, 0);
+    lv_obj_set_size(status_bar, main_w, ED_STATUS_H);
+    lv_obj_set_pos(status_bar, 0, DEVOS_CONTENT_HEIGHT - ED_STATUS_H);
+
+    bool none = !s_file[0];
+    if (none) {
+        lv_obj_add_flag(ta_editor, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(viewer_scroll, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(lbl_empty, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_width(lbl_empty, main_w - 80);
+        lv_obj_align(lbl_empty, LV_ALIGN_CENTER, 0, 0);
+        return;
     }
-    if (top_bar && btn_mode && btn_attach && btn_save && btn_new && btn_tree) {
-        lv_obj_align(btn_mode, LV_ALIGN_RIGHT_MID, -8, 0);
-        lv_obj_align_to(btn_attach, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-        lv_obj_align_to(btn_save, btn_attach, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-        lv_obj_align_to(btn_new, btn_save, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-        lv_obj_align_to(btn_tree, btn_new, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-        if (lbl_fn) {
-            int lbl_w = main_w - 420;
-            if (lbl_w < 120) lbl_w = 120;
-            lv_obj_set_width(lbl_fn, lbl_w);
-        }
-        update_tree_button();
+    lv_obj_add_flag(lbl_empty, LV_OBJ_FLAG_HIDDEN);
+    if (s_readonly) {
+        lv_obj_add_flag(ta_editor, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(viewer_scroll, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(viewer_scroll, main_w, h);
+        lv_obj_set_pos(viewer_scroll, 0, top);
+        return;
     }
-    if (!ta_editor || !preview_scroll) return;
-    int edit_h = DEVOS_CONTENT_HEIGHT - 34;
-    if (s_view == EDITOR_VIEW_EDIT) {
+    lv_obj_add_flag(viewer_scroll, LV_OBJ_FLAG_HIDDEN);
+    if (s_view == VIEW_EDIT) {
         lv_obj_remove_flag(ta_editor, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_size(ta_editor, main_w, edit_h);
-        lv_obj_set_pos(ta_editor, 0, 34);
-        lv_obj_set_style_border_width(preview_scroll, 0, 0);
-    } else if (s_view == EDITOR_VIEW_SPLIT) {
+        lv_obj_set_size(ta_editor, main_w, h);
+        lv_obj_set_pos(ta_editor, 0, top);
+    } else if (s_view == VIEW_SPLIT) {
         lv_obj_remove_flag(ta_editor, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_size(ta_editor, main_w / 2, edit_h);
-        lv_obj_set_pos(ta_editor, 0, 34);
-        lv_obj_set_size(preview_scroll, main_w - main_w / 2, edit_h);
-        lv_obj_set_pos(preview_scroll, main_w / 2, 34);
+        lv_obj_set_size(ta_editor, main_w / 2, h);
+        lv_obj_set_pos(ta_editor, 0, top);
+        lv_obj_set_size(preview_scroll, main_w - main_w / 2, h);
+        lv_obj_set_pos(preview_scroll, main_w / 2, top);
         lv_obj_set_style_border_width(preview_scroll, 1, 0);
         lv_obj_set_style_border_side(preview_scroll, LV_BORDER_SIDE_LEFT, 0);
     } else {
         lv_obj_add_flag(ta_editor, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_size(preview_scroll, main_w, edit_h);
-        lv_obj_set_pos(preview_scroll, 0, 34);
+        lv_obj_set_size(preview_scroll, main_w, h);
+        lv_obj_set_pos(preview_scroll, 0, top);
         lv_obj_set_style_border_width(preview_scroll, 0, 0);
     }
 }
 
-static void render_preview(bool preserve_scroll)
+static void render_preview(bool keep_scroll)
 {
-    if (!preview_scroll || !ta_editor) return;
-    int32_t scroll_y = preserve_scroll ? lv_obj_get_scroll_y(preview_scroll) : 0;
+    if (!s_markdown || s_readonly) return;
+    int32_t y = keep_scroll ? lv_obj_get_scroll_y(preview_scroll) : 0;
     lv_obj_clean(preview_scroll);
     lv_obj_update_layout(preview_scroll);
-    const char *text = lv_textarea_get_text(ta_editor);
-    devos_md_render(preview_scroll, text ? text : "");
+    const char *t = lv_textarea_get_text(ta_editor);
+    devos_md_render(preview_scroll, t ? t : "");
     lv_obj_update_layout(preview_scroll);
-    if (preserve_scroll && scroll_y > 0) {
-        lv_obj_scroll_to_y(preview_scroll, scroll_y, LV_ANIM_OFF);
+    if (keep_scroll && y > 0) lv_obj_scroll_to_y(preview_scroll, y, LV_ANIM_OFF);
+}
+
+static void refresh_status(void)
+{
+    if (!lbl_status) return;
+    char buf[200];
+    if (!s_file[0]) {
+        snprintf(buf, sizeof(buf), "No file open");
+    } else {
+        const char *t = s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
+        size_t len = strlen(t ? t : "");
+        char sz[16];
+        size_str((uint32_t)len, sz, sizeof(sz));
+        if (s_readonly) {
+            snprintf(buf, sizeof(buf), "Read-only (larger than %d KB)  -  %s  -  arrows / Sym+Up/Down scroll",
+                     ED_EDIT_MAX / 1024, sz);
+        } else {
+            uint32_t b = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+            int ln = 1, col = 1;
+            for (uint32_t i = 0; i < b && t[i]; i++) {
+                if (t[i] == '\n') {
+                    ln++;
+                    col = 1;
+                } else if (((unsigned char)t[i] & 0xC0) != 0x80) {
+                    col++;
+                }
+            }
+            int words = 0;
+            bool in = false;
+            if (s_markdown) {
+                for (const char *q = t; *q; q++) {
+                    bool w = !isspace((unsigned char)*q);
+                    if (w && !in) words++;
+                    in = w;
+                }
+            }
+            char wbuf[24] = "";
+            if (s_markdown) snprintf(wbuf, sizeof(wbuf), "  -  %d words", words);
+            snprintf(buf, sizeof(buf), "Ln %d, Col %d  -  %s%s  -  %s  -  %s", ln, col, sz, wbuf,
+                     s_markdown ? "Markdown" : "Text", s_dirty ? "modified" : "saved");
+        }
+    }
+    if (s_flash[0] && lv_tick_get() < s_flash_until) {
+        size_t l = strlen(buf);
+        snprintf(buf + l, sizeof(buf) - l, "     %s", s_flash);
+    }
+    if (strcmp(lv_label_get_text(lbl_status), buf) != 0) lv_label_set_text(lbl_status, buf);
+
+    char title[ED_PATH_MAX + 24];
+    if (s_file[0]) snprintf(title, sizeof(title), "%s%s", s_file, s_dirty ? "  [*]" : "");
+    else snprintf(title, sizeof(title), "Markdown Editor");
+    if (strcmp(lv_label_get_text(lbl_fn), title) != 0) lv_label_set_text(lbl_fn, title);
+    const char *mode = s_view == VIEW_SPLIT ? "Split" : s_view == VIEW_PREVIEW ? "Preview" : "Edit";
+    char m[24];
+    snprintf(m, sizeof(m), "%s", s_markdown && !s_readonly ? mode : "Edit");
+    if (strcmp(lv_label_get_text(lbl_btn_mode), m) != 0) lv_label_set_text(lbl_btn_mode, m);
+
+    devos_telemetry_t tel = *devos_telemetry_get();
+    snprintf(tel.editor_file, sizeof(tel.editor_file), "%s", s_file[0] ? base_name(s_file) : "(none)");
+    tel.editor_file_kb = s_file[0] ? (uint32_t)((strlen(s_readonly ? s_buf : lv_textarea_get_text(ta_editor)) + 1023) / 1024) : 0;
+    devos_telemetry_update(&tel);
+}
+
+static void cycle_view(void)
+{
+    if (!s_file[0] || !s_markdown || s_readonly) {
+        flash("Preview is for Markdown files");
+        return;
+    }
+    s_view = s_view == VIEW_EDIT ? VIEW_SPLIT : s_view == VIEW_SPLIT ? VIEW_PREVIEW : VIEW_EDIT;
+    s_md_view = s_view;
+    apply_layout();
+    if (s_view != VIEW_EDIT) render_preview(false);
+    refresh_status();
+    config_save();
+}
+
+static void tick_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
+    if (s_preview_stale && s_view != VIEW_EDIT && lv_tick_elaps(s_last_edit) > 350) {
+        s_preview_stale = false;
+        render_preview(true);
+    }
+    if (s_dirty && lv_tick_elaps(s_last_edit) > ED_AUTOSAVE_MS) {
+        if (save_file()) flash("Autosaved");
+    }
+    if (s_flash[0] && lv_tick_get() >= s_flash_until) {
+        s_flash[0] = '\0';
+        refresh_status();
     }
 }
 
-
+/* ------------------------------------------------------------------ theme */
 static void apply_theme(const devos_palette_t *p, void *user_data)
 {
     LV_UNUSED(user_data);
     if (!screen) return;
-
     lv_obj_set_style_bg_color(screen, p->bg, 0);
-    if (sidebar) {
-        lv_obj_set_style_bg_color(sidebar, p->surface, 0);
-        lv_obj_set_style_border_color(sidebar, p->surface_border, 0);
+    lv_obj_set_style_bg_color(sidebar, p->surface, 0);
+    lv_obj_set_style_text_color(lbl_side_title, p->text_secondary, 0);
+    lv_obj_set_style_text_color(lbl_path, p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_side_hint, p->text_secondary, 0);
+    lv_obj_set_style_bg_color(main_area, p->bg, 0);
+    lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
+    lv_obj_set_style_border_color(top_bar, p->surface_border, 0);
+    lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
+    lv_obj_t *bs[] = {btn_save, btn_attach, btn_mode, btn_add_file, btn_add_dir};
+    for (unsigned i = 0; i < sizeof(bs) / sizeof(bs[0]); i++) {
+        lv_obj_set_style_bg_color(bs[i], p->surface, 0);
+        lv_obj_set_style_border_color(bs[i], p->surface_border, 0);
     }
-    if (lbl_files) lv_obj_set_style_text_color(lbl_files, p->text_secondary, 0);
-    if (main_area) lv_obj_set_style_bg_color(main_area, p->bg, 0);
-    if (top_bar) {
-        lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
-        lv_obj_set_style_border_color(top_bar, p->surface_border, 0);
-    }
-    if (lbl_fn) lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
-
-    lv_obj_t *action_btns[] = {btn_tree, btn_new, btn_save, btn_attach, btn_mode};
-    lv_obj_t *action_lbls[] = {lbl_btn_tree, lbl_btn_new, lbl_btn_save, lbl_btn_attach, lbl_btn_mode};
-    for (int i = 0; i < 5; i++) {
-        if (action_btns[i]) {
-            lv_obj_set_style_bg_color(action_btns[i], p->surface, 0);
-            lv_obj_set_style_border_color(action_btns[i], p->surface_border, 0);
-        }
-        if (action_lbls[i]) {
-            lv_obj_set_style_text_color(action_lbls[i], (i == 4) ? p->accent_primary : p->text_primary, 0);
-        }
-    }
-    update_tree_button();
-
-    if (ta_editor) {
-        lv_obj_set_style_bg_color(ta_editor, p->code_bg, 0);
-        lv_obj_set_style_text_color(ta_editor, p->text_primary, 0);
-        lv_obj_set_style_border_color(ta_editor, p->surface_border, 0);
-        lv_obj_set_style_bg_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
-        lv_obj_set_style_border_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
-    }
-    if (preview_scroll) {
-        lv_obj_set_style_bg_color(preview_scroll, p->code_bg, 0);
-        lv_obj_set_style_border_color(preview_scroll, p->surface_border, 0);
-    }
-
-    refresh_file_list();
-    if (s_view != EDITOR_VIEW_EDIT) render_preview(true);
+    lv_obj_t *ls[] = {lbl_btn_save, lbl_btn_attach, lbl_btn_mode};
+    for (unsigned i = 0; i < sizeof(ls) / sizeof(ls[0]); i++) lv_obj_set_style_text_color(ls[i], p->text_primary, 0);
+    lv_obj_set_style_bg_color(ta_editor, p->code_bg, 0);
+    lv_obj_set_style_text_color(ta_editor, p->text_primary, 0);
+    lv_obj_set_style_bg_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
+    lv_obj_set_style_border_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
+    lv_obj_set_style_bg_color(lv_textarea_get_label(ta_editor), p->accent_primary, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(lv_textarea_get_label(ta_editor), p->bg, LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(preview_scroll, p->code_bg, 0);
+    lv_obj_set_style_border_color(preview_scroll, p->surface_border, 0);
+    lv_obj_set_style_bg_color(viewer_scroll, p->code_bg, 0);
+    lv_obj_set_style_text_color(lbl_empty, p->text_secondary, 0);
+    lv_obj_set_style_bg_color(find_bar, p->bg_alt, 0);
+    lv_obj_set_style_bg_color(ta_find, p->code_bg, 0);
+    lv_obj_set_style_text_color(ta_find, p->text_primary, 0);
+    lv_obj_set_style_text_color(lbl_find_info, p->text_secondary, 0);
+    lv_obj_set_style_bg_color(status_bar, p->bg_alt, 0);
+    lv_obj_set_style_text_color(lbl_status, p->text_secondary, 0);
+    lv_obj_set_style_bg_color(modal, p->surface, 0);
+    lv_obj_set_style_border_color(modal, p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_modal_title, p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_modal_desc, p->text_secondary, 0);
+    lv_obj_set_style_bg_color(ta_modal, p->code_bg, 0);
+    lv_obj_set_style_text_color(ta_modal, p->text_primary, 0);
+    list_rebuild();
+    apply_layout();
+    if (s_view != VIEW_EDIT) render_preview(true);
 }
 
-/* --------------------------------------------------------------------------
- * Input & Button callbacks
- * -------------------------------------------------------------------------- */
-static void btn_tree_cb(lv_event_t *e)
+/* ---------------------------------------------------------------- buttons */
+static void tree_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     s_sidebar_visible = !s_sidebar_visible;
     if (!s_sidebar_visible) s_focus_list = false;
     apply_layout();
-    refresh_file_list();
+    list_paint();
 }
 
-static void btn_new_cb(lv_event_t *e)
+static void save_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    new_file();
+    if (s_file[0] && save_file()) flash("Saved");
 }
 
-static void btn_save_cb(lv_event_t *e)
+static void find_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    save_file();
+    if (s_file[0]) find_open(!s_find_open);
 }
 
-static void btn_attach_cb(lv_event_t *e)
+static void mode_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (s_active < 0 || s_active >= s_file_count || !ta_editor) {
-        flash_msg("No active note to attach");
+    cycle_view();
+}
+
+static void add_file_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    modal_open(MODAL_NEW_FILE, NULL);
+}
+
+static void add_dir_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    modal_open(MODAL_NEW_DIR, NULL);
+}
+
+static void attach_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (!s_file[0]) {
+        flash("Open a note to attach");
         return;
     }
-    const char *text = lv_textarea_get_text(ta_editor);
+    const char *text = s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
     if (!text || !*text) {
-        flash_msg("Note is empty");
+        flash("Note is empty");
         return;
     }
-    char msg[OPENDEV_BLOCK_MAX];
-    snprintf(msg, sizeof(msg), "[Context from %s]:\n%s", s_files[s_active], text);
-    if (opendev_client_status() == OPENDEV_UP) {
-        int rc = opendev_client_send(msg);
-        if (rc == 0) {
-            flash_msg("Attached to OpenDev session!");
-            return;
-        }
+    static EXT_RAM_BSS_ATTR char msg[OPENDEV_BLOCK_MAX];
+    snprintf(msg, sizeof(msg), "[Context from %s]:\n%s", s_file, text);
+    if (opendev_client_status() == OPENDEV_UP && opendev_client_active() >= 0 && opendev_client_send(msg) == 0) {
+        flash("Attached to the open OpenCode conversation");
+        return;
     }
-    if (agy_client_status() == AGY_UP) {
-        int rc = agy_client_send(msg, NULL);
-        if (rc == 0) {
-            flash_msg("Attached to Antigravity session!");
-            return;
-        }
+    if (agy_client_status() == AGY_UP && agy_client_send(msg, NULL) == 0) {
+        flash("Attached to the Antigravity conversation");
+        return;
     }
-    flash_msg("Attach failed (no agent connected)");
-}
-
-static void btn_mode_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    s_view = (s_view == EDITOR_VIEW_EDIT) ? EDITOR_VIEW_SPLIT
-           : (s_view == EDITOR_VIEW_SPLIT) ? EDITOR_VIEW_PREVIEW : EDITOR_VIEW_EDIT;
-    apply_layout();
-    update_title();
-    if (s_view != EDITOR_VIEW_EDIT) render_preview(false);
+    flash("Attach failed: no agent conversation open");
 }
 
 static void editor_click_cb(lv_event_t *e)
@@ -493,151 +1338,331 @@ static void editor_click_cb(lv_event_t *e)
     LV_UNUSED(e);
     if (s_focus_list) {
         s_focus_list = false;
-        refresh_file_list();
+        list_paint();
     }
+    refresh_status();
 }
 
-static void file_btn_cb(lv_event_t *e)
+/* -------------------------------------------------------------------- keys */
+static bool edit_field_key(lv_obj_t *ta, uint32_t key)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    open_file(idx);
+    if (key == '\b' || key == 0x7F) lv_textarea_delete_char(ta);
+    else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(ta);
+    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(ta);
+    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(ta);
+    else if (key >= 32 && key <= 126) lv_textarea_add_char(ta, (char)key);
+    else return false;
+    return true;
 }
 
-static bool editor_handle_key(uint32_t key, uint8_t modifiers)
+static bool list_key(uint32_t key, uint8_t mods)
 {
-    /* Fullscreen editing: Sym + L collapses the file tree; Sym + A attaches note to OpenDev */
-    if (modifiers & DEVOS_MOD_FN) {
-        if (key == 'l' || key == 'L') {
+    char rel[ED_PATH_MAX];
+    if (key == LV_KEY_ESC || key == '\t') {
+        if (s_file[0]) {
+            s_focus_list = false;
+            list_paint();
+        }
+        return true;
+    }
+    if (key == LV_KEY_UP && s_sel > 0) s_sel--, list_paint();
+    else if (key == LV_KEY_DOWN && s_sel + 1 < s_row_count) s_sel++, list_paint();
+    else if (key == DEVOS_KEY_PGUP) s_sel = s_sel > 10 ? s_sel - 10 : 0, list_paint();
+    else if (key == DEVOS_KEY_PGDN) s_sel = s_sel + 10 < s_row_count ? s_sel + 10 : (s_row_count ? s_row_count - 1 : 0), list_paint();
+    else if (key == '\r' || key == '\n' || key == LV_KEY_RIGHT) activate_row(s_sel);
+    else if ((key == '\b' || key == LV_KEY_LEFT) && s_dir[0]) {
+        char up[ED_PATH_MAX], was[ED_NAME_MAX];
+        snprintf(was, sizeof(was), "%s", base_name(s_dir));
+        snprintf(up, sizeof(up), "%s", s_dir);
+        parent_of(up);
+        enter_dir(up, was);
+    } else if (key == 'n' || key == 'N') modal_open(MODAL_NEW_FILE, NULL);
+    else if (key == 'f' || key == 'F') modal_open(MODAL_NEW_DIR, NULL);
+    else if ((key == 'r' || key == 'R') && selected_rel(rel, sizeof(rel))) modal_open(MODAL_RENAME, rel);
+    else if ((key == 'd' || key == 'D' || key == LV_KEY_DEL) && selected_rel(rel, sizeof(rel))) modal_open(MODAL_DELETE, rel);
+    else if (key == 'h' || key == 'H') {
+        char keep[ED_NAME_MAX] = "";
+        if (s_sel >= 0 && s_sel < s_row_count && s_row_ent[s_sel] >= 0)
+            snprintf(keep, sizeof(keep), "%s", s_ents[s_row_ent[s_sel]].name);
+        s_show_hidden = !s_show_hidden;
+        enter_dir(s_dir, keep[0] ? keep : NULL);
+        flash(s_show_hidden ? "Showing hidden files" : "Hiding hidden files");
+    }
+    LV_UNUSED(mods);
+    return true;
+}
+
+static bool editor_handle_key(uint32_t key, uint8_t mods)
+{
+    /* Ctrl+letter arrives as a control code in the simulator */
+    if ((mods & DEVOS_MOD_CTRL) && key >= 1 && key <= 26 &&
+        key != '\b' && key != '\t' && key != '\n' && key != '\r') key += 'a' - 1;
+    if ((mods & DEVOS_MOD_CTRL) && key >= 'A' && key <= 'Z') key += 32;
+
+    if (s_modal != MODAL_NONE) {
+        if (key == LV_KEY_ESC || (s_modal == MODAL_DELETE && (key == 'n' || key == 'N'))) modal_close();
+        else if (key == '\r' || key == '\n' || (s_modal == MODAL_DELETE && (key == 'y' || key == 'Y'))) modal_confirm();
+        else if (s_modal != MODAL_DELETE) {
+            if (s_modal_fresh && key >= 32 && key <= 126) lv_textarea_set_text(ta_modal, "");
+            s_modal_fresh = false;
+            edit_field_key(ta_modal, key);
+        }
+        return true;
+    }
+
+    if (mods & DEVOS_MOD_FN) {
+        if (key == 'l' || key == 'L') {                 /* Sym+L: file list */
+            tree_cb(NULL);
+            return true;
+        }
+        if (key == 'a' || key == 'A') {                 /* Sym+A: attach to the agent */
+            attach_cb(NULL);
+            return true;
+        }
+        if (key == 'f' || key == 'F') {                 /* Sym+F: focus (hide the file list) */
             s_sidebar_visible = !s_sidebar_visible;
             if (!s_sidebar_visible) s_focus_list = false;
             apply_layout();
-            refresh_file_list();
-            return true;
-        }
-        if (key == 'a' || key == 'A') {
-            btn_attach_cb(NULL);
+            list_paint();
             return true;
         }
     }
 
-    /* Tab toggles focus between file list and editor */
-    if (key == '\t' && !(modifiers & DEVOS_MOD_ALT)) {
-        if (!s_sidebar_visible) {
+    if (mods & DEVOS_MOD_CTRL) {
+        switch (key) {
+        case 's': save_cb(NULL); return true;
+        case 'n': modal_open(MODAL_NEW_FILE, NULL); return true;
+        case 'o':
             s_sidebar_visible = true;
             s_focus_list = true;
             apply_layout();
-        } else {
-            s_focus_list = !s_focus_list;
-        }
-        refresh_file_list();
-        return true;
-    }
-
-    if (s_focus_list) {
-        if (key == LV_KEY_ESC) {
+            list_paint();
+            return true;
+        case 'f': find_cb(NULL); return true;
+        case 'g':
+            if (s_find[0]) find_next();
+            return true;
+        case 'p':
             s_focus_list = false;
-            refresh_file_list();
+            list_paint();
+            cycle_view();
             return true;
+        default: break;
         }
-        if (key == LV_KEY_UP) {
-            if (s_sel > 0) {
-                s_sel--;
-                refresh_file_list();
-                if (file_btns[s_sel]) lv_obj_scroll_to_view(file_btns[s_sel], LV_ANIM_OFF);
-            }
-            return true;
-        }
-        if (key == LV_KEY_DOWN) {
-            if (s_sel < s_file_count - 1) {
-                s_sel++;
-                refresh_file_list();
-                if (file_btns[s_sel]) lv_obj_scroll_to_view(file_btns[s_sel], LV_ANIM_OFF);
-            }
-            return true;
-        }
-        if (key == '\r' || key == '\n') {
-            open_file(s_sel);
-            return true;
-        }
-        return true; /* absorb the rest so the editor behind never gets them */
     }
 
-    /* Editor shortcuts */
-    if (modifiers & DEVOS_MOD_CTRL) {
-        if (key == 's' || key == 'S') { save_file(); return true; }
-        if (key == 'o' || key == 'O') {
-            s_sidebar_visible = true;
+    if (s_find_open && !s_focus_list) {
+        if (key == LV_KEY_ESC) {
+            find_open(false);
+            return true;
+        }
+        if (key == '\r' || key == '\n' || ((mods & DEVOS_MOD_CTRL) && key == 'g')) {
+            snprintf(s_find, sizeof(s_find), "%s", lv_textarea_get_text(ta_find));
+            find_next();
+            return true;
+        }
+        if (!(mods & DEVOS_MOD_CTRL)) {
+            if (s_find_fresh && key >= 32 && key <= 126) lv_textarea_set_text(ta_find, "");
+            s_find_fresh = false;
+            if (edit_field_key(ta_find, key)) return true;
+        }
+    }
+
+    if (s_focus_list) return list_key(key, mods);
+    if (!s_file[0]) {
+        if (key == LV_KEY_ESC || key == '\t') {
             s_focus_list = true;
-            apply_layout();
-            refresh_file_list();
-            return true;
-        }
-        if (key == 'n' || key == 'N') { new_file(); return true; }
-        if (key == 'p' || key == 'P') {
-            /* ponytail: Ctrl+P cycles Edit -> Split -> Preview (no palette UI) */
-            s_view = (s_view == EDITOR_VIEW_EDIT) ? EDITOR_VIEW_SPLIT
-                   : (s_view == EDITOR_VIEW_SPLIT) ? EDITOR_VIEW_PREVIEW : EDITOR_VIEW_EDIT;
-            apply_layout();
-            update_title();
-            if (s_view != EDITOR_VIEW_EDIT) render_preview(false);
+            list_paint();
             return true;
         }
         return false;
     }
 
-    /* In Full Preview mode: arrows scroll the preview, typing is inhibited */
-    if (s_view == EDITOR_VIEW_PREVIEW) {
-        if (key == LV_KEY_UP) {
-            lv_obj_scroll_by_bounded(preview_scroll, 0, 40, LV_ANIM_ON);
-            return true;
-        }
-        if (key == LV_KEY_DOWN) {
-            lv_obj_scroll_by_bounded(preview_scroll, 0, -40, LV_ANIM_ON);
-            return true;
-        }
-        if (key == LV_KEY_PREV) {
-            lv_obj_scroll_by_bounded(preview_scroll, 0, 200, LV_ANIM_ON);
-            return true;
-        }
-        if (key == LV_KEY_NEXT || key == ' ') {
-            lv_obj_scroll_by_bounded(preview_scroll, 0, -200, LV_ANIM_ON);
-            return true;
-        }
-        return false;
-    }
-
-    if (!ta_editor || s_active < 0) return false;
-
-    /* Multiline editing */
-    if (key == '\b' || key == 0x7F) {
-        lv_textarea_delete_char(ta_editor);
-        s_preview_stale = true;
-        if (!s_dirty) { s_dirty = true; update_title(); }
+    /* read-only viewer: scrolling only */
+    if (s_readonly) {
+        lv_obj_t *sc = viewer_scroll;
+        int page = lv_obj_get_height(sc) - 2 * DEVOS_CODEVIEW_LINE_H;
+        if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(sc, 0, -3 * DEVOS_CODEVIEW_LINE_H, LV_ANIM_OFF);
+        else if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(sc, 0, 3 * DEVOS_CODEVIEW_LINE_H, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGDN || key == ' ') lv_obj_scroll_by_bounded(sc, 0, -page, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGUP) lv_obj_scroll_by_bounded(sc, 0, page, LV_ANIM_OFF);
+        else if (key == LV_KEY_RIGHT) lv_obj_scroll_by_bounded(sc, -80, 0, LV_ANIM_OFF);
+        else if (key == LV_KEY_LEFT) lv_obj_scroll_by_bounded(sc, 80, 0, LV_ANIM_OFF);
+        else if (key == LV_KEY_ESC || key == '\t') s_focus_list = true, list_paint();
+        else if ((mods & DEVOS_MOD_CTRL) && key == 'c') copy_or_cut(false);
         return true;
     }
-    if (key == LV_KEY_LEFT) { lv_textarea_cursor_left(ta_editor); return true; }
-    if (key == LV_KEY_RIGHT) { lv_textarea_cursor_right(ta_editor); return true; }
-    if (key == LV_KEY_UP) { lv_textarea_cursor_up(ta_editor); return true; }
-    if (key == LV_KEY_DOWN) { lv_textarea_cursor_down(ta_editor); return true; }
+
+    /* full preview: arrows scroll, no typing */
+    if (s_view == VIEW_PREVIEW) {
+        if (key == LV_KEY_UP) lv_obj_scroll_by_bounded(preview_scroll, 0, 40, LV_ANIM_OFF);
+        else if (key == LV_KEY_DOWN) lv_obj_scroll_by_bounded(preview_scroll, 0, -40, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGUP) lv_obj_scroll_by_bounded(preview_scroll, 0, 300, LV_ANIM_OFF);
+        else if (key == DEVOS_KEY_PGDN || key == ' ') lv_obj_scroll_by_bounded(preview_scroll, 0, -300, LV_ANIM_OFF);
+        else if (key == LV_KEY_ESC) s_focus_list = true, list_paint();
+        return true;
+    }
+
+    if (mods & DEVOS_MOD_CTRL) {
+        switch (key) {
+        case 'z': undo(); return true;
+        case '\r':
+        case '\n':
+            if (s_markdown) toggle_task();
+            return true;
+        case 'x': copy_or_cut(true); return true;
+        case 'c': copy_or_cut(false); return true;
+        case 'v': paste(); return true;
+        case 'k': {
+            uint32_t s, e;
+            line_range(&s, &e);
+            before_edit(true);
+            replace_range(s, e, "");
+            after_edit();
+            return true;
+        }
+        case 'd': {
+            uint32_t s, e;
+            line_range(&s, &e);
+            const char *t = lv_textarea_get_text(ta_editor);
+            size_t n = e - s;
+            char *line = malloc(n + 2);
+            if (!line) return true;
+            memcpy(line, t + s, n);
+            if (!n || line[n - 1] != '\n') line[n++] = '\n';
+            line[n] = '\0';
+            before_edit(true);
+            replace_range(s, s, line);
+            free(line);
+            after_edit();
+            return true;
+        }
+        case 'a': {
+            lv_obj_t *lbl = lv_textarea_get_label(ta_editor);
+            uint32_t n = byte_to_char(lv_textarea_get_text(ta_editor), 0xFFFFFFFFu);
+            lv_label_set_text_selection_start(lbl, 0);
+            lv_label_set_text_selection_end(lbl, n);
+            lv_textarea_set_cursor_pos(ta_editor, LV_TEXTAREA_CURSOR_LAST);
+            return true;
+        }
+        case 'b':
+            if (s_markdown) {
+                uint32_t s, e;
+                before_edit(true);
+                if (get_selection(&s, &e)) {
+                    const char *t = lv_textarea_get_text(ta_editor);
+                    size_t n = e - s;
+                    char *w = malloc(n + 5);
+                    if (w) {
+                        snprintf(w, n + 5, "**%.*s**", (int)n, t + s);
+                        replace_range(s, e, w);
+                        free(w);
+                    }
+                } else {
+                    const char *t = lv_textarea_get_text(ta_editor);
+                    uint32_t c = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+                    replace_range(c, c, "****");
+                    lv_textarea_set_cursor_pos(ta_editor, (int32_t)lv_textarea_get_cursor_pos(ta_editor) - 2);
+                }
+                after_edit();
+            }
+            return true;
+        default: return false;
+        }
+    }
+
+    bool moved = true;
+    if ((mods & DEVOS_MOD_FN) && key == LV_KEY_LEFT) cursor_line_edge(false);
+    else if ((mods & DEVOS_MOD_FN) && key == LV_KEY_RIGHT) cursor_line_edge(true);
+    else if ((mods & DEVOS_MOD_ALT) && key == LV_KEY_LEFT) cursor_word(false);
+    else if ((mods & DEVOS_MOD_ALT) && key == LV_KEY_RIGHT) cursor_word(true);
+    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(ta_editor);
+    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(ta_editor);
+    else if (key == LV_KEY_UP) lv_textarea_cursor_up(ta_editor);
+    else if (key == LV_KEY_DOWN) lv_textarea_cursor_down(ta_editor);
+    else if (key == DEVOS_KEY_PGUP || key == DEVOS_KEY_PGDN) {
+        for (int i = 0; i < 18; i++) {
+            if (key == DEVOS_KEY_PGUP) lv_textarea_cursor_up(ta_editor);
+            else lv_textarea_cursor_down(ta_editor);
+        }
+    } else moved = false;
+    if (moved) {
+        clear_selection();
+        refresh_status();
+        return true;
+    }
+
+    if (key == LV_KEY_ESC) {
+        s_focus_list = true;
+        s_sidebar_visible = true;
+        apply_layout();
+        list_paint();
+        return true;
+    }
+
+    uint32_t s, e;
+    bool sel = get_selection(&s, &e);
+    if (key == '\b' || key == 0x7F || key == LV_KEY_DEL) {
+        before_edit(sel);
+        if (sel) replace_range(s, e, "");
+        else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(ta_editor);
+        else lv_textarea_delete_char(ta_editor);
+        after_edit();
+        return true;
+    }
     if (key == '\r' || key == '\n') {
-        lv_textarea_add_char(ta_editor, '\n');
-        s_preview_stale = true;
-        if (s_view != EDITOR_VIEW_EDIT) render_preview(true);
-        if (!s_dirty) { s_dirty = true; update_title(); }
+        if (sel) replace_range(s, e, "");
+        newline_indent();
+        return true;
+    }
+    if (key == '\t') {
+        before_edit(false);
+        if (sel) replace_range(s, e, "");
+        lv_textarea_add_text(ta_editor, s_markdown ? "  " : "    ");
+        after_edit();
         return true;
     }
     if (key >= 32 && key <= 126) {
-        lv_textarea_add_char(ta_editor, (char)key);
-        s_preview_stale = true;
-        if (!s_dirty) { s_dirty = true; update_title(); }
+        if (mods & (DEVOS_MOD_FN | DEVOS_MOD_ALT)) return true;   /* unbound shortcut */
+        if (strlen(lv_textarea_get_text(ta_editor)) >= ED_EDIT_MAX - 1) {
+            flash("File is at the editing limit");
+            return true;
+        }
+        before_edit(sel);
+        if (sel) {
+            char c[2] = {(char)key, '\0'};
+            replace_range(s, e, c);
+        } else {
+            lv_textarea_add_char(ta_editor, (char)key);
+        }
+        after_edit();
         return true;
     }
     return false;
 }
 
-/* --------------------------------------------------------------------------
- * Init
- * -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------- init */
+static lv_obj_t *mk_btn(lv_obj_t *parent, const char *text, int w, lv_event_cb_t cb, lv_obj_t **lbl_out)
+{
+    const devos_palette_t *p = devos_theme_get();
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, w, 26);
+    lv_obj_set_style_bg_color(b, p->surface, 0);
+    lv_obj_set_style_border_color(b, p->surface_border, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_radius(b, 4, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, text);
+    lv_obj_center(l);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(l, p->text_primary, 0);
+    if (lbl_out) *lbl_out = l;
+    return b;
+}
+
 static void editor_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
@@ -650,164 +1675,125 @@ static void editor_init(void)
     lv_obj_set_style_radius(screen, 0, 0);
     lv_obj_set_style_border_width(screen, 0, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(screen, LV_OBJ_FLAG_HIDDEN);
 
-    /* Left File Tree Sidebar (260px, scrollable for long listings) */
+    /* ---- file browser ---- */
     sidebar = lv_obj_create(screen);
     lv_obj_set_size(sidebar, DEVOS_PANE_LEFT_WIDTH, DEVOS_CONTENT_HEIGHT);
     lv_obj_set_pos(sidebar, 0, 0);
     lv_obj_set_style_bg_color(sidebar, p->surface, 0);
-    lv_obj_set_style_border_color(sidebar, p->surface_border, 0);
     lv_obj_set_style_border_width(sidebar, 1, 0);
-    lv_obj_set_style_border_side(sidebar, LV_BORDER_SIDE_RIGHT, 0);
     lv_obj_set_style_radius(sidebar, 0, 0);
-    lv_obj_set_style_pad_all(sidebar, 10, 0);
+    lv_obj_set_style_pad_all(sidebar, 8, 0);
+    lv_obj_remove_flag(sidebar, LV_OBJ_FLAG_SCROLLABLE);
 
-    lbl_files = lv_label_create(sidebar);
-    lv_label_set_text(lbl_files, "STORAGE: /sdcard/notes/");
-    lv_obj_set_pos(lbl_files, 4, 4);
-    lv_obj_set_style_text_font(lbl_files, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_files, p->text_secondary, 0);
+    lbl_side_title = lv_label_create(sidebar);
+    lv_label_set_text(lbl_side_title, "SD CARD");
+    lv_obj_set_pos(lbl_side_title, 2, 4);
+    lv_obj_set_style_text_font(lbl_side_title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_side_title, p->text_secondary, 0);
+    btn_add_dir = mk_btn(sidebar, LV_SYMBOL_DIRECTORY "+", 44, add_dir_cb, NULL);
+    lv_obj_align(btn_add_dir, LV_ALIGN_TOP_RIGHT, 0, 0);
+    btn_add_file = mk_btn(sidebar, LV_SYMBOL_FILE "+", 44, add_file_cb, NULL);
+    lv_obj_align_to(btn_add_file, btn_add_dir, LV_ALIGN_OUT_LEFT_MID, -6, 0);
 
-    for (int i = 0; i < EDITOR_MAX_FILES; i++) {
-        file_btns[i] = lv_button_create(sidebar);
-        lv_obj_set_size(file_btns[i], DEVOS_PANE_LEFT_WIDTH - 28, 34);
-        lv_obj_set_pos(file_btns[i], 4, 28 + i * 40);
-        lv_obj_set_style_bg_color(file_btns[i], p->surface, 0);
-        lv_obj_set_style_border_color(file_btns[i], p->surface_border, 0);
-        lv_obj_set_style_border_width(file_btns[i], 1, 0);
-        lv_obj_set_style_radius(file_btns[i], 4, 0);
-        lv_obj_add_flag(file_btns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_event_cb(file_btns[i], file_btn_cb, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
+    lbl_path = lv_label_create(sidebar);
+    lv_label_set_text(lbl_path, "/");
+    lv_obj_set_pos(lbl_path, 2, 32);
+    lv_obj_set_width(lbl_path, DEVOS_PANE_LEFT_WIDTH - 20);
+    lv_label_set_long_mode(lbl_path, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(lbl_path, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_path, p->accent_primary, 0);
 
-        file_lbls[i] = lv_label_create(file_btns[i]);
-        lv_obj_align(file_lbls[i], LV_ALIGN_LEFT_MID, 4, 0);
-        lv_obj_set_size(file_lbls[i], DEVOS_PANE_LEFT_WIDTH - 44, 30);
-        lv_label_set_long_mode(file_lbls[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(file_lbls[i], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(file_lbls[i], p->text_primary, 0);
-    }
+    file_list = lv_obj_create(sidebar);
+    lv_obj_set_pos(file_list, -4, 56);
+    lv_obj_set_size(file_list, DEVOS_PANE_LEFT_WIDTH - 8, DEVOS_CONTENT_HEIGHT - 56 - 16 - 50);
+    lv_obj_set_style_bg_opa(file_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(file_list, 0, 0);
+    lv_obj_set_style_pad_all(file_list, 4, 0);
+    lv_obj_set_style_pad_row(file_list, 4, 0);
+    lv_obj_set_flex_flow(file_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(file_list, LV_DIR_VER);
 
-    /* Main Area */
+    lbl_side_hint = lv_label_create(sidebar);
+    lv_label_set_text(lbl_side_hint, "Enter open  Bksp up  Esc editor\nN file  F folder  R rename  D delete");
+    lv_obj_align(lbl_side_hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_text_font(lbl_side_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_side_hint, p->text_secondary, 0);
+
+    /* ---- main area ---- */
     main_area = lv_obj_create(screen);
-    lv_obj_set_size(main_area, DEVOS_SCREEN_WIDTH - DEVOS_PANE_LEFT_WIDTH,
-                    DEVOS_CONTENT_HEIGHT);
-    lv_obj_set_pos(main_area, DEVOS_PANE_LEFT_WIDTH, 0);
     lv_obj_set_style_bg_color(main_area, p->bg, 0);
     lv_obj_set_style_radius(main_area, 0, 0);
     lv_obj_set_style_border_width(main_area, 0, 0);
     lv_obj_set_style_pad_all(main_area, 0, 0);
-    lv_obj_clear_flag(main_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(main_area, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Action bar */
     top_bar = lv_obj_create(main_area);
     lv_obj_set_size(top_bar, lv_pct(100), 34);
     lv_obj_set_pos(top_bar, 0, 0);
     lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
-    lv_obj_set_style_border_color(top_bar, p->surface_border, 0);
     lv_obj_set_style_border_width(top_bar, 1, 0);
     lv_obj_set_style_border_side(top_bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_radius(top_bar, 0, 0);
     lv_obj_set_style_pad_all(top_bar, 0, 0);
     lv_obj_set_style_pad_left(top_bar, 10, 0);
-    lv_obj_set_style_pad_right(top_bar, 8, 0);
-    lv_obj_clear_flag(top_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(top_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_fn = lv_label_create(top_bar);
-    lv_label_set_text(lbl_fn, "(no file)");
+    lv_label_set_text(lbl_fn, "Markdown Editor");
     lv_obj_align(lbl_fn, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_label_set_long_mode(lbl_fn, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(lbl_fn, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
 
-    /* Action bar buttons: Tree, New, Save, Mode */
-    btn_tree = lv_button_create(top_bar);
-    lv_obj_set_size(btn_tree, 72, 26);
-    lv_obj_set_style_bg_color(btn_tree, p->surface, 0);
-    lv_obj_set_style_border_color(btn_tree, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_tree, 1, 0);
-    lv_obj_set_style_radius(btn_tree, 4, 0);
-    lv_obj_set_style_pad_all(btn_tree, 0, 0);
-    lv_obj_add_event_cb(btn_tree, btn_tree_cb, LV_EVENT_CLICKED, NULL);
-    lbl_btn_tree = lv_label_create(btn_tree);
-    lv_label_set_text(lbl_btn_tree, LV_SYMBOL_DIRECTORY " Tree");
-    lv_obj_center(lbl_btn_tree);
-    lv_obj_set_style_text_font(lbl_btn_tree, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_btn_tree, p->text_primary, 0);
-
-    btn_new = lv_button_create(top_bar);
-    lv_obj_set_size(btn_new, 66, 26);
-    lv_obj_set_style_bg_color(btn_new, p->surface, 0);
-    lv_obj_set_style_border_color(btn_new, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_new, 1, 0);
-    lv_obj_set_style_radius(btn_new, 4, 0);
-    lv_obj_set_style_pad_all(btn_new, 0, 0);
-    lv_obj_add_event_cb(btn_new, btn_new_cb, LV_EVENT_CLICKED, NULL);
-    lbl_btn_new = lv_label_create(btn_new);
-    lv_label_set_text(lbl_btn_new, LV_SYMBOL_PLUS " New");
-    lv_obj_center(lbl_btn_new);
-    lv_obj_set_style_text_font(lbl_btn_new, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_btn_new, p->text_primary, 0);
-
-    btn_save = lv_button_create(top_bar);
-    lv_obj_set_size(btn_save, 68, 26);
-    lv_obj_set_style_bg_color(btn_save, p->surface, 0);
-    lv_obj_set_style_border_color(btn_save, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_save, 1, 0);
-    lv_obj_set_style_radius(btn_save, 4, 0);
-    lv_obj_set_style_pad_all(btn_save, 0, 0);
-    lv_obj_add_event_cb(btn_save, btn_save_cb, LV_EVENT_CLICKED, NULL);
-    lbl_btn_save = lv_label_create(btn_save);
-    lv_label_set_text(lbl_btn_save, LV_SYMBOL_SAVE " Save");
-    lv_obj_center(lbl_btn_save);
-    lv_obj_set_style_text_font(lbl_btn_save, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_btn_save, p->text_primary, 0);
-
-    btn_attach = lv_button_create(top_bar);
-    lv_obj_set_size(btn_attach, 76, 26);
-    lv_obj_set_style_bg_color(btn_attach, p->surface, 0);
-    lv_obj_set_style_border_color(btn_attach, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_attach, 1, 0);
-    lv_obj_set_style_radius(btn_attach, 4, 0);
-    lv_obj_set_style_pad_all(btn_attach, 0, 0);
-    lv_obj_add_event_cb(btn_attach, btn_attach_cb, LV_EVENT_CLICKED, NULL);
-    lbl_btn_attach = lv_label_create(btn_attach);
-    lv_label_set_text(lbl_btn_attach, LV_SYMBOL_UPLOAD " Attach");
-    lv_obj_center(lbl_btn_attach);
-    lv_obj_set_style_text_font(lbl_btn_attach, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_btn_attach, p->text_primary, 0);
-
-    btn_mode = lv_button_create(top_bar);
-    lv_obj_set_size(btn_mode, 92, 26);
-    lv_obj_set_style_bg_color(btn_mode, p->surface, 0);
-    lv_obj_set_style_border_color(btn_mode, p->surface_border, 0);
-    lv_obj_set_style_border_width(btn_mode, 1, 0);
-    lv_obj_set_style_radius(btn_mode, 4, 0);
-    lv_obj_set_style_pad_all(btn_mode, 0, 0);
-    lv_obj_add_event_cb(btn_mode, btn_mode_cb, LV_EVENT_CLICKED, NULL);
-    lbl_btn_mode = lv_label_create(btn_mode);
-    lv_label_set_text(lbl_btn_mode, "Mode: Edit");
-    lv_obj_center(lbl_btn_mode);
-    lv_obj_set_style_text_font(lbl_btn_mode, &lv_font_montserrat_12, 0);
+    btn_tree = mk_btn(top_bar, LV_SYMBOL_DIRECTORY " Files", 76, tree_cb, &lbl_btn_tree);
+    btn_save = mk_btn(top_bar, LV_SYMBOL_SAVE " Save", 70, save_cb, &lbl_btn_save);
+    btn_find = mk_btn(top_bar, LV_SYMBOL_EYE_OPEN " Find", 70, find_cb, &lbl_btn_find);
+    btn_attach = mk_btn(top_bar, LV_SYMBOL_UPLOAD " Attach", 80, attach_cb, &lbl_btn_attach);
+    btn_mode = mk_btn(top_bar, "Edit", 76, mode_cb, &lbl_btn_mode);
     lv_obj_set_style_text_color(lbl_btn_mode, p->accent_primary, 0);
 
-    /* Multiline editor */
+    find_bar = lv_obj_create(main_area);
+    lv_obj_set_pos(find_bar, 0, 34);
+    lv_obj_set_style_radius(find_bar, 0, 0);
+    lv_obj_set_style_border_width(find_bar, 0, 0);
+    lv_obj_set_style_pad_all(find_bar, 4, 0);
+    lv_obj_remove_flag(find_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(find_bar, LV_OBJ_FLAG_HIDDEN);
+    ta_find = lv_textarea_create(find_bar);
+    lv_textarea_set_one_line(ta_find, true);
+    lv_textarea_set_placeholder_text(ta_find, "Find...");
+    lv_obj_set_size(ta_find, 360, 32);
+    lv_obj_align(ta_find, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_set_style_pad_ver(ta_find, 7, 0);
+    lv_obj_set_style_pad_hor(ta_find, 10, 0);
+    lv_obj_set_style_radius(ta_find, 6, 0);
+    lv_obj_set_style_text_font(ta_find, &lv_font_montserrat_14, 0);
+    lv_obj_set_scrollbar_mode(ta_find, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_state(ta_find, LV_STATE_FOCUSED);
+    lbl_find_info = lv_label_create(find_bar);
+    lv_label_set_text(lbl_find_info, "");
+    lv_obj_align(lbl_find_info, LV_ALIGN_LEFT_MID, 380, 0);
+    lv_obj_set_style_text_font(lbl_find_info, &lv_font_montserrat_12, 0);
+
     ta_editor = lv_textarea_create(main_area);
     lv_textarea_set_text(ta_editor, "");
-    lv_textarea_set_max_length(ta_editor, EDITOR_BUF_MAX - 1);
+    lv_textarea_set_max_length(ta_editor, ED_EDIT_MAX);
+    lv_textarea_set_text_selection(ta_editor, true);
     lv_obj_add_event_cb(ta_editor, editor_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_bg_color(ta_editor, p->code_bg, 0);
     lv_obj_set_style_text_color(ta_editor, p->text_primary, 0);
-    lv_obj_set_style_border_color(ta_editor, p->surface_border, 0);
     lv_obj_set_style_border_width(ta_editor, 0, 0);
     lv_obj_set_style_radius(ta_editor, 0, 0);
-    lv_obj_set_style_pad_all(ta_editor, 16, 0);
+    lv_obj_set_style_pad_all(ta_editor, 14, 0);
     lv_obj_set_style_text_font(ta_editor, &lv_font_montserrat_14, 0);
     lv_obj_set_style_bg_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
     lv_obj_set_style_border_color(ta_editor, p->accent_primary, LV_PART_CURSOR);
+    lv_obj_set_style_bg_color(lv_textarea_get_label(ta_editor), p->accent_primary, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(lv_textarea_get_label(ta_editor), p->bg, LV_PART_SELECTED);
 
-    /* Preview pane (hidden in Edit view) */
     preview_scroll = lv_obj_create(main_area);
     lv_obj_set_style_bg_color(preview_scroll, p->code_bg, 0);
     lv_obj_set_style_radius(preview_scroll, 0, 0);
@@ -815,59 +1801,128 @@ static void editor_init(void)
     lv_obj_set_style_pad_all(preview_scroll, 16, 0);
     lv_obj_add_flag(preview_scroll, LV_OBJ_FLAG_HIDDEN);
 
-    devos_theme_add_listener(apply_theme, NULL);
-    lv_timer_create(preview_timer_cb, 400, NULL);
+    viewer_scroll = lv_obj_create(main_area);
+    lv_obj_set_style_bg_color(viewer_scroll, p->code_bg, 0);
+    lv_obj_set_style_radius(viewer_scroll, 0, 0);
+    lv_obj_set_style_border_width(viewer_scroll, 0, 0);
+    lv_obj_add_flag(viewer_scroll, LV_OBJ_FLAG_HIDDEN);
+    devos_codeview_create(&s_viewer, viewer_scroll);
+    s_viewer.plain = true;
 
-    scan_notes();
-    apply_layout();
-    if (s_file_count > 0) {
-        /* ponytail: open welcome.md first when present, else alphabetical first */
-        int welcome = -1;
-        for (int i = 0; i < s_file_count; i++) {
-            if (strcmp(s_files[i], "welcome.md") == 0) { welcome = i; break; }
-        }
-        open_file(welcome >= 0 ? welcome : 0);
-    } else {
-        update_title();
-        refresh_file_list();
-        update_telemetry();
+    lbl_empty = lv_label_create(main_area);
+    lv_label_set_text(lbl_empty,
+                      "Pick a file on the left to open it, or press Ctrl+N for a new one.\n\n"
+                      "Esc switches between the file list and the editor. Markdown files get a live "
+                      "preview (Ctrl+P); Ctrl+F finds text.");
+    lv_label_set_long_mode(lbl_empty, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(lbl_empty, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(lbl_empty, p->text_secondary, 0);
+
+    status_bar = lv_obj_create(main_area);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_pad_all(status_bar, 0, 0);
+    lv_obj_set_style_pad_left(status_bar, 10, 0);
+    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lbl_status = lv_label_create(status_bar);
+    lv_label_set_text(lbl_status, "");
+    lv_obj_align(lbl_status, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_12, 0);
+
+    /* ---- name / confirm dialog ---- */
+    modal = lv_obj_create(screen);
+    lv_obj_set_size(modal, 520, 200);
+    lv_obj_align(modal, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_set_style_border_width(modal, 2, 0);
+    lv_obj_set_style_radius(modal, 8, 0);
+    lv_obj_set_style_pad_all(modal, 16, 0);
+    lv_obj_remove_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(modal, LV_OBJ_FLAG_HIDDEN);
+    lbl_modal_title = lv_label_create(modal);
+    lv_obj_set_width(lbl_modal_title, 480);
+    lv_label_set_long_mode(lbl_modal_title, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(lbl_modal_title, &lv_font_montserrat_16, 0);
+    ta_modal = lv_textarea_create(modal);
+    lv_textarea_set_one_line(ta_modal, true);
+    lv_obj_set_size(ta_modal, 480, 38);
+    lv_obj_set_pos(ta_modal, 0, 36);
+    lv_obj_set_style_pad_ver(ta_modal, 9, 0);
+    lv_obj_set_style_pad_hor(ta_modal, 10, 0);
+    lv_obj_set_style_radius(ta_modal, 6, 0);
+    lv_obj_set_style_text_font(ta_modal, &lv_font_montserrat_14, 0);
+    lv_obj_set_scrollbar_mode(ta_modal, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_state(ta_modal, LV_STATE_FOCUSED);   /* show the cursor */
+    lbl_modal_desc = lv_label_create(modal);
+    lv_obj_set_width(lbl_modal_desc, 480);
+    lv_label_set_long_mode(lbl_modal_desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(lbl_modal_desc, 0, 82);
+    lv_obj_set_style_text_font(lbl_modal_desc, &lv_font_montserrat_12, 0);
+    btn_modal_ok = mk_btn(modal, "OK", 110, modal_ok_cb, &lbl_modal_ok);
+    lv_obj_set_size(btn_modal_ok, 110, 34);
+    lv_obj_align(btn_modal_ok, LV_ALIGN_BOTTOM_RIGHT, -120, 0);
+    lv_obj_set_style_text_color(lbl_modal_ok, lv_color_black(), 0);
+    lv_obj_t *cancel = mk_btn(modal, "Cancel", 110, modal_cancel_cb, NULL);
+    lv_obj_set_size(cancel, 110, 34);
+    lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+
+    devos_theme_add_listener(apply_theme, NULL);
+    lv_timer_create(tick_cb, 250, NULL);
+
+    /* last folder + file, else /notes when it exists */
+    char last[ED_PATH_MAX];
+    config_load(last, sizeof(last));
+    if (!s_dir[0] && !last[0]) {
+        char np[ED_PATH_MAX + 16];
+        abs_path("notes", np, sizeof(np));
+        struct stat st;
+        if (stat(np, &st) == 0 && S_ISDIR(st.st_mode)) snprintf(s_dir, sizeof(s_dir), "notes");
     }
+    load_dir();
+    list_rebuild();
+    apply_theme(p, NULL);
+    if (last[0]) {
+        char lp[ED_PATH_MAX + 32];
+        abs_path(last, lp, sizeof(lp));
+        struct stat st;
+        if (stat(lp, &st) == 0) open_path(last);
+    } else {
+        char wp[ED_PATH_MAX + 32];
+        abs_path("notes/welcome.md", wp, sizeof(wp));
+        struct stat st;
+        if (stat(wp, &st) == 0) open_path("notes/welcome.md");
+    }
+    s_focus_list = !s_file[0];
+    apply_layout();
+    list_paint();
+    refresh_status();
 }
 
 static void editor_show(void)
 {
-    /* Rescan so files created elsewhere (agent export, PC) appear */
-    int keep = s_active;
-    char keep_name[EDITOR_NAME_MAX] = {0};
-    if (keep >= 0 && keep < s_file_count) {
-        snprintf(keep_name, sizeof(keep_name), "%s", s_files[keep]);
-    }
-    scan_notes();
-    int found = -1;
-    for (int i = 0; i < s_file_count; i++) {
-        if (strcmp(s_files[i], keep_name) == 0) { found = i; break; }
-    }
-    if (found >= 0) {
-        /* Still there: reload if not dirty to pick up external changes */
-        s_active = found;
-        s_sel = found;
-        if (!s_dirty) {
-            static char buf[EDITOR_BUF_MAX];
-            read_file(s_files[found], buf, sizeof(buf));
-            lv_textarea_set_text(ta_editor, buf);
+    /* pick up files changed elsewhere (agents, a PC) */
+    load_dir();
+    list_rebuild();
+    if (s_file[0] && !s_dirty && !s_readonly) {
+        char path[ED_PATH_MAX + 32];
+        abs_path(s_file, path, sizeof(path));
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            size_t n = fread(s_buf, 1, ED_EDIT_MAX, f);
+            fclose(f);
+            s_buf[n] = '\0';
+            const char *cur = lv_textarea_get_text(ta_editor);
+            if (strcmp(cur, s_buf) != 0) {
+                uint32_t pos = lv_textarea_get_cursor_pos(ta_editor);
+                lv_textarea_set_text(ta_editor, s_buf);
+                lv_textarea_set_cursor_pos(ta_editor, (int32_t)pos);
+                if (s_view != VIEW_EDIT) render_preview(true);
+            }
+        } else {
+            close_file();                   /* deleted elsewhere */
         }
-        update_title();
-        refresh_file_list();
-    } else if (s_file_count > 0) {
-        open_file(0);
-    } else {
-        s_active = -1;
-        if (ta_editor) lv_textarea_set_text(ta_editor, "");
-        update_title();
-        refresh_file_list();
     }
-    update_telemetry();
-    if (s_view != EDITOR_VIEW_EDIT) render_preview(false);
+    apply_layout();
+    refresh_status();
 }
 
 static void editor_hide(void)
@@ -877,10 +1932,9 @@ static void editor_hide(void)
 
 static int editor_telemetry_lines(char lines[3][64])
 {
-    const char *fn = app_editor_get_active_filename();
-    snprintf(lines[0], sizeof(lines[0]), "* %s", fn && *fn ? fn : "(no file)");
-    snprintf(lines[1], sizeof(lines[1]), "* Markdown notes");
-    snprintf(lines[2], sizeof(lines[2]), "* Split preview");
+    snprintf(lines[0], sizeof(lines[0]), "* %s", s_file[0] ? base_name(s_file) : "(no file open)");
+    snprintf(lines[1], sizeof(lines[1]), "* /%.58s", s_dir);
+    snprintf(lines[2], sizeof(lines[2]), "* %s", s_dirty ? "unsaved changes" : "SD card files");
     return 3;
 }
 
@@ -892,79 +1946,58 @@ devos_app_descriptor_t *app_editor_get_descriptor(void)
     app_descriptor.category = "notes";
     app_descriptor.name = "Editor";
     app_descriptor.title = "Markdown Editor";
-    app_descriptor.subtitle = "Distraction-Free Notes & Docs";
+    app_descriptor.subtitle = "Notes, docs and files on the SD card";
     app_descriptor.screen = screen;
     app_descriptor.init = editor_init;
     app_descriptor.show = editor_show;
     app_descriptor.hide = editor_hide;
     app_descriptor.handle_key = editor_handle_key;
     app_descriptor.get_telemetry_lines = editor_telemetry_lines;
-
     return &app_descriptor;
 }
 
+/* ------------------------------------------------------------- agent API */
 const char *app_editor_get_active_filename(void)
 {
-    if (s_active >= 0 && s_active < s_file_count) {
-        return s_files[s_active];
-    }
-    return NULL;
+    return s_file[0] ? base_name(s_file) : NULL;
 }
 
 const char *app_editor_get_active_text(void)
 {
-    if (ta_editor) {
-        return lv_textarea_get_text(ta_editor);
-    }
-    return NULL;
+    if (!s_file[0]) return NULL;
+    return s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
 }
 
-bool app_editor_save_plan(const char *title, const char *content)
+static bool save_into(const char *folder, const char *title, const char *ext, const char *content)
 {
     if (!title || !content) return false;
     char clean[64];
     size_t ci = 0;
     for (const char *p = title; *p && ci < sizeof(clean) - 1; p++) {
         char c = *p;
-        if (isalnum((unsigned char)c) || c == '-' || c == '_') {
-            clean[ci++] = c;
-        } else if (c == ' ' || c == ':' || c == '/') {
-            if (ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
-        }
+        if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') clean[ci++] = c;
+        else if ((c == ' ' || c == ':' || c == '/') && ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
     }
     clean[ci] = '\0';
-    if (ci == 0) snprintf(clean, sizeof(clean), "%s", "plan");
+    if (!ci) snprintf(clean, sizeof(clean), "%s", folder);
+    /* keep a given extension, else add ours */
+    char name[80];
+    const char *dot = strrchr(clean, '.');
+    if (dot && strcasecmp(dot, ext) == 0) snprintf(name, sizeof(name), "%s", clean);
+    else snprintf(name, sizeof(name), "%s%s", clean, ext);
+    char dir[ED_PATH_MAX + 16], rel[ED_PATH_MAX];
+    abs_path(folder, dir, sizeof(dir));
+    mkdir(dir, 0755);                       /* fine if it exists */
+    join(folder, name, rel, sizeof(rel));
+    return write_file(rel, content);
+}
 
-    char path[256];
-    snprintf(path, sizeof(path), "%s/plans/%s.md", TAB5_SD_MOUNT_POINT, clean);
-    FILE *f = fopen(path, "w");
-    if (!f) return false;
-    fputs(content, f);
-    fclose(f);
-    return true;
+bool app_editor_save_plan(const char *title, const char *content)
+{
+    return save_into("plans", title, ".md", content);
 }
 
 bool app_editor_save_diff(const char *title, const char *diff_content)
 {
-    if (!title || !diff_content) return false;
-    char clean[64];
-    size_t ci = 0;
-    for (const char *p = title; *p && ci < sizeof(clean) - 1; p++) {
-        char c = *p;
-        if (isalnum((unsigned char)c) || c == '-' || c == '_') {
-            clean[ci++] = c;
-        } else if (c == ' ' || c == ':' || c == '/') {
-            if (ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
-        }
-    }
-    clean[ci] = '\0';
-    if (ci == 0) snprintf(clean, sizeof(clean), "%s", "diff");
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/diffs/%s.diff", TAB5_SD_MOUNT_POINT, clean);
-    FILE *f = fopen(path, "w");
-    if (!f) return false;
-    fputs(diff_content, f);
-    fclose(f);
-    return true;
+    return save_into("diffs", title, ".diff", diff_content);
 }
