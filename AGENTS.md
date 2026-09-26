@@ -18,10 +18,8 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
    * *Allocate in PSRAM (`MALLOC_CAP_SPIRAM`):* LVGL draw buffers, terminal scrollback buffer (up to 10,000 lines), diff text buffers, session caches, and markdown AST nodes.
    * *Reserve Internal SRAM (`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA`):* Keep at least **120 KB contiguous internal SRAM free** for mbedTLS / SSH handshakes, Wi-Fi SDIO DMA descriptors, and FreeRTOS task stacks.
 
-3. **Responsive Tri-Pane UI & "Focus Mode":**
-   * Both `app_opendev` and `app_antigravity` must share the unified `devos_agent_viewport` container from `components/devos_ui/`.
-   * Support all 4 layout states: Tri-Pane (260px | 720px | 300px), Left-Only (260px | 1020px), Right-Only (980px | 300px), and Focus Mode (full-width 1280px).
-   * Respect global hotkeys: `Sym + F` (Focus Mode), `Sym + L` (Left Sidebar), `Sym + R` (Right Inspector).
+3. **Collapsible Side Panels:**
+   * The editor's file list and the terminal's connections panel are 260px left panels (`DEVOS_PANE_LEFT_WIDTH`). `Sym + L` toggles them; `Sym + F` also hides the editor's file list. An app that adds a side panel uses the same width and the same key.
    * The Tab5 keyboard has **no Fn key**: every system shortcut is `Sym + <letter/digit/arrow>` (Sym + punctuation must keep typing its symbol, e.g. `Sym + [` = `{`). User-facing text says "Sym".
 
 4. **Dynamic Terminal PTY Resizing:**
@@ -32,11 +30,11 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
    * Must support both **Dark Cyberdeck** and **High-Contrast Light** palettes. Colors must update instantly when `devos_theme_toggle()` is called (`Sym + T`).
 
 6. **Automatic MicroSD Scaffolding:**
-   * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/plans/`, `/diffs/`, `/.devos/`) and missing starter templates (`welcome.md`, `bookmarks.json`). Zero manual file creation on PC/Mac.
+   * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/.devos/`, `/.devos/logs/`) and missing starter templates (`notes/welcome.md`, `.ssh/bookmarks.json`). Zero manual file creation on PC/Mac.
 
 7. **Shared Engines, Never Forked Renderers or Parsers:**
-   * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview, the agent artifact viewer, and assistant chat bubbles. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
-   * One JSON reader (`components/devos_json/`) serves all HTTP/WS engines (`opendev_client`, `agy_client`). Same rule: extend, don't duplicate.
+   * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview and any future rich-text view. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
+   * One JSON reader (`components/devos_json/`), used today by `devos_ota`. Same rule: extend, don't duplicate.
    * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once.
 
 8. **Modular Self-Registering Apps:**
@@ -70,37 +68,33 @@ tab5-devos/
 ├── components/
 │   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
+│   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher
-│   ├── devos_ui/                  # LVGL v9 theme engine, widgets, top bar, home dashboard
+│   ├── devos_ui/                  # LVGL v9 theme engine, widgets, top bar, code viewer (devos_codeview)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
-│   ├── devos_json/                # Shared minimal JSON reader (engines only)
+│   ├── devos_json/                # Shared minimal JSON reader (used by devos_ota)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
 │   ├── devos_ota/                 # OTA manifest check + target flash path
+│   ├── devos_sysmon/              # 1 Hz system telemetry (battery, Wi-Fi, SD, heap, CPU, clock)
+│   ├── devos_tailnet/             # Tailscale client on top of MicroLink
+│   ├── devos_vterm/               # VT100 / xterm terminal emulator (no LVGL)
 │   ├── microlink/                 # Tailscale / WireGuard client component
-│   ├── libssh2_port/              # libssh2 SSH client component & PTY manager
-│   ├── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
-│   └── agy_client/                # Antigravity bridge WebSocket engine
+│   └── libssh2_port/              # libssh2 SSH client component & PTY manager
 ├── main/
 │   ├── main.c                     # Hardware bring-up, task creation, launch
 │   ├── apps/
 │   │   ├── app_launcher/          # Home Screen dashboard & live app tiles
-│   │   ├── app_opendev/           # OpenCode / OpenChamber client (tri-pane + focus)
 │   │   ├── app_terminal/          # Multi-session SSH client (collapsible panel)
-│   │   ├── app_editor/            # MicroSD Markdown editor & previewer
+│   │   ├── app_editor/            # SD card file browser, Markdown & text editor
 │   │   ├── app_tailscale/         # Tailnet status & peer list
-│   │   ├── app_antigravity/       # Native Antigravity GUI client (Path B)
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
-│       └── devos_config.h         # System-wide pin mappings, buffers, constants
+│       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── agy_bridge/                # Host-side Python daemon for Antigravity (Path B)
-    │   ├── bridge_server.py       # FastAPI WebSocket bridge listening on 100.x.y.z:8420
-    │   ├── transcript_watcher.py  # Realtime parser for transcript.jsonl
-    │   └── requirements.txt       # Python dependencies
-    ├── *_test.c                   # Host-side unit tests (md, opendev, agy, ota).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, ota, vterm).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.
@@ -128,7 +122,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + F`, `1..6`).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + L`, `Sym + 1..4`).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target
@@ -145,16 +139,6 @@ To allow the developer to test and verify UI/UX progress in real-time from their
   # Run directly if display server is present
   ./build_sim/devos_sim
   ```
-
-### 4.3 Antigravity Bridge Daemon (`tools/agy_bridge/`)
-To run the host sidecar daemon:
-```bash
-cd tools/agy_bridge
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 bridge_server.py --port 8420 --host 100.77.11.92
-```
 
 ---
 
@@ -185,7 +169,7 @@ python3 bridge_server.py --port 8420 --host 100.77.11.92
 
 ### 5.4 Security & Secrets
 * **Never commit passwords, tokens, or private keys to git.**
-* All persistent secrets (Tailscale auth keys, SSH keys, OpenChamber pairing tokens, AGY PSK) must be saved into encrypted NVS partitions (`nvs_flash`) or encrypted SD card storage.
+* All persistent secrets (Tailscale auth keys, SSH keys) must be saved into encrypted NVS partitions (`nvs_flash`) or encrypted SD card storage.
 
 ---
 

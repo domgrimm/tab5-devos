@@ -1,6 +1,6 @@
 # devOS for M5Stack Tab5: Architecture & Implementation Plan
 
-`devOS` is an open-source, developer-focused mobile operating system and firmware for the **M5Stack Tab5** equipped with the **A164 70-Key Physical Keyboard**. It transforms the Tab5 into a standalone, pocketable cyberdeck tailored for remote AI-assisted software engineering, secure remote systems management, and distraction-free writing.
+`devOS` is an open-source, developer-focused mobile operating system and firmware for the **M5Stack Tab5** equipped with the **A164 70-Key Physical Keyboard**. It transforms the Tab5 into a standalone, pocketable cyberdeck tailored for remote software engineering over SSH, secure remote systems management, and distraction-free writing.
 
 ---
 
@@ -14,18 +14,12 @@
   |   Memory: 28.4 MB Free PSRAM             | CPU: Core 0: 4% | Core 1: 18%    |
   |                                                                             |
   |  +----------------+  +----------------+  +----------------+  +------------+ |
-  |  | [1] OpenDev    |  | [2] Terminal   |  | [3] Markdown   |  | [4] Tail...| |
-  |  | AI Coding Agent|  | ANSI PTY Shell |  | Notes & Docs   |  | Mesh Net   | |
-  |  | * Status: Idle |  | * 1 Session    |  | * todo.md      |  | * 6 Peers  | |
+  |  | [1] Terminal   |  | [2] Editor     |  | [3] Tailscale  |  | [4] Setti..| |
+  |  | SSH + VT100    |  | SD Card Files  |  | Mesh Net       |  | System     | |
+  |  | * 1 Session    |  | * todo.md      |  | * 6 Peers      |  | * Wi-Fi    | |
   |  +----------------+  +----------------+  +----------------+  +------------+ |
   |                                                                             |
-  |  +----------------+  +----------------+  +----------------+  +------------+ |
-  |  | [5] Antigravity|  | [6] Settings   |  | [7] Extension  |  | [8] Tools  | |
-  |  | Native AGY     |  | System Config  |  | Modular App    |  | Utilities  | |
-  |  | * Subagents: 2 |  | * Wi-Fi / Batt |  | * Ready        |  | * Active   | |
-  |  +----------------+  +----------------+  +----------------+  +------------+ |
-  |                                                                             |
-  |               ◄ [Page 1 / 2]  ●  ○  [Page 2 ►]     [⇋ Arrange]             |
+  |               ◄ [Page 1 / 1]  ●                    [⇋ Arrange]             |
   +-----------------------------------------------------------------------------+
   | [Enter/Tap] Launch | [1-8] Page Key | [PgUp/PgDn] Flip | [Sym+H] Home        |
   +-----------------------------------------------------------------------------+
@@ -64,8 +58,8 @@ graph TD
         LVGL["LVGL v9 GUI Engine (PPA Accelerated)"]
         UI_TopBar["Top Status Bar & Notifications"]
         UI_Launcher["Home Screen / App Launcher Dashboard"]
-        UI_WM["Window & App Switcher (Sym+1..6 / Alt+Tab)"]
-        UI_Apps["devOS Applications (Agent, SSH, Editor, AGY)"]
+        UI_WM["Window & App Switcher (Sym+1..4 / Alt+Tab)"]
+        UI_Apps["devOS Applications (Terminal, Editor, Tailscale, Settings)"]
         KbdDrv["Tab5 I2C Keyboard Driver (HID/Char)"]
         TouchDrv["GT911 Touch Driver"]
         SD_FS["MicroSD Storage (FATFS / VFS)"]
@@ -96,14 +90,10 @@ graph TD
     end
 
     subgraph BackgroundDaemons ["Background Services (FreeRTOS Tasks)"]
-        OpenDevClient["OpenCode / OpenChamber Client (HTTP/SSE)"]
         SSHClient["SSH Engine (libssh2 / PTY)"]
-        AgyBridgeClient["Antigravity Native Client (agy-bridge WS/REST)"]
         PowerDaemon["Power & Battery Telemetry (INA226)"]
 
-        NetRouter --> OpenDevClient
         NetRouter --> SSHClient
-        NetRouter --> AgyBridgeClient
     end
 
     BackgroundDaemons -.->|"Thread-safe FreeRTOS Queues"| UI_Apps
@@ -117,16 +107,21 @@ graph TD
 | **GUI Framework** | LVGL v9.2+ | MIT | - | Rich widget set, PPA 2D hardware blitting, monospace terminal & markdown rendering support |
 | **Tailscale / VPN** | MicroLink v2 | MIT | `trombik/esp_wireguard` | Full `ts2021` Tailscale protocol stack (DERP relays, STUN, DISCO, MagicDNS, WireGuard ChaCha20-Poly1305) |
 | **SSH Client** | `libssh2` (`skuodi/libssh2_esp`) | BSD-3-Clause | `david-cermak/libssh` or `wolfSSH` | Permissive BSD license, supports interactive PTY, password & Ed25519/RSA key auth, proven on ESP32 |
-| **HTTP / SSE Client** | Raw BSD-socket HTTP/1.1 + SSE in `opendev_client` over `devos_net` | Apache-2.0 | `esp_http_client` + `esp-tls` | One portable code path for simulator and ESP-IDF/lwIP; non-blocking link, no TLS needed on LAN |
-| **WebSocket Client** | `esp_websocket_client` | Apache-2.0 | Custom lwIP WS client | Native IDF support for low-latency bidirectional bridge communication |
-| **JSON Parser** | Minimal built-in reader in `opendev_client` (strings, arrays, key lookup) | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
-| **Markdown Parser** | Inline CommonMark-subset renderer in `app_editor` (LVGL spangroup-based) | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
+| **HTTP Client** | `esp_http_client` (OTA manifest + image download) | Apache-2.0 | `devos_net_http_get` (raw-socket GET in `devos_net`) | Built into ESP-IDF; OTA is the only HTTP user |
+| **JSON Parser** | Minimal shared reader in `devos_json` (strings, arrays, key lookup), used by `devos_ota` | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
+| **Markdown Parser** | Shared CommonMark-subset renderer in `devos_mdview` (LVGL spangroup-based), used by the editor preview | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |
-| **QR Code Scanner** | `quirc` (Pure C99) | BSD-3-Clause | `zxing-cpp` / `esp-zbar` | Ultra-lightweight (15-25ms decode on 400 MHz Core 0), minimal RAM (~76KB QVGA buffer), zero dynamic dependencies |
 
 ---
 
 ## 3. Core Feature Architecture & Modules
+
+> [!NOTE]
+> **Removed on 2026-09-26:** the OpenCode / OpenChamber client (`app_opendev`), the Antigravity
+> client (`app_antigravity` and its `tools/agy_bridge` host daemon), the shared tri-pane agent
+> viewport with Focus Mode, and camera QR pairing. They were too heavy for the Tab5 and kept
+> crashing it; the Terminal app (SSH) covers remote work instead. Their sections (3.2, 3.5, 3.6),
+> roadmap Phase 5 and the Antigravity items of Phase 6 are gone; section numbers were kept.
 
 ### 3.0 Home Screen & Desktop Environment (`app_launcher`)
 
@@ -147,7 +142,7 @@ The Home Screen serves as the operational dashboard and application launcher for
     *   **Page Flipping Shortcuts:** Press `Page Up` / `Page Down` (or `Sym + ←` / `Sym + →`) to flip between app pages instantly.
     *   **Touch & Gesture Controls:** Swipe left/right across the grid to flip pages with smooth carousel snapping; tap any card to open.
     *   **Global Return:** Pressing `Sym + H`, `Esc`, or tapping the top-left `[devOS]` logo from within any application returns to the Home Screen.
-    *   **Multitasking:** Background tasks (SSH sessions, streaming agent tokens, Tailscale tunnels) continue running when returning to the Home Screen.
+    *   **Multitasking:** Background tasks (SSH sessions, Tailscale tunnels) continue running when returning to the Home Screen.
 *   **Generalized Tile & Widget Re-arrangement Mode:**
     *   **Interactive Customization:** Users can re-order and customize the launcher grid across pages to place their most-used tools into preferred slots.
     *   **Activation & Toggle:** Tapped via the `[⇋ Arrange]` button in the footer or via keyboard shortcut `Sym + E` (or pressing `E` while on the Home Screen).
@@ -160,7 +155,7 @@ The Home Screen serves as the operational dashboard and application launcher for
 
 ### 3.1 Subsystem 1: Optional Mesh Networking via Tailscale (`net_tailscale`)
 
-The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.z`), allowing secure access to remote dev machines, cloud instances, and home servers across the internet without public IP addresses or port forwarding. **devOS is completely independent of Tailscale:** if a user does not want or need Tailscale, all core capabilities (SSH shells, OpenCode, OpenChamber, Antigravity bridge) operate directly over standard local Wi-Fi and LAN IP / DNS routing.
+The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.z`), allowing secure access to remote dev machines, cloud instances, and home servers across the internet without public IP addresses or port forwarding. **devOS is completely independent of Tailscale:** if a user does not want or need Tailscale, all core capabilities (SSH shells, OTA updates) operate directly over standard local Wi-Fi and LAN IP / DNS routing.
 
 *   **Engine:** `MicroLink` (Tailscale client for ESP-IDF).
 *   **Virtual Socket Integration:**
@@ -177,58 +172,6 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
 
 ---
 
-### 3.2 Subsystem 2: Remote OpenCode & OpenChamber Support (`app_opendev`)
-
-`app_opendev` acts as a handheld AI-assisted coding terminal, connecting to self-hosted instances of **OpenCode** and/or **OpenChamber**.
-
-*   **Dual Protocol Support (as built in `components/opendev_client/`):**
-    1.  **Direct OpenCode Server Mode (`opencode serve --port 4096`):**
-        *   Raw BSD-socket HTTP/1.1 + SSE over the `devos_net` virtual transport (same code on simulator and ESP-IDF/lwIP; non-blocking SSE link with backoff, short-timeout REST from UI actions).
-        *   Endpoints: `GET /session` (list), `POST /session` (create), `GET /session/:id/message?limit=50` (history rebuild), `POST /session/:id/prompt_async` (send), `GET /event` (SSE), `POST /session/:id/abort`, `POST /session/:id/permissions/:pid` (`{response: once|always|reject}`), `GET /session/:id/diff` (rendered raw).
-        *   SSE events consumed: `server.connected`, `session.created/status/idle`, `message.updated`, `message.part.updated` (debounced history refetch), `permission.asked`. Minimal built-in JSON reader (no cJSON dependency); unknown events/fields ignored.
-        *   Unit test in `tools/opendev_test.c` (isolated CWD required — pairing tests persist sim config).
-    2.  **OpenChamber Server Mode:**
-        *   Pairing via `openchamber://connect?host=H&port=P&token=T` (`p=` accepted; also the `?v=2&p=` shape), pasteable directly into the in-app Server modal.
-        *   Bearer token persisted (encrypted NVS on target, JSON file in sim).
-*   **UI (as built in `app_opendev` on the shared viewport):**
-    *   Left: server status card (tap = Server modal for host/port/pairing), Link/refresh, + New session, live session list with busy badges.
-    *   Center: chat stream (user bubbles, in-place chronological thinking accordions, tool cards, auto-scroll), prompt bar with responsive flex expansion, active note injection button (`[Note]` / `Sym+N`), and `[Send]` button (`Enter` sends, `Ctrl+C` aborts).
-    *   Right: session inspector (ID/model/state), action row (`[Diff]`, `[Save Diff]`, `[Save Plan]`), color-coded unified diff viewer (green `+`, red `-`, cyan `@@`, muted headers), and automated MicroSD exports to `/sdcard/plans/` and `/sdcard/diffs/`.
-    *   Permission modal `[Y] Once / [N] Deny / [A] Always` via touch or keys (Deny-on-Esc; answers never trap the UI on transport failure).
-*   **Tri-Pane Flexible Layout & Focus Mode (1280×720):**
-    *   **Left Panel (Collapsible, 260px):**
-        *   Project selector and active session list with live status badges.
-        *   Session Goals progress tracker and active model picker (`Claude 3.7 Sonnet`, `Gemini 2.5 Pro`, `GPT-4o`, etc.).
-        *   *Shortcut:* `Sym + L` (or `Ctrl + B`) to toggle.
-    *   **Center Main Canvas (Dynamic Responsive Width: 720px / 980px / 1280px):**
-        *   User prompt bubble (styled container with syntax formatting).
-        *   Thinking/Reasoning block (collapsible accordion with elapsed time counter, rendered chronologically within turn).
-        *   Tool execution cards (showing command run, exit code, file path).
-        *   Streaming response text with smooth auto-scroll.
-        *   Bottom prompt input bar with physical keyboard input support, active note attachment (`Sym + N`), and responsive flex growth.
-    *   **Right Panel (Collapsible, 300px):**
-        *   **Files Modified List:** Summary of touched files in the active session.
-        *   **Interactive Diff Viewer:** Color-coded unified diffs (green additions, red deletions, cyan hunks) with monospace font styling.
-        *   **Session Plan / Task Checklist:** Live checklist of agent sub-tasks, with one-tap export to `/sdcard/plans/<session>.md` and `/sdcard/diffs/<session>.diff`.
-        *   *Shortcut:* `Sym + R` to toggle.
-    *   **"Focus Mode" (`Sym + F`):**
-        *   Instantly collapses both left and right panels with a single keystroke (or tapping the top `[Focus]` button).
-        *   Center chat canvas expands to the **full 1280px display width** for distraction-free reading, long reasoning inspection, and typing.
-        *   Pressing `Sym + F` again immediately restores previous sidebar states.
-    *   **Interactive Permission Prompts:**
-        *   Modal dialog interrupts when an agent asks to execute a command or modify sensitive files: `[Approve (Y)]`, `[Deny (N)]`, `[Always Allow in Session (A)]`. Can be answered with physical keyboard shortcuts.
-*   **3.2.1 Camera-Based Zero-Touch Pairing (OpenChamber QR Scanner):**
-    *   **Camera Pipeline:** Uses Tab5's onboard **SC2356 2MP camera** via the ESP32-P4 hardware **MIPI-CSI 2-lane receiver** and ISP downscaled to **QVGA (320×240) grayscale**.
-    *   **Core Pinning & Performance:** Camera frame acquisition and QR decoding are pinned to **Core 0** using `quirc`, running at 15–25ms per frame (~25 FPS) without dropping frames on Core 1's 60 FPS LVGL presentation loop.
-    *   **Power Gating:** The SC2356 camera and MIPI-CSI clock (MCLK GPIO 36) are powered down by default. They are energized exclusively when the scanner modal is invoked and shut off immediately upon barcode capture or cancellation.
-    *   **Interactive Viewfinder:**
-        *   In OpenDev's Server modal, tapping `[📷 Scan QR]` displays a live camera viewfinder overlay with targeting crosshairs.
-        *   Instantly detects `openchamber://connect?host=...&port=...&token=...` QR codes from the OpenChamber web dashboard.
-        *   Decoded URI triggers `opendev_client_pair()` automatically, dismisses the viewfinder, and starts SSE streaming with zero manual typing on the physical keyboard.
-    *   **Host Simulator Mode:** Provides a clean simulated capture fallback (mock QR injection / image file feed) so desktop and web simulation workflows remain fully testable without physical camera hardware.
-
----
-
 ### 3.3 Subsystem 3: SSH Client & Terminal Emulator (`app_terminal`)
 
 `app_terminal` provides an interactive multi-session shell to any tailnet or LAN server, turning the Tab5 into a portable system administration and coding cyberdeck.
@@ -238,7 +181,7 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     *   **Active Sessions Tab:**
         *   Lists all open, concurrent remote shells (e.g., `1: workstation (bash)`, `2: prod-vps (htop)`, `3: home-nas (tail)`).
         *   Visual badge indicates which session is currently attached to the display.
-        *   Quick session switching via physical shortcuts (`Alt + 1` .. `Alt + 9`) or touch selection.
+        *   Quick session switching via physical shortcuts (`Alt + 1` .. `Alt + 8`) or touch selection.
         *   `[+] New Session` quick button to spawn an additional concurrent shell.
     *   **Saved Connections Tab (Bookmarks):**
         *   Organized list of saved connection profiles stored in `/sdcard/.ssh/bookmarks.json` or encrypted NVS.
@@ -246,12 +189,12 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   One-click / one-key instant connect.
         *   Supports importing standard SSH config from `/sdcard/.ssh/config`.
     *   **Side Panel Controls:**
-        *   Toggle shortcut: **`Sym + L`** (or `Ctrl + B`), matching the left panel toggle across OpenDev and Antigravity.
+        *   Toggle shortcut: **`Sym + L`**, the same key that hides the editor's file list.
         *   Touch toggle: Left margin chevron handle and top header `[Sessions]` icon.
 *   **Dynamic PTY Resizing on Panel Toggle:**
     *   *Side Panel Collapsed (Fullscreen Terminal):* Canvas occupies full 1280px width, rendering **160 columns × 45 lines** (with 8×16 font).
     *   *Side Panel Open:* Canvas occupies 1020px width, rendering **128 columns × 45 lines**.
-    *   *Real-time SIGWINCH:* Whenever the side panel is toggled open or closed, `libssh2_channel_request_pty_size` immediately broadcasts window size changes (`TIOCSWINSZ`) to the remote host. Remote CLI applications (`htop`, `vim`, `tmux`, `agy`) seamlessly re-layout their interfaces instantly with zero distortion.
+    *   *Real-time SIGWINCH:* Whenever the side panel is toggled open or closed, `libssh2_channel_request_pty_size` immediately broadcasts window size changes (`TIOCSWINSZ`) to the remote host. Remote CLI applications (`htop`, `vim`, `tmux`) seamlessly re-layout their interfaces instantly with zero distortion.
 *   **Terminal Specifications & Features:**
     *   Full ANSI/VT100 escape code support: 16-color palette (adapting to Dark/Light OS theme), bold, underline, reverse video, and cursor addressing.
     *   Authentication: Password and public-key (Ed25519 & RSA) from `/sdcard/.ssh/` or encrypted NVS.
@@ -262,9 +205,9 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
 
 ---
 
-### 3.4 Subsystem 4: Distraction-Free Markdown Editor & Storage (`app_editor`)
+### 3.4 Subsystem 4: Markdown & Text Editor with SD Card Browser (`app_editor`)
 
-`app_editor` is a full-featured markdown notes and documentation workstation that functions both completely offline and in sync with remote workflows.
+`app_editor` browses the whole SD card and edits any text file; Markdown files get a live preview. It works completely offline.
 
 *   **Automatic MicroSD Detection & Directory Scaffolding (`devos_storage`):**
     *   **Automated Mount Lifecycle:**
@@ -279,139 +222,28 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
             │   ├── bookmarks.json     # Saved connection profiles
             │   └── known_hosts        # Persistent SSH host key cache (TOFU)
             ├── notes/                 # User personal and technical Markdown documents
-            │   └── welcome.md         # Auto-generated interactive devOS cheat-sheet
-            ├── plans/                 # Exported AI Agent plans & implementation specs
-            ├── diffs/                 # Exported session diffs & patch files
+            │   └── welcome.md         # Auto-generated devOS cheat-sheet
             └── .devos/                # OS-level metadata, backups, and crash telemetry
                 ├── config.json        # User configuration overrides
+                ├── version.txt        # Firmware version
                 └── logs/              # Ring-buffered boot and crash logs
             ```
     *   **Auto-Populated Starter Templates (Generated if missing):**
-        *   `/sdcard/notes/welcome.md`: Interactive getting-started guide detailing global hotkeys (`Sym + T`, `Sym + F`, `Sym + L`, `Sym + R`), Tailscale enrollment, and agent tips.
+        *   `/sdcard/notes/welcome.md`: Getting-started guide: the editor's keys and the global `Sym` shortcuts.
         *   `/sdcard/.ssh/bookmarks.json`: Pre-populated starter JSON schema with a sample bookmark so users can immediately add server connections.
         *   `/sdcard/.devos/version.txt`: Writes active firmware version and build timestamp.
     *   **Visual Status:**
         *   Home Screen telemetry and top status bar display live SD card presence, capacity, and remaining free space (e.g. `SD: 29.4 GB Free`).
 *   **Editor Features (as built):**
-    *   **File Explorer:** Live scan of `/sdcard/notes/*.md` (FATFS on target, `./sim_sdcard` in sim) on init and every show; up to 12 entries, tap/click or `Tab` → `↑/↓` → `Enter` to open (amber = keyboard cursor, cyan = open file).
-    *   **Multiline Editor:** Physical typing, arrows, backspace, Enter; `Ctrl+S` (save, `[*]` dirty flag), `Ctrl+O` (jump to file list), `Ctrl+N` (new `untitled-N.md`), `Tab` (focus list/editor), `Sym + L` (collapse file tree = fullscreen editing). Save/create failures report transient `SAVE FAILED`-style status (e.g. missing SD).
-    *   **View Modes:** `Ctrl+P` cycles Edit → Split → Preview; split preview re-renders on a 400 ms debounce while typing.
-    *   **Markdown Renderer (spangroup-based blocks):** H1–H6 (distinct size/color ladder), fenced code (single padded Unscii-16 mono block), GFM tables with/without outer pipes (`+---+` grid, header separator, `:--`/`:--:`/`--:` alignment, shrink-to-fit), `---`/`***`/`___` rules, blockquotes, ul/ol (renumbered)/task lists, paragraphs.
+    *   **File Browser (left, 260px):** The whole card (FATFS on target, `./sim_sdcard` in sim), with folders and file sizes. `Enter` opens, `Backspace` goes up a folder, `N` new file, `F` new folder, `R` rename, `D`/`Del` delete (asks first; folders must be empty), `H` shows hidden files, `Esc` switches between list and editor. Touch works too. `Sym + L` / `Sym + F` hide the list; `Ctrl + O` jumps to it.
+    *   **File Sizes & Types:** Text files up to 48 KB are edited in place; larger ones (up to 512 KB) open read-only in the fast code viewer (`devos_codeview`); binary files are refused. Markdown files (`.md`, `.markdown`, `.txt`) use the body font and get a preview; other files use a monospace font.
+    *   **Editing Keys:** `Ctrl + S` save, `Ctrl + N` new file, `Ctrl + F` find (`Ctrl + G` next match), `Ctrl + Z` undo, `Ctrl + X/C/V` cut/copy/paste (selection or whole line), `Ctrl + K` delete line, `Ctrl + D` duplicate line, `Ctrl + A` select all, `Ctrl + B` bold, `Ctrl + Enter` tick/untick a task, `Sym + ←/→` line start/end, `Sym + ↑/↓` page, `Alt + ←/→` word, `Tab` indent.
+    *   **Saving:** Safe saves (written to a temp file, then renamed over the original); autosave after 30 s idle and when leaving the app. Save failures show in the status line.
+    *   **Session Memory:** Last folder, file, view mode and hidden-files setting are kept in `/sdcard/.devos/editor.json`; the first run opens `notes/welcome.md`.
+    *   **View Modes:** `Ctrl+P` cycles Edit → Split → Preview; the preview re-renders about 350 ms after typing stops.
+    *   **Markdown Renderer (shared `devos_mdview`, spangroup-based blocks):** H1–H6 (distinct size/color ladder), fenced code (single padded Nimbus Mono 14 block), GFM tables with/without outer pipes (`+---+` grid, header separator, `:--`/`:--:`/`--:` alignment, shrink-to-fit), `---`/`***`/`___` rules, blockquotes, ul/ol (renumbered)/task lists, paragraphs.
     *   **Inline:** `**bold**` (underline — only a regular font exists), `*italic*` (secondary color), `~~strike~~` (decor), `` `code` ``, `[t](u)` (URL kept visible; balanced parens, `<dest>`, titles), `![a](s)`, `<autolink>`, backslash escapes, `*`/`_` flanking rules.
-    *   **Limits (documented in code):** 16 KB/file, setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths, no `Ctrl+F` find.
-*   **Agent Synergy:**
-    *   **"Attach Note to OpenDev / Antigravity"**: Send the currently open markdown file directly into an active agent session as context (via action bar `[Attach]` button, `Sym + A`, `Ctrl + U`, or `[Note]` pull button in OpenDev).
-    *   **"Export Agent Plan & Diffs"**: Save an agent's plan or code explanation directly to `/sdcard/plans/<session>.md` and unified diffs to `/sdcard/diffs/<session>.diff` via right-panel action buttons. Export helpers include filename sanitization (`app_editor_save_plan`, `app_editor_save_diff`).
-
----
-
-### 3.5 Confirmed Primary Architecture: Antigravity Client (`app_antigravity` via Path B)
-
-> [!IMPORTANT]
-> **Architecture Decision Confirmed: Path B (Native GUI Agent Client via `agy-bridge` Sidecar Protocol)** is the designated primary implementation for Google Antigravity support in `devOS`.
-
-Rather than merely running `agy` inside an SSH terminal session, `devOS` provides a **first-class native GUI client** that brings the visual fidelity of the Antigravity desktop environment directly to the Tab5 handheld screen.
-
-```mermaid
-sequenceDiagram
-    participant Tab5 as devOS (M5Stack Tab5)
-    participant Tailnet as Tailscale WireGuard Mesh
-    participant Bridge as agy-bridge (Host Daemon)
-    participant AGY as Antigravity Agent Runtime
-
-    Note over Tab5,Bridge: Secure connection established over Tailnet (100.x.y.z:8420)
-    Tab5->>Bridge: WS Connect & Handshake (Auth Token)
-    Bridge->>Tab5: Session Metadata (Conversation ID, Active Model, Subagents)
-    Tab5->>Bridge: Send Prompt / Slash Command (/goal, /plan)
-    Bridge->>AGY: Dispatch via Antigravity SDK / CLI Session
-    loop Realtime Event Streaming
-        AGY-->>Bridge: Stream Token / Thinking Trace / Tool Call
-        Bridge-->>Tab5: JSON Event Packet (Type: THINKING, TOOL_EXEC, DIFF)
-        Tab5->>Tab5: Update LVGL Accordion & Tool Cards in Real-time
-    end
-    opt Tool Approval Required
-        AGY-->>Bridge: Permission Prompt (e.g., run_command 'pytest')
-        Bridge-->>Tab5: Permission Request Modal
-        Tab5->>Tab5: User hits [Y] or physical hotkey 'Y'
-        Tab5-->>Bridge: Permission Approved (allow: true)
-        Bridge-->>AGY: Authorize Execution
-    end
-    AGY-->>Bridge: Task Completed + Generated Artifact
-    Bridge-->>Tab5: Send Artifact (Markdown / Diff / Report)
-    Tab5->>Tab5: Render Artifact in Tab5 Markdown Viewer
-```
-
-#### 3.5.1 Host Sidecar Daemon (`tools/agy_bridge/`)
-*   **Language & Stack:** Lightweight Python daemon (using `FastAPI` / `websockets` or Python asyncio) running as a systemd user service (`systemctl --user start agy-bridge`) on the developer's workstation or remote server.
-*   **Integration with Antigravity:**
-    *   Utilizes the Antigravity SDK (`antigravity-sdk-python`) and monitors the active session transcript logs located at `~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl`.
-    *   Handles bidirectional communication: dispatches user prompts, slash commands (`/goal`, `/plan`, `/schedule`), and manages tool approvals.
-*   **Security & Networking:**
-    *   Listens exclusively on the host's Tailscale IP interface (`100.x.y.z:8420`).
-    *   Authenticated via a shared pre-shared secret (PSK) or token stored in the Tab5's encrypted NVS.
-
-#### 3.5.2 Tab5 Native Client UI (`app_antigravity`)
-*   **Tri-Pane Flexible Layout & Focus Mode (1280×720):**
-    *   **Left Navigation Pane (Collapsible, 260px):**
-        *   Active Conversation details and current AI model selector.
-        *   **Subagent Hierarchy Tree:** Displays invoked subagents (e.g. `research`, `self`) with live execution state badges (`running`, `idle`, `waiting_for_input`).
-        *   *Shortcut:* `Sym + L` (or `Ctrl + B`) to toggle.
-    *   **Center Main Chat Canvas (Dynamic Responsive Width: 720px / 980px / 1280px):**
-        *   User messages and Assistant responses rendered with styled Markdown typography.
-        *   **Collapsible Thinking Block:** Live accordion showing the agent's internal reasoning/thinking steps with elapsed timer.
-        *   **Tool Execution Cards:** Displays invoked tools (e.g., `run_command`, `replace_file_content`, `view_file`) with expandable inputs and outputs.
-        *   Bottom action bar with full-width prompt input field and quick slash commands (`/goal`, `/plan`, `/boost`, `/learn`).
-    *   **Right Auxiliary Inspector (Collapsible, 300px):**
-        *   **Artifacts Tab:** Direct preview of generated code files, architectural plans, and diagrams with markdown rendering.
-        *   **File Changes Tab:** Unified diff summary of all files modified in the active session.
-        *   *Shortcut:* `Sym + R` (or `Ctrl + Shift + B`) to toggle.
-    *   **"Focus Mode" (`Sym + F`):**
-        *   Instantly collapses both left and right panels with a single keystroke (or tapping the top `[Focus]` button).
-        *   Center chat canvas expands to the **full 1280px display width** for pure conversational immersion and code reading.
-        *   Pressing `Sym + F` again instantly restores previous panel states.
-    *   **Permission & Question Modals:**
-        *   Interactive popups when an agent requests tool authorization or asks multiple-choice clarification questions. Accessible via touchscreen or instant physical keyboard shortcuts (`Y` for approve, `N` for deny, `1`..`4` for multiple-choice options).
-
----
-
-### 3.6 Unified Agent UI Framework & "Focus Mode" Mechanics
-
-Both `app_opendev` and `app_antigravity` are built on a shared, highly responsive container component in `devos_ui` (`devos_agent_viewport`). This guarantees a consistent muscle memory and interaction model across both agent environments.
-
-```
-State 1: Tri-Pane (Full Context Mode)
-+---------------+---------------------------------------+---------------+
-| Left Panel    | Center Chat & Reasoning Stream        | Right Panel   |
-| (260px)       | (720px)                               | (300px)       |
-| Projects /    | > User Prompt                         | Files / Diffs |
-| Subagents     | > Agent Thinking / Tool Executions    | Artifacts /   |
-| Models        | > Assistant Markdown Response         | Plan Tasks    |
-+---------------+---------------------------------------+---------------+
-
-State 2: Focus Mode (Full-Width Chat Mode - Sym + F)
-+-----------------------------------------------------------------------+
-| Center Chat & Reasoning Stream (Full 1280px Viewport)                 |
-|                                                                       |
-| > User Prompt                                                         |
-| > Agent Thinking [Collapsible Accordion]                              |
-| > Tool Execution Cards                                                |
-| > Assistant Markdown Response Stream                                  |
-|                                                                       |
-+-----------------------------------------------------------------------+
-| > Prompt Input Bar                                                    |
-+-----------------------------------------------------------------------+
-```
-
-*   **Four Responsive Layout States:**
-    1.  **Tri-Pane (Both Open):** Left 260px | Center 720px | Right 300px.
-    2.  **Left-Only (Right Collapsed):** Left 260px | Center 1020px.
-    3.  **Right-Only (Left Collapsed):** Center 980px | Right 300px.
-    4.  **Focus Mode (Both Collapsed):** Center expands to **full 1280px**.
-*   **Hardware & Touch Controls:**
-    *   **`Sym + F`**: Toggle Focus Mode on/off. Restores previous panel configuration when toggled off.
-    *   **`Sym + L` (or `Ctrl + B`)**: Toggle Left Sidebar independently (supported across OpenDev, Antigravity, and Terminal).
-    *   **`Sym + R` (or `Ctrl + Shift + B`)**: Toggle Right Inspector independently (supported across OpenDev and Antigravity).
-    *   **Touch Handles**: Subtle chevron toggle handles on the top left and top right of the viewport, plus a dedicated `[Focus]` header icon.
+    *   **Renderer Limits (documented in code):** setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths.
 
 ---
 
@@ -434,12 +266,11 @@ State 2: Focus Mode (Full-Width Chat Mode - Sym + F)
         *   Use Case: **Essential for direct sunlight and outdoor visibility** on the Tab5's 5.0" IPS display.
 *   **System-Wide Scope & Propagation:**
     *   **Top Bar & Home Screen:** Real-time re-skinning of the status bar, telemetry charts, and live app tiles.
-    *   **OpenDev & Antigravity:** Switches chat bubble backgrounds, collapsible thinking accordions, tool logs, and syntax highlighting color schemes (Dark syntax vs Light Solarized / GitHub light syntax).
     *   **Terminal Emulator:** Maps the 16-color ANSI palette dynamically:
         *   *Dark Mode:* Deep black background (`#0C0E14`) with bright, saturated ANSI colors.
         *   *Light Mode:* High-contrast light paper background (`#F8FAFC`) with dark, high-contrast ANSI colors (preventing washed-out yellow/cyan text on light backgrounds).
     *   **Markdown Editor:** Editor canvas switches from Dark Editor (monokai/charcoal) to Clean Paper (black text on crisp white with light code block backgrounds).
-    *   **Keyboard RGB Backlight:** Tab5 A164 keyboard status LEDs sync with theme (e.g., cyan/amber ambient in Dark mode, crisp neutral daylight white in Light mode).
+    *   **Keyboard lights:** the A164's two status LEDs can follow the theme accent (Settings > Display > Keyboard lights), with the left one amber while caps lock is on.
 *   **Toggle Controls:**
     *   **Global Hotkey:** **`Sym + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
     *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Sym + T`.
@@ -464,19 +295,18 @@ The Tab5 physical keyboard is a critical input surface for `devOS`.
 *   **Implementation Strategy:**
     *   Use **Normal (matrix) Mode** for the core OS input layer. HID mode hides the Sym key entirely (Sym+H arrives as a plain `h`), so devOS reads raw press/release events and maps them itself (base + Sym layers, Aa = Shift / tap for caps lock, software auto-repeat, hot-plug re-attach).
     *   A dedicated FreeRTOS keyboard task waits on GPIO 50 interrupt transitions, reads reports via I2C, and pushes structured `key_event_t` structs into an LVGL input driver queue.
-*   **Global Hotkeys** (the A164 has **no Fn key**; its modifiers are Sym / Aa / Ctrl / Alt. devOS runs the keyboard in Normal/matrix mode so Sym can be the system modifier. Sym + punctuation still types the Sym-layer symbol, so sidebars use `Sym + L` / `Sym + R` rather than `[` / `]`):
-    *   `1` .. `6` (from Home Screen): Instant app launch.
+*   **Global Hotkeys** (the A164 has **no Fn key**; its modifiers are Sym / Aa / Ctrl / Alt. devOS runs the keyboard in Normal/matrix mode so Sym can be the system modifier. Sym + punctuation still types the Sym-layer symbol, so the side panel toggle is `Sym + L` rather than `[`):
+    *   `1` .. `8` (from Home Screen): Launch the tile in that slot on the current page.
     *   `Sym + H`: Global Home Screen return from any application.
-    *   `Sym + 1` .. `Sym + 6`: Instant switch between Apps from anywhere.
+    *   `Sym + 1` .. `Sym + 4`: Switch to Terminal, Editor, Tailscale or Settings from anywhere.
     *   `Sym + T`: **Toggle Dark / Light Theme** system-wide.
-    *   `Sym + F`: **Toggle Focus Mode** (collapses/restores sidebars in OpenDev & Antigravity).
-    *   `Sym + L` (or `Ctrl + B`): Toggle Left Sidebar (Sessions / Bookmarks / Subagents in OpenDev, AGY, and Terminal).
-    *   `Sym + R` (or `Ctrl + Shift + B`): Toggle Right Inspector (Files / Diffs / Artifacts in OpenDev & AGY).
-    *   `Alt + 1` .. `Alt + 9`: Instant switch between active concurrent SSH sessions in Terminal.
-    *   `Ctrl + Tab` / `Alt + Tab`: Cycle recent apps.
-    *   `Sym + Space`: Global quick-launcher / command palette.
-    *   `Sym + Up/Down`: Screen brightness adjustment.
-    *   `Sym + B`: Toggle keyboard RGB backlight mode / power.
+    *   `Sym + -` / `Sym + +`: Screen brightness.
+    *   `Sym + L`: Toggle the left panel (editor file list, terminal connections).
+    *   `Sym + F`: Hide the editor's file list.
+    *   `Sym + Up/Down`: Page up / down (launcher pages, editor, terminal scrollback).
+    *   `Alt + 1` .. `Alt + 8`: Instant switch between active concurrent SSH sessions in Terminal.
+    *   `Alt + Tab`: Switch to the previous app.
+    *   Planned, not built: `Sym + Space` command palette.
 
 ### 4.2 Display & Graphics Pipeline
 
@@ -516,7 +346,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
     *   **Direct Developer URLs:** `http://10.2.132.54:6080/vnc.html` (direct LAN) or `http://100.77.11.92:6080/vnc.html` (Tailscale).
 *   **Emulated Inputs:**
     *   *Mouse clicks & drags* map directly to GT911 capacitive touch events (tap, swipe, scroll).
-    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + F` for Focus Mode, `Sym + L` / `Sym + R` for Sidebars, and `1`..`6` for App launcher).
+    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + L` for side panels, `Sym + 1`..`4` and `1`..`8` for apps).
 *   **One-Command Runner Script (`tools/sim/run_web_sim.sh`):**
     *   Automatically handles building the desktop simulator target with CMake/Ninja, launching or restarting the Xvfb/noVNC background service, and binding to port `6080`.
 
@@ -530,7 +360,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >
 > **Real now:** display (flicker fixed: IDF < 5.5.3 DSI timing backport), touch, keyboard
 > (Normal mode, Sym shortcuts), Wi-Fi manager + Settings UI, live battery/RTC/NTP/SD/heap/CPU
-> telemetry, backlight dimming/sleep, theme persistence, SD long filenames, OpenCode REST client,
+> telemetry, backlight dimming/sleep, theme persistence, SD long filenames,
 > SSH client (libssh2: known_hosts TOFU, password/key/on-device ECDSA key, keepalive) with a
 > VT100/xterm-256color terminal (`devos_vterm`), Tailscale client (vendored MicroLink v2 via
 > `devos_tailnet`: ts2021, WireGuard netif for 100.64/10, DERP, DISCO; auth-key enrolment).
@@ -542,14 +372,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 3. (was: Terminal) done.
 > 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
 >    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
-> 5. (was: OpenCode) done: SSE parsed from `data:` JSON (`type`/`properties`, chunked), streamed
->    parts + deltas applied incrementally, REST on a background worker, unified diffs from
->    `/session/:id/diff`. Agent questions are only announced (answer on the computer).
-> 6. Antigravity bridge real mode is a stub (prompts/permissions not forwarded); WS client
->    breaks on frames > 8 KB and sends empty PONGs.
-> 7. Camera/QR: no camera driver (grey frames). ("Simulate QR" is now simulator-only.)
-> 8. Secrets (Tailscale key, tokens, PSK, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
-> 9. Missing: command palette, keyboard RGB, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+> 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
+> 6. Missing: command palette, audio, camera, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
@@ -563,9 +387,9 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Create `devOS` core application framework with FreeRTOS dual-core task segregation (Core 0: network, Core 1: UI).
 - [x] Implement **Global Theme Engine (`devos_theme`)** with Dark Cyberdeck and High-Contrast Light palettes, NVS persistence, and hotkey `Sym + T`.
 - [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock; theme control lives in Settings + `Sym + T`).
-- [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with 6 live app cards and telemetry.
-- [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..6] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
-- [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..6`, `Sym + H`).
+- [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with live app cards and telemetry.
+- [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..8] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
+- [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..4`, `Sym + H`).
 - [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
@@ -586,35 +410,13 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Live interactive SSH PTY session engine: real shell execution (`root@...`), concurrent sessions, focus trap, and seamless peer shell launching.
 
 ### Phase 4: Markdown Editor
-- [x] Implement File Explorer UI with MicroSD directory navigation (live `/sdcard/notes/*.md` scan, keyboard + touch open).
+- [x] Implement SD card file browser (whole card, folders, new file / folder, rename, delete, hidden files; keyboard + touch).
 - [x] Build multiline text editor widget with cursor navigation and shortcut handling (`Ctrl+S`, `Ctrl+O`, plus `Ctrl+N`, `Tab`, `Sym + L`).
 - [x] Integrate lightweight Markdown renderer (headings, bold/italic/strike/code, links, tables, code blocks, lists, quotes, rules, checklists; see §3.4 for exact coverage).
 - [x] Implement split-view and fullscreen editing modes (`Ctrl+P` cycle; 400 ms debounce re-render). Adversarial review fixes merged (pipe-less tables, balanced-paren URLs, UTF-8-safe truncation, save-failure feedback); unit test in `tools/md_preview_test.c`.
-- [x] Agent Synergy & Export API: added top-bar `[Attach]` button and hotkeys (`Sym + A`, `Ctrl + U`) to inject active notes directly into AI agent prompt contexts, plus sanitized file exporters to `/sdcard/plans/` and `/sdcard/diffs/`.
+- [x] Full text editing: find, undo, clipboard, line operations, task lists (`Ctrl+Enter`), safe saves + 30 s autosave; files over 48 KB open read-only, binary files are refused.
 
-### Phase 5: Remote OpenCode & OpenChamber Client
-- [x] Build HTTP/SSE client engine for OpenCode REST API (`/session`, `/event`).
-- [x] Implement OpenChamber pairing handshake and token authentication.
-- [x] Design dual-pane UI: sessions sidebar and scrollable chat stream.
-- [x] Implement rich message cards: reasoning/thought accordions, tool logs, diff visualizer.
-- [x] Build interactive Permission Request popup system.
-- [x] Interactive Diff & Session Export: color-coded unified diff viewer in right inspector, `[Diff]`, `[Save Diff]`, and `[Save Plan]` export triggers.
-- [x] Dual-Way Synergy & Input Bar: integrated `[Note]` button in OpenDev input bar (`Sym + N`) to pull active notes; fixed viewport positioning and padding for full visibility across all 4 responsive viewport modes (Tri-Pane, Left-Only, Right-Only, Focus Mode).
-- [x] Hardened REST & SSE Engine: fixed HTTP Authorization header concatenation, resolved premature SSE buffer clearing, and implemented fallback parsing for message parts and tool inputs.
-- [x] Camera-Based OpenChamber QR Pairing: onboard SC2356 MIPI-CSI camera capture + `quirc` QR decoder on Core 0 with live viewfinder modal in `app_opendev`, pairing token extraction, and simulator mock support.
-
-### Phase 6: Antigravity Native Client (Path B)
-- [x] Design and implement the host-side `agy-bridge` Python daemon in `tools/agy_bridge/` (dynamic conversation ID detection from transcript path, realtime parsing of `PLANNER_RESPONSE` thinking, tool execution, token streaming, and demo scripting mode).
-- [x] Implement WebSocket transport engine in devOS (`components/agy_client/`) connecting to `100.x.y.z:8420` with non-blocking handshake, single-upgrade enforcement, stream compaction on partial frames, and ping/pong keepalives.
-- [x] Build native Antigravity UI canvas (`app_antigravity`):
-  - [x] Subagent live pool status cards with active state indicators.
-  - [x] Chronological thinking/reasoning traces with collapsible accordions.
-  - [x] Full Markdown renderer integration for assistant chat bubbles and artifacts using `components/devos_mdview/`.
-  - [x] Unified diff viewer in right inspector with color-coded additions/deletions, hunk headers, and `[Save Diff]` button exporting to `/sdcard/diffs/`.
-  - [x] Artifact viewer modal with Markdown rendering, theme adaptation, and `[Save]` button exporting to `/sdcard/plans/`.
-  - [x] Interactive tool permission popup (`[Y]`, `[N]`, `[A]`) and question picker modals (`[1..4]`) with physical keyboard bindings.
-  - [x] Input bar with prompt textarea, `[Note]` injection button (`Sym + N`), `/command` preservation, and Send trigger.
-  - [x] Cross-app synergy: active note attachment from Editor to Antigravity, and background telemetry sync to launcher tile [5].
+### Phase 6: Power Management & OTA
 - [x] Add power management (`components/devos_power/`): INA226 battery gauge telemetry, screen dimming after 120s, sleep mode after 600s, activity wakeup on keyboard and capacitive touch/click, and live 1 Hz settings refresh.
 - [x] Implement OTA (Over-The-Air) firmware update mechanism (`components/devos_ota/`): manifest version checks, LAN staging server support, checksum validation, and dry-run simulation mode. Unit tested in `tools/ota_test.c`.
 
@@ -638,41 +440,43 @@ tab5-devos/
 ├── sdkconfig.defaults             # Default ESP-IDF configuration (P4, PSRAM, FreeRTOS)
 ├── partitions.csv                 # Flash partition table (app, ota_0, ota_1, nvs, storage)
 ├── components/                    # Modular devOS components
+│   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # App manager, window switcher, event bus
-│   ├── devos_ui/                  # LVGL v9 themes, widgets, top bar, home dashboard
+│   ├── devos_ui/                  # LVGL v9 themes, widgets, top bar, code viewer (devos_codeview)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP routing, virtual transport
-│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC, SC2356 camera)
+│   ├── devos_storage/             # MicroSD mount, auto-scaffolding bootstrap
+│   ├── devos_json/                # Shared minimal JSON reader (used by devos_ota)
+│   ├── devos_mdview/              # Shared CommonMark-subset renderer
+│   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
+│   ├── devos_ota/                 # OTA manifest check + target flash path
+│   ├── devos_sysmon/              # 1 Hz system telemetry
+│   ├── devos_tailnet/             # Tailscale client on top of MicroLink
+│   ├── devos_vterm/               # VT100 / xterm terminal emulator
+│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
 │   ├── microlink/                 # Tailscale / WireGuard client
-│   ├── libssh2_port/              # libssh2 SSH client component
-│   ├── opendev_client/            # OpenCode/OpenChamber HTTP+SSE engine
-│   └── quirc/                     # Pure-C QR code recognition library
+│   └── libssh2_port/              # libssh2 SSH client component
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
 │   ├── apps/
 │   │   ├── app_launcher/          # Home Screen dashboard & app switcher
-│   │   ├── app_opendev/           # OpenCode / OpenChamber client UI & logic
 │   │   ├── app_terminal/          # SSH client & ANSI terminal emulator
-│   │   ├── app_editor/            # MicroSD Markdown editor & previewer
+│   │   ├── app_editor/            # SD card file browser, Markdown & text editor
 │   │   ├── app_tailscale/         # Tailnet status & peer manager UI
-│   │   ├── app_antigravity/       # Native Antigravity GUI client (Path B)
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
-│       └── devos_config.h         # System constants and pin definitions
+│       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 ├── tools/
 │   ├── sim/                       # Remote Web Simulator scripts (noVNC on port 6080)
 │   │   ├── run_web_sim.sh         # Starts/restarts Xvfb, x11vnc, noVNC, and devos_sim
 │   │   └── setup_sim_env.sh       # Installs dnf prerequisites (SDL2, Xvfb, x11vnc, novnc)
-│   ├── agy_bridge/                # Host-side Python sidecar daemon for Antigravity
-│   │   ├── bridge_server.py       # FastAPI / WebSocket server (port 8420)
-│   │   ├── transcript_watcher.py  # Realtime parser for transcript.jsonl
-│   │   └── requirements.txt       # Python dependencies
 │   ├── flash_c6_slave.sh          # Helper script to flash ESP-Hosted to ESP32-C6
-│   ├── md_preview_test.c          # Host-side unit test for the editor Markdown renderer
-│   ├── opendev_test.c             # Host-side unit test for the OpenCode engine
+│   ├── make_ota_manifest.py       # Publishes an OTA manifest for a built image
+│   ├── md_preview_test.c          # Host-side unit test for the Markdown renderer
 │   ├── modular_launcher_test.c    # Host-side unit test for modular app registry & pagination
-│   └── camera_qr_test.c           # Host-side unit test for Tab5 camera & QR decoder
+│   ├── ota_test.c                 # Host-side unit test for the OTA manifest check & power states
+│   └── vterm_test.c               # Host-side unit test for the terminal emulator
 ```
 
 ---
@@ -682,7 +486,6 @@ tab5-devos/
 | Risk | Impact | Mitigation Strategy |
 | :--- | :--- | :--- |
 | **MicroLink lwIP routing** | High: Standard socket calls (`connect()`) may bypass the tailnet tunnel | Wrap outgoing connections in a virtual transport adapter; test raw socket routing through WireGuard tun interface early in Phase 0. |
-| **SRAM contention during TLS/SSH/WS** | Medium: TLS handshakes require contiguous internal SRAM buffers | Allocate LVGL display draw buffers strictly in external PSRAM (32 MB available); keep at least 120 KB of internal SRAM reserved for TLS handshakes. |
+| **SRAM contention during TLS/SSH** | Medium: TLS handshakes require contiguous internal SRAM buffers | Allocate LVGL display draw buffers strictly in external PSRAM (32 MB available); keep at least 120 KB of internal SRAM reserved for TLS handshakes. |
 | **ESP-Hosted C6 Wi-Fi stability** | High: Network drops if SDIO link stalls | Use standard SDIO mode; implement FreeRTOS watchdog on the network task with automatic ESP-Hosted link re-init. |
 | **Physical Keyboard Key Rollover / Missed Keys** | Medium: Fast typing might drop characters over I2C | Use interrupt-driven I2C reads with GPIO 50 active-low trigger; set I2C clock frequency to 400 kHz; buffer keycodes in a thread-safe ring buffer. |
-| **OpenChamber / AGY API drift** | Medium: Upstream updates could break custom client | Decouple UI from protocol via `agy-bridge` sidecar; fall back to standard transcript watcher or direct SSH if needed. |
