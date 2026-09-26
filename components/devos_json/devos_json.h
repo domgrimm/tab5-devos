@@ -42,6 +42,11 @@ void devos_json_array_each(const char *p, size_t len,
 /* Escape src into dst for embedding in JSON output; returns used length. */
 size_t devos_json_escape(const char *src, char *dst, size_t cap);
 
+/* Pretty-print the JSON object/array in [src,src+len) with 2-space indents.
+ * Returns the output length, or 0 if it isn't a well-formed object/array or
+ * doesn't fit in cap (out is then unusable). */
+size_t devos_json_pretty(const char *src, size_t len, char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

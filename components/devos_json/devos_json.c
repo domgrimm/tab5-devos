@@ -1,5 +1,6 @@
 /* devos_json: minimal JSON reader. See devos_json.h. */
 #include "devos_json.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -187,4 +188,85 @@ size_t devos_json_escape(const char *src, char *dst, size_t cap)
     }
     dst[o] = '\0';
     return o;
+}
+
+/* ---- pretty printer ---- */
+typedef struct {
+    char *out;
+    size_t cap, n;
+    bool full;
+} jp_buf_t;
+
+static void jp_put(jp_buf_t *b, char c)
+{
+    if (b->n + 1 >= b->cap) { b->full = true; return; }
+    b->out[b->n++] = c;
+}
+
+static void jp_newline(jp_buf_t *b, int depth)
+{
+    jp_put(b, '\n');
+    for (int i = 0; i < depth * 2; i++) jp_put(b, ' ');
+}
+
+size_t devos_json_pretty(const char *src, size_t len, char *out, size_t cap)
+{
+    if (!src || !out || cap < 3) return 0;
+    const char *p = src, *end = src + len;
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+    if (p >= end || (*p != '{' && *p != '[')) return 0;
+    jp_buf_t b = { out, cap, 0, false };
+    char stack[64];
+    int depth = 0;
+    bool after_open = false;     /* just emitted { or [ */
+    for (; p < end; p++) {
+        char c = *p;
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        if (depth == 0 && b.n > 0) return 0;     /* trailing garbage */
+        if (c == '"') {
+            if (after_open) jp_newline(&b, depth);
+            after_open = false;
+            jp_put(&b, '"');
+            for (p++; p < end && *p != '"'; p++) {
+                if ((unsigned char)*p < 0x20) return 0;
+                jp_put(&b, *p);
+                if (*p == '\\' && p + 1 < end) jp_put(&b, *++p);
+            }
+            if (p >= end) return 0;
+            jp_put(&b, '"');
+        } else if (c == '{' || c == '[') {
+            if (after_open) jp_newline(&b, depth);
+            if (depth >= (int)sizeof(stack)) return 0;
+            stack[depth++] = c;
+            jp_put(&b, c);
+            after_open = true;
+        } else if (c == '}' || c == ']') {
+            if (!depth || stack[depth - 1] != (c == '}' ? '{' : '[')) return 0;
+            depth--;
+            if (!after_open) jp_newline(&b, depth);  /* {} and [] stay on one line */
+            after_open = false;
+            jp_put(&b, c);
+        } else if (c == ',') {
+            if (!depth || after_open) return 0;
+            jp_put(&b, ',');
+            jp_newline(&b, depth);
+        } else if (c == ':') {
+            if (!depth || stack[depth - 1] != '{' || after_open) return 0;
+            jp_put(&b, ':');
+            jp_put(&b, ' ');
+        } else if ((c >= '0' && c <= '9') || c == '-' || c == 't' || c == 'f' || c == 'n') {
+            if (!depth) return 0;
+            if (after_open) jp_newline(&b, depth);
+            after_open = false;
+            /* number or literal: copy the run */
+            while (p < end && (isalnum((unsigned char)*p) || *p == '.' || *p == '-' || *p == '+')) jp_put(&b, *p++);
+            p--;
+        } else {
+            return 0;
+        }
+        if (b.full) return 0;
+    }
+    if (depth != 0 || b.full) return 0;
+    out[b.n] = '\0';
+    return b.n;
 }
