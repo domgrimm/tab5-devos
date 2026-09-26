@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "lwip/sys.h"
 #include <string.h>
+#include <sys/time.h>
 
 /* ============================================================================
  * Time Functions
@@ -19,17 +20,21 @@ uint32_t wireguard_sys_now() {
 }
 
 void wireguard_tai64n_now(uint8_t *output) {
-    // TAI64N format: 8 bytes seconds + 4 bytes nanoseconds
-    // For simplicity, use Unix epoch time
-    uint64_t now_us = esp_timer_get_time();
-    uint64_t seconds = now_us / 1000000ULL;
-    uint32_t nanoseconds = (now_us % 1000000ULL) * 1000;
-
-    // Log raw uptime before TAI offset (only every ~5s to avoid spam)
-    static uint64_t last_log_s = 0;
-    if (seconds - last_log_s >= 5) {
-        printf("[TAI64N] uptime=%llu s, nano=%lu\n", (unsigned long long)seconds, (unsigned long)nanoseconds);
-        last_log_s = seconds;
+    // TAI64N format: 8 bytes seconds + 4 bytes nanoseconds.
+    // devOS: wall-clock time once the clock is set (RTC at boot / NTP).
+    // Peers reject a handshake whose timestamp isn't newer than the last one
+    // they saw, so uptime-based stamps failed after every reboot until the
+    // uptime passed the previous session's.
+    uint64_t seconds;
+    uint32_t nanoseconds;
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) == 0 && tv.tv_sec > 1672531200) {   /* after 2023 */
+        seconds = (uint64_t)tv.tv_sec;
+        nanoseconds = (uint32_t)tv.tv_usec * 1000;
+    } else {
+        uint64_t now_us = esp_timer_get_time();
+        seconds = now_us / 1000000ULL;
+        nanoseconds = (now_us % 1000000ULL) * 1000;
     }
 
     // TAI64 starts at 1970-01-01 00:00:10 TAI (Unix epoch + 10 seconds)

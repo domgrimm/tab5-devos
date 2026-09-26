@@ -40,7 +40,7 @@
 // Peers are allocated statically inside the device structure to avoid malloc
 // Increased from 1 to support multiple Tailscale peers (10 peers for larger networks)
 #define WIREGUARD_MAX_PEERS 16
-#define WIREGUARD_MAX_SRC_IPS 2
+#define WIREGUARD_MAX_SRC_IPS 4    /* devOS: was 2 (wg-quick configs list several AllowedIPs) */
 
 // Per device limit on accepting (valid) initiation requests - per peer
 #define MAX_INITIATIONS_PER_SECOND	(2)

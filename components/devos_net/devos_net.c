@@ -1009,6 +1009,29 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
     return -1;
 }
 
+static devos_net_route_fn s_route_hook;
+
+void devos_net_set_route_hook(devos_net_route_fn fn)
+{
+    s_route_hook = fn;
+}
+
+/* Bind to the tunnel's address when a VPN claims this destination. */
+static void route_bind(int sock, const struct sockaddr_in *dest)
+{
+    uint32_t src = 0;
+    if (!s_route_hook || !s_route_hook(dest->sin_addr.s_addr, &src) || !src) return;
+    struct sockaddr_in me;
+    memset(&me, 0, sizeof(me));
+    me.sin_family = AF_INET;
+    me.sin_addr.s_addr = src;
+    if (bind(sock, (struct sockaddr *)&me, sizeof(me)) != 0) {
+#ifdef ESP_PLATFORM
+        ESP_LOGW(TAG, "couldn't bind to the tunnel address (errno %d)", errno);
+#endif
+    }
+}
+
 int devos_net_socket_connect(const char *host, int port, int timeout_ms)
 {
     if (!host || port <= 0 || port > 65535) return -1;
@@ -1049,6 +1072,7 @@ int devos_net_socket_connect(const char *host, int port, int timeout_ms)
         #endif
     }
 
+    route_bind(sock, &dest);
     if (connect(sock, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
         close(sock);
         return -1;
@@ -1173,6 +1197,7 @@ int devos_net_socket_connect_start(const char *host, int port)
     dest.sin_port = htons((uint16_t)port);
     inet_pton(AF_INET, resolved_ip, &dest.sin_addr);
 
+    route_bind(sock, &dest);
     int rc = connect(sock, (struct sockaddr *)&dest, sizeof(dest));
     if (rc == 0) {
         /* Instant (loopback): restore blocking immediately */

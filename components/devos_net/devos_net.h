@@ -83,6 +83,13 @@ int devos_net_socket_close(int sock);
  * returns -1 instead of SIGPIPE-killing the caller. */
 int devos_net_socket_send_all(int sock, const void *data, size_t len);
 
+/* Tunnel routing: lwIP has no route table, so a VPN (the WireGuard app)
+ * registers a hook; for each connection, if it returns true the socket is
+ * bound to *src_ip (network byte order) and lwIP sends it out of the netif
+ * that owns that address. */
+typedef bool (*devos_net_route_fn)(uint32_t dest_ip, uint32_t *src_ip);
+void devos_net_set_route_hook(devos_net_route_fn fn);
+
 /* Non-blocking variant: start returns an in-progress fd (or -1); poll wait
  * until it returns 0 (connected) or -1 (failed). 1 means keep polling. */
 int devos_net_socket_connect_start(const char *host, int port);
