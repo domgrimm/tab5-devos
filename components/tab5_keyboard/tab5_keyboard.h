@@ -34,6 +34,30 @@ bool tab5_keyboard_is_connected(void);
 /* Caps lock (tap Aa) state. */
 bool tab5_keyboard_caps_lock(void);
 
+/* The keyboard's two RGB indicator lights (left, right). */
+typedef enum {
+    TAB5_KBD_LIGHTS_OFF = 0,
+    TAB5_KBD_LIGHTS_STATUS,     /* keyboard firmware drives them (power-on default) */
+    TAB5_KBD_LIGHTS_ACCENT,     /* the theme's accent colour */
+    TAB5_KBD_LIGHTS_CYAN,
+    TAB5_KBD_LIGHTS_GREEN,
+    TAB5_KBD_LIGHTS_AMBER,
+    TAB5_KBD_LIGHTS_RED,
+    TAB5_KBD_LIGHTS_PURPLE,
+    TAB5_KBD_LIGHTS_WHITE,
+    TAB5_KBD_LIGHTS_COUNT
+} tab5_kbd_lights_t;
+
+/* Choose the lights (brightness 0-100). In the colour modes the left light
+ * turns amber (red when the colour is amber) while caps lock is on. `save`
+ * persists the choice (NVS); call from the GUI task. */
+void tab5_keyboard_set_lights(tab5_kbd_lights_t mode, uint8_t brightness, bool save);
+void tab5_keyboard_get_lights(tab5_kbd_lights_t *mode, uint8_t *brightness);
+/* Accent colour 0xRRGGBB for TAB5_KBD_LIGHTS_ACCENT (main follows the theme). */
+void tab5_keyboard_set_accent(uint32_t rgb);
+/* Lights off while the screen sleeps. */
+void tab5_keyboard_lights_suspend(bool off);
+
 #ifdef __cplusplus
 }
 #endif

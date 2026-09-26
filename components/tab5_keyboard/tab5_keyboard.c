@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "lvgl.h"
 #include "devos_config.h"
 
@@ -28,7 +29,11 @@
  * 0xFF = queue empty.
  * ========================================================================= */
 #define KBD_REG_EVENT_NUM      0x02   /* write 0 to clear the event queue */
+#define KBD_REG_BRIGHTNESS     0x03   /* RGB lights brightness 0-100 (default 20) */
 #define KBD_REG_MODE_KEYBOARD  0x10   /* 0=Normal 1=HID 2=Character */
+#define KBD_REG_MODE_RGB       0x11   /* 0=firmware drives the lights 1=custom colours */
+#define KBD_REG_RGB1_B         0x60   /* left light B,G,R at 0x60..0x62 */
+#define KBD_REG_RGB2_B         0x64   /* right light B,G,R at 0x64..0x66 */
 #define KBD_REG_KEY_EVENT      0x20   /* Normal mode: 1 byte per event */
 #define KBD_REG_FW_VERSION     0xFE
 #define KBD_MODE_NORMAL        0
@@ -76,6 +81,13 @@ static esp_err_t kbd_write_reg(uint8_t reg, uint8_t val)
     return ret;
 }
 
+static void kbd_write_rgb(uint8_t base, uint32_t rgb)
+{
+    kbd_write_reg(base, (uint8_t)rgb);                   /* B */
+    kbd_write_reg((uint8_t)(base + 1), (uint8_t)(rgb >> 8));   /* G */
+    kbd_write_reg((uint8_t)(base + 2), (uint8_t)(rgb >> 16));  /* R */
+}
+
 static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 {
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
@@ -96,6 +108,64 @@ static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 #endif
 
 static uint8_t current_modifiers = DEVOS_MOD_NONE;
+
+/* ---- indicator lights ----
+ * Written on the GUI task only; the keyboard task applies them whenever
+ * s_led_gen moves (and after a re-attach), so the UI never waits on I2C. */
+static volatile uint8_t s_led_mode = TAB5_KBD_LIGHTS_STATUS;
+static volatile uint8_t s_led_bright = 20;
+static volatile uint32_t s_led_accent = 0x00E5FF;
+static volatile bool s_led_off;
+static volatile uint32_t s_led_gen = 1;
+
+#define KBD_LIGHTS_NVS_NS  "devos"
+#define KBD_LIGHTS_NVS_KEY "kbd_lights"   /* u16: mode | brightness << 8 */
+
+void tab5_keyboard_set_lights(tab5_kbd_lights_t mode, uint8_t brightness, bool save)
+{
+    if (mode >= TAB5_KBD_LIGHTS_COUNT) mode = TAB5_KBD_LIGHTS_STATUS;
+    if (brightness > 100) brightness = 100;
+    if (mode != s_led_mode || brightness != s_led_bright) {
+        s_led_mode = (uint8_t)mode;
+        s_led_bright = brightness;
+        s_led_gen++;
+    }
+#ifdef ESP_PLATFORM
+    nvs_handle_t h;
+    uint16_t v = (uint16_t)(mode | (brightness << 8)), old = 0;
+    if (save && nvs_open(KBD_LIGHTS_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_get_u16(h, KBD_LIGHTS_NVS_KEY, &old) != ESP_OK || old != v) {
+            if (nvs_set_u16(h, KBD_LIGHTS_NVS_KEY, v) == ESP_OK) nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+#else
+    (void)save;
+#endif
+}
+
+void tab5_keyboard_get_lights(tab5_kbd_lights_t *mode, uint8_t *brightness)
+{
+    if (mode) *mode = (tab5_kbd_lights_t)s_led_mode;
+    if (brightness) *brightness = s_led_bright;
+}
+
+void tab5_keyboard_set_accent(uint32_t rgb)
+{
+    rgb &= 0xFFFFFF;
+    if (rgb != s_led_accent) {
+        s_led_accent = rgb;
+        s_led_gen++;
+    }
+}
+
+void tab5_keyboard_lights_suspend(bool off)
+{
+    if (off != s_led_off) {
+        s_led_off = off;
+        s_led_gen++;
+    }
+}
 
 #ifdef ESP_PLATFORM
 /* Keyboard events are produced on the keyboard task but must be *dispatched* on
@@ -296,8 +366,57 @@ static void reset_state(void)
     s_rep_row = s_rep_col = -1;
 }
 
+static uint32_t lights_colour(tab5_kbd_lights_t m)
+{
+    switch (m) {
+    case TAB5_KBD_LIGHTS_ACCENT: return s_led_accent;
+    case TAB5_KBD_LIGHTS_CYAN:   return 0x00E5FF;
+    case TAB5_KBD_LIGHTS_GREEN:  return 0x00E676;
+    case TAB5_KBD_LIGHTS_AMBER:  return 0xFFB300;
+    case TAB5_KBD_LIGHTS_RED:    return 0xFF3030;
+    case TAB5_KBD_LIGHTS_PURPLE: return 0xB060FF;
+    case TAB5_KBD_LIGHTS_WHITE:  return 0xFFFFFF;
+    default:                     return 0;
+    }
+}
+
+static void lights_apply(bool caps)
+{
+    tab5_kbd_lights_t m = (tab5_kbd_lights_t)s_led_mode;
+    if (s_led_off || m == TAB5_KBD_LIGHTS_OFF) {
+        kbd_write_reg(KBD_REG_MODE_RGB, 1);
+        kbd_write_rgb(KBD_REG_RGB1_B, 0);
+        kbd_write_rgb(KBD_REG_RGB2_B, 0);
+        return;
+    }
+    kbd_write_reg(KBD_REG_BRIGHTNESS, s_led_bright);
+    if (m == TAB5_KBD_LIGHTS_STATUS) {
+        kbd_write_reg(KBD_REG_MODE_RGB, 0);
+        return;
+    }
+    uint32_t c = lights_colour(m);
+    uint32_t caps_c = m == TAB5_KBD_LIGHTS_AMBER ? 0xFF3030 : 0xFFB300;
+    kbd_write_reg(KBD_REG_MODE_RGB, 1);
+    kbd_write_rgb(KBD_REG_RGB1_B, caps ? caps_c : c);
+    kbd_write_rgb(KBD_REG_RGB2_B, c);
+}
+
+static void lights_load(void)
+{
+    nvs_handle_t h;
+    uint16_t v = 0;
+    if (nvs_open(KBD_LIGHTS_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u16(h, KBD_LIGHTS_NVS_KEY, &v) == ESP_OK) {
+            tab5_keyboard_set_lights((tab5_kbd_lights_t)(v & 0xFF), (uint8_t)(v >> 8), false);
+        }
+        nvs_close(h);
+    }
+}
+
 static void keyboard_task(void *pvParameters)
 {
+    uint32_t led_applied = 0;
+    bool led_caps = false;
     (void)pvParameters;
     int failures = 0;
     int diag = 0;
@@ -312,6 +431,7 @@ static void keyboard_task(void *pvParameters)
                 kbd_read_reg(KBD_REG_FW_VERSION, &fw, 1);
                 printf("[kbd] Tab5 keyboard attached (Normal mode), fw=0x%02x\n", fw);
                 reset_state();
+                led_applied = s_led_gen - 1;      /* re-apply the lights */
                 failures = 0;
                 diag = 10;
                 s_connected = true;
@@ -347,6 +467,15 @@ static void keyboard_task(void *pvParameters)
         }
         current_modifiers = (s_ctrl ? DEVOS_MOD_CTRL : 0) | (s_alt ? DEVOS_MOD_ALT : 0) |
                             (s_aa ? DEVOS_MOD_SHIFT : 0) | (s_sym ? DEVOS_MOD_FN : 0);
+
+        uint32_t gen = s_led_gen;
+        bool caps = s_caps;
+        bool colour = s_led_mode >= TAB5_KBD_LIGHTS_ACCENT && !s_led_off;
+        if (gen != led_applied || (colour && caps != led_caps)) {
+            lights_apply(caps);
+            led_applied = gen;
+            led_caps = caps;
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -372,6 +501,8 @@ bool tab5_keyboard_init(void)
         printf("[kbd] failed to create key queue\n");
         return false;
     }
+
+    lights_load();
 
     /* Keyboard polling task pinned to Core 1 (UI & Input core) */
     xTaskCreatePinnedToCore(keyboard_task, "tab5_kbd", 4096, NULL, 10, NULL, DEVOS_CORE_UI_INPUT);
