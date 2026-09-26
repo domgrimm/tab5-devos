@@ -140,7 +140,41 @@ static LIBSSH2_USERAUTH_KBDINT_RESPONSE_FUNC(kbd_cb)
     }
 }
 
-/* Load the device key pair from NVS into heap buffers (caller frees). */
+/* PEM private key -> DER, in place (the buffer holds the PEM text).
+ *
+ * libssh2's mbedTLS backend copies an in-memory ECDSA key into a buffer one
+ * byte longer but never writes the NUL there, and mbedTLS only parses PEM
+ * when the last byte is NUL, so a PEM device key almost never loaded
+ * ("Callback returned error"). DER doesn't need the terminator. */
+static bool devkey_pem_to_der(char *buf, size_t cap, size_t *der_len)
+{
+    mbedtls_pk_context pk;
+    mbedtls_entropy_context ent;
+    mbedtls_ctr_drbg_context drbg;
+    mbedtls_pk_init(&pk);
+    mbedtls_entropy_init(&ent);
+    mbedtls_ctr_drbg_init(&drbg);
+    bool ok = false;
+    unsigned char *der = malloc(cap);
+    if (der && mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &ent, NULL, 0) == 0 &&
+        mbedtls_pk_parse_key(&pk, (const unsigned char *)buf, strlen(buf) + 1, NULL, 0,
+                             mbedtls_ctr_drbg_random, &drbg) == 0) {
+        int n = mbedtls_pk_write_key_der(&pk, der, cap);   /* written at the end */
+        if (n > 0) {
+            memcpy(buf, der + cap - n, (size_t)n);
+            *der_len = (size_t)n;
+            ok = true;
+        }
+    }
+    if (der) { memset(der, 0, cap); free(der); }
+    mbedtls_pk_free(&pk);
+    mbedtls_ctr_drbg_free(&drbg);
+    mbedtls_entropy_free(&ent);
+    return ok;
+}
+
+/* Load the device key pair from NVS into heap buffers (caller frees):
+ * the private key as DER, the public key as its authorized_keys line. */
 static bool devkey_load(char **priv, size_t *priv_len, char **pub, size_t *pub_len)
 {
     nvs_handle_t h;
@@ -153,11 +187,14 @@ static bool devkey_load(char **priv, size_t *priv_len, char **pub, size_t *pub_l
         *pub = malloc(ul);
         ok = *priv && *pub && nvs_get_str(h, "devkey", *priv, &pl) == ESP_OK &&
              nvs_get_str(h, "devpub", *pub, &ul) == ESP_OK;
-        *priv_len = pl ? pl - 1 : 0;
         *pub_len = ul ? ul - 1 : 0;
     }
     nvs_close(h);
-    if (!ok) { free(*priv); free(*pub); *priv = *pub = NULL; }
+    if (ok) ok = devkey_pem_to_der(*priv, pl, priv_len);
+    if (!ok) {
+        if (*priv) memset(*priv, 0, pl);
+        free(*priv); free(*pub); *priv = *pub = NULL;
+    }
     return ok;
 }
 
@@ -179,10 +216,20 @@ static bool authenticate(ssh_session_t *s, ssh_aux_t *a, LIBSSH2_SESSION *sessio
             if (devkey_load(&priv, &priv_len, &pub, &pub_len)) {
                 int rc = libssh2_userauth_publickey_frommemory(session, s->user, ulen, pub, pub_len,
                                                                 priv, priv_len, NULL);
+                memset(priv, 0, priv_len);
                 free(priv);
                 free(pub);
                 if (rc == 0) return true;
-                snprintf(why, sizeof(why), "device key not accepted (is it in ~/.ssh/authorized_keys?)");
+                char *msg = NULL;
+                int ml = 0;
+                libssh2_session_last_error(session, &msg, &ml, 0);
+                if (msg && strstr(msg, "combination invalid")) {   /* the server said no */
+                    snprintf(why, sizeof(why), "device key not in ~%.24s/.ssh/authorized_keys", s->user);
+                } else {
+                    snprintf(why, sizeof(why), "device key error %d (%.40s)", rc, msg ? msg : "?");
+                }
+            } else if (ssh_port_devkey_exists()) {
+                snprintf(why, sizeof(why), "device key could not be read");
             } else {
                 snprintf(why, sizeof(why), "no device key yet (create one in the sidebar)");
             }
