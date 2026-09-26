@@ -850,10 +850,17 @@ int devos_md_render(lv_obj_t *parent, const char *text)
              strncmp(t, "* [x]", 5) == 0 || strncmp(t, "* [X]", 5) == 0 ||
              strncmp(t, "+ [x]", 5) == 0 || strncmp(t, "+ [X]", 5) == 0)) {
             bool done = t[3] == 'x' || t[3] == 'X';
+            const char *body = t + 5;
+            while (*body == ' ' || *body == '\t') body++;
             lv_obj_t *sg = md_new_block(s_parent, y);
-            lv_color_t col = done ? p->accent_secondary : p->text_secondary;
-            md_render_inline(sg, t, strlen(t), &lv_font_montserrat_14, col,
-                             LV_TEXT_DECOR_NONE, p);
+            /* a box, ticked when done; done items read struck through */
+            const char *box = done ? "[" LV_SYMBOL_OK "]  " : "[    ]  ";
+            md_add_span(sg, box, strlen(box), &lv_font_montserrat_14,
+                        done ? p->accent_secondary : p->text_secondary,
+                        LV_TEXT_DECOR_NONE);
+            md_render_inline(sg, body, strlen(body), &lv_font_montserrat_14,
+                             done ? p->text_secondary : p->text_primary,
+                             done ? LV_TEXT_DECOR_STRIKETHROUGH : LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
             in_ol = false;
             MD_ADVANCE_LINE();
@@ -863,8 +870,8 @@ int devos_md_render(lv_obj_t *parent, const char *text)
         if (((*t == '-' || *t == '*' || *t == '+')) &&
             (t[1] == ' ' || t[1] == '\t')) {
             lv_obj_t *sg = md_new_block(s_parent, y);
-            md_add_span(sg, "- ", 2, &lv_font_montserrat_14, p->text_primary,
-                        LV_TEXT_DECOR_NONE);
+            md_add_span(sg, "\xE2\x80\xA2  ", 5, &lv_font_montserrat_14, p->accent_primary,
+                        LV_TEXT_DECOR_NONE);   /* U+2022 bullet (in the built-in font) */
             md_render_inline(sg, t + 2, strlen(t + 2), &lv_font_montserrat_14,
                              p->text_primary, LV_TEXT_DECOR_NONE, p);
             md_finish_block(sg, &y, 6);
@@ -886,8 +893,20 @@ int devos_md_render(lv_obj_t *parent, const char *text)
                 lv_obj_t *sg = md_new_block(s_parent, y);
                 md_add_span(sg, num, (size_t)numlen, &lv_font_montserrat_14,
                             p->text_primary, LV_TEXT_DECOR_NONE);
+                /* "1. [ ] task" / "1. [x] task" */
+                bool task = body[0] == '[' && body[1] && strchr(" xX", body[1]) &&
+                            body[2] == ']' && (body[3] == ' ' || body[3] == '\0');
+                bool done = task && body[1] != ' ';
+                if (task) {
+                    const char *box = done ? "[" LV_SYMBOL_OK "]  " : "[    ]  ";
+                    md_add_span(sg, box, strlen(box), &lv_font_montserrat_14,
+                                done ? p->accent_secondary : p->text_secondary,
+                                LV_TEXT_DECOR_NONE);
+                    body += body[3] ? 4 : 3;
+                }
                 md_render_inline(sg, body, strlen(body), &lv_font_montserrat_14,
-                                 p->text_primary, LV_TEXT_DECOR_NONE, p);
+                                 done ? p->text_secondary : p->text_primary,
+                                 done ? LV_TEXT_DECOR_STRIKETHROUGH : LV_TEXT_DECOR_NONE, p);
                 md_finish_block(sg, &y, 6);
                 MD_ADVANCE_LINE();
             }

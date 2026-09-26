@@ -39,7 +39,8 @@ static void cv_draw_cb(lv_event_t *e)
         line[len] = '\0';
         lv_color_t col = p->text_primary;
         bool band = false;
-        if (line[0] == '+' && line[1] != '+') { col = p->accent_secondary; band = true; }
+        if (cv->plain) { /* ordinary text: no diff colours */ }
+        else if (line[0] == '+' && line[1] != '+') { col = p->accent_secondary; band = true; }
         else if (line[0] == '-' && line[1] != '-') { col = p->accent_danger; band = true; }
         else if (line[0] == '@' && line[1] == '@') col = p->accent_primary;
         else if (!strncmp(line, "diff ", 5) || !strncmp(line, "---", 3) || !strncmp(line, "+++", 3) ||
