@@ -29,11 +29,12 @@
 #include "sdkconfig.h"
 #endif
 
-enum { SEC_WIFI = 0, SEC_DISPLAY, SEC_POWER, SEC_TIME, SEC_SYSTEM, SEC_COUNT };
+enum { SEC_WIFI = 0, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_SYSTEM, SEC_COUNT };
 
 static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_WIFI "   Wi-Fi",
     LV_SYMBOL_EYE_OPEN "   Display",
+    LV_SYMBOL_KEYBOARD "   Keyboard",
     LV_SYMBOL_BATTERY_FULL "   Power",
     LV_SYMBOL_BELL "   Date & Time",
     LV_SYMBOL_SETTINGS "   System",
@@ -83,7 +84,8 @@ static char s_modal_ssid[33];
 
 /* ---- other panels ---- */
 static lv_obj_t *theme_switch, *slider_bright, *lbl_bright, *dd_dim, *dd_sleep;
-static lv_obj_t *dd_kbd_lights, *slider_kbd, *lbl_kbd;
+static lv_obj_t *sw_kbd_custom, *lbl_kbd_state, *card_light[2], *dd_light[2], *slider_light[2],
+                *lbl_light_pct[2], *cb_light_caps[2], *swatch_light[2];
 static lv_obj_t *lbl_bat_pct, *bar_bat, *lbl_bat_status, *lbl_bat_detail, *lbl_pwr_state;
 static lv_obj_t *lbl_clock_big, *lbl_clock_date, *lbl_clock_src, *dd_tz;
 static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, *btn_ota, *bar_ota, *lbl_feed;
@@ -91,8 +93,10 @@ static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, 
 static const uint32_t s_dim_opts_s[] = { 30, 60, 120, 300, 600, 0 };
 static const char *s_dim_opts_txt = "30 seconds\n1 minute\n2 minutes\n5 minutes\n10 minutes\nNever";
 static const uint32_t s_sleep_opts_s[] = { 60, 300, 600, 1800, 3600, 0 };
-/* tab5_kbd_lights_t order */
-static const char *s_kbd_lights_txt = "Off\nKeyboard status\nTheme accent\nCyan\nGreen\nAmber\nRed\nPurple\nWhite";
+/* Keyboard light choices: Off, Theme accent, Battery, then fixed colours. */
+static const char *s_light_opts_txt = "Off\nTheme accent\nBattery\nCyan\nGreen\nBlue\nPurple\nPink\nRed\nAmber\nWhite";
+static const uint32_t s_light_rgb[] = { 0x00E5FF, 0x00E676, 0x2979FF, 0xB060FF, 0xFF4081, 0xFF3030, 0xFFB300, 0xFFFFFF };
+#define LIGHT_FIXED_FIRST 3
 static const char *s_sleep_opts_txt = "1 minute\n5 minutes\n10 minutes\n30 minutes\n1 hour\nNever";
 
 /* ======================================================================== */
@@ -311,6 +315,14 @@ static void style_track(lv_obj_t *o)
 {
     lv_obj_add_style(o, &st_track, LV_PART_MAIN);
     lv_obj_add_style(o, &st_indicator, LV_PART_INDICATOR);
+    lv_obj_add_style(o, &st_knob, LV_PART_KNOB);
+}
+
+/* Switches fill with the accent only when on. */
+static void style_switch(lv_obj_t *o)
+{
+    lv_obj_add_style(o, &st_track, LV_PART_MAIN);
+    lv_obj_add_style(o, &st_indicator, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_add_style(o, &st_knob, LV_PART_KNOB);
 }
 
@@ -877,17 +889,6 @@ static void timeout_cb(lv_event_t *e)
     devos_power_set_timeouts(s_dim_opts_s[di], s_sleep_opts_s[si]);
 }
 
-static void kbd_lights_cb(lv_event_t *e)
-{
-    /* the slider saves when released, not on every step */
-    bool save = lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED || lv_event_get_target(e) == dd_kbd_lights;
-    tab5_keyboard_set_lights((tab5_kbd_lights_t)lv_dropdown_get_selected(dd_kbd_lights),
-                             (uint8_t)lv_slider_get_value(slider_kbd), save);
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d%%", (int)lv_slider_get_value(slider_kbd));
-    set_text(lbl_kbd, buf);
-}
-
 static int opt_index(const uint32_t *opts, int n, uint32_t v, int fallback)
 {
     for (int i = 0; i < n; i++) if (opts[i] == v) return i;
@@ -960,7 +961,7 @@ static void build_display_panel(lv_obj_t *pn)
     theme_switch = lv_switch_create(c);
     lv_obj_set_size(theme_switch, 64, 32);
     lv_obj_set_pos(theme_switch, 38, 60);
-    style_track(theme_switch);
+    style_switch(theme_switch);
     if (devos_theme_get_type() == DEVOS_THEME_LIGHT) lv_obj_add_state(theme_switch, LV_STATE_CHECKED);
     lv_obj_add_event_cb(theme_switch, theme_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
     mk_icon(c, 112, 62, sun_icon_draw_cb);
@@ -997,27 +998,6 @@ static void build_display_panel(lv_obj_t *pn)
     style_dropdown(dd_sleep);
     lv_obj_add_event_cb(dd_sleep, timeout_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    c = mk_card(pn, 0, 462, PANEL_W, 150, "KEYBOARD LIGHTS");
-    d = mk_label(c, &st_muted, "The two lights on the keyboard. In a colour, the left one turns amber while caps lock "
-                               "is on. They switch off while the screen sleeps.");
-    lv_obj_set_pos(d, 0, 26);
-    dd_kbd_lights = lv_dropdown_create(c);
-    lv_dropdown_set_options(dd_kbd_lights, s_kbd_lights_txt);
-    lv_obj_set_width(dd_kbd_lights, 220);
-    lv_obj_set_pos(dd_kbd_lights, 0, 58);
-    style_dropdown(dd_kbd_lights);
-    lv_obj_add_event_cb(dd_kbd_lights, kbd_lights_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    l = mk_label(c, &st_text, "Brightness");
-    lv_obj_set_pos(l, 260, 70);
-    slider_kbd = lv_slider_create(c);
-    style_track(slider_kbd);
-    lv_slider_set_range(slider_kbd, 5, 100);
-    lv_obj_set_size(slider_kbd, PANEL_W - 520, 14);
-    lv_obj_set_pos(slider_kbd, 370, 72);
-    lv_obj_add_event_cb(slider_kbd, kbd_lights_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(slider_kbd, kbd_lights_cb, LV_EVENT_RELEASED, NULL);
-    lbl_kbd = mk_label(c, &st_title, "20%");
-    lv_obj_align(lbl_kbd, LV_ALIGN_TOP_RIGHT, 0, 58);
 }
 
 static void refresh_display(void)
@@ -1032,17 +1012,151 @@ static void refresh_display(void)
     uint32_t si = (uint32_t)opt_index(s_sleep_opts_s, 6, devos_power_sleep_after_s(), 2);
     if (lv_dropdown_get_selected(dd_dim) != di) lv_dropdown_set_selected(dd_dim, di);
     if (lv_dropdown_get_selected(dd_sleep) != si) lv_dropdown_set_selected(dd_sleep, si);
-    tab5_kbd_lights_t km;
-    uint8_t kb;
-    tab5_keyboard_get_lights(&km, &kb);
-    if (lv_dropdown_get_selected(dd_kbd_lights) != (uint32_t)km) lv_dropdown_set_selected(dd_kbd_lights, km);
-    if (!lv_slider_is_dragged(slider_kbd)) lv_slider_set_value(slider_kbd, kb < 5 ? 5 : kb, LV_ANIM_OFF);
-    snprintf(buf, sizeof(buf), "%d%%", (int)lv_slider_get_value(slider_kbd));
-    set_text(lbl_kbd, buf);
     bool light = devos_theme_get_type() == DEVOS_THEME_LIGHT;
     if (light != lv_obj_has_state(theme_switch, LV_STATE_CHECKED)) {
         if (light) lv_obj_add_state(theme_switch, LV_STATE_CHECKED);
         else lv_obj_remove_state(theme_switch, LV_STATE_CHECKED);
+    }
+}
+
+/* ======================================================================== */
+/* Keyboard                                                                 */
+/* ======================================================================== */
+static int light_opt_index(const tab5_kbd_light_t *l)
+{
+    if (l->source == TAB5_KBD_LIGHT_ACCENT) return 1;
+    if (l->source == TAB5_KBD_LIGHT_BATTERY) return 2;
+    if (l->source == TAB5_KBD_LIGHT_COLOUR) {
+        for (unsigned i = 0; i < sizeof(s_light_rgb) / sizeof(s_light_rgb[0]); i++) {
+            if (s_light_rgb[i] == l->rgb) return LIGHT_FIXED_FIRST + (int)i;
+        }
+        return LIGHT_FIXED_FIRST;
+    }
+    return 0;
+}
+
+/* Widgets -> driver. The sliders save when released, not on every step. */
+static void kbd_light_cb(lv_event_t *e)
+{
+    bool save = !(lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED &&
+                  (lv_event_get_target(e) == slider_light[0] || lv_event_get_target(e) == slider_light[1]));
+    tab5_kbd_lights_t cfg;
+    tab5_keyboard_get_lights(&cfg);
+    cfg.custom = lv_obj_has_state(sw_kbd_custom, LV_STATE_CHECKED);
+    for (int i = 0; i < 2; i++) {
+        tab5_kbd_light_t *l = &cfg.light[i];
+        int o = (int)lv_dropdown_get_selected(dd_light[i]);
+        if (o == 0) l->source = TAB5_KBD_LIGHT_OFF;
+        else if (o == 1) l->source = TAB5_KBD_LIGHT_ACCENT;
+        else if (o == 2) l->source = TAB5_KBD_LIGHT_BATTERY;
+        else {
+            l->source = TAB5_KBD_LIGHT_COLOUR;
+            l->rgb = s_light_rgb[o - LIGHT_FIXED_FIRST];
+        }
+        l->brightness = (uint8_t)lv_slider_get_value(slider_light[i]);
+        l->caps_lock = lv_obj_has_state(cb_light_caps[i], LV_STATE_CHECKED);
+    }
+    tab5_keyboard_set_lights(&cfg, save);
+}
+
+static void build_light_card(lv_obj_t *pn, int i, int y)
+{
+    lv_obj_t *c = mk_card(pn, 0, y, PANEL_W, 150, i == 0 ? "LEFT LIGHT" : "RIGHT LIGHT");
+    card_light[i] = c;
+    swatch_light[i] = lv_obj_create(c);
+    lv_obj_remove_style_all(swatch_light[i]);
+    lv_obj_set_size(swatch_light[i], 30, 30);
+    lv_obj_set_pos(swatch_light[i], 0, 42);
+    lv_obj_set_style_radius(swatch_light[i], LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(swatch_light[i], LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(swatch_light[i], 2, 0);
+    lv_obj_set_style_border_opa(swatch_light[i], LV_OPA_40, 0);
+    dd_light[i] = lv_dropdown_create(c);
+    lv_dropdown_set_options(dd_light[i], s_light_opts_txt);
+    lv_obj_set_width(dd_light[i], 220);
+    lv_obj_set_pos(dd_light[i], 44, 36);
+    style_dropdown(dd_light[i]);
+    lv_obj_add_event_cb(dd_light[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *l = mk_label(c, &st_text, "Brightness");
+    lv_obj_set_pos(l, 300, 48);
+    slider_light[i] = lv_slider_create(c);
+    style_track(slider_light[i]);
+    lv_slider_set_range(slider_light[i], 5, 100);
+    lv_obj_set_size(slider_light[i], PANEL_W - 540, 14);
+    lv_obj_set_pos(slider_light[i], 410, 50);
+    lv_obj_add_event_cb(slider_light[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(slider_light[i], kbd_light_cb, LV_EVENT_RELEASED, NULL);
+    lbl_light_pct[i] = mk_label(c, &st_title, "20%");
+    lv_obj_align(lbl_light_pct[i], LV_ALIGN_TOP_RIGHT, 0, 38);
+    cb_light_caps[i] = lv_checkbox_create(c);
+    lv_checkbox_set_text(cb_light_caps[i], "Caps lock: turn amber while caps lock is on");
+    lv_obj_add_style(cb_light_caps[i], &st_text, 0);
+    lv_obj_add_style(cb_light_caps[i], &st_indicator, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_pos(cb_light_caps[i], 0, 94);
+    lv_obj_add_event_cb(cb_light_caps[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
+static void build_keyboard_panel(lv_obj_t *pn)
+{
+    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 120, "KEYBOARD LIGHTS");
+    lv_obj_t *d = mk_label(c, &st_muted, "Off: the keyboard shows its own status.  On: choose each light below.");
+    lv_obj_set_pos(d, 0, 26);
+    sw_kbd_custom = lv_switch_create(c);
+    lv_obj_set_size(sw_kbd_custom, 64, 32);
+    lv_obj_set_pos(sw_kbd_custom, 0, 60);
+    style_switch(sw_kbd_custom);
+    lv_obj_add_event_cb(sw_kbd_custom, kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *l = mk_label(c, &st_text, "Set the lights from devOS");
+    lv_obj_set_pos(l, 80, 66);
+    lbl_kbd_state = mk_label(c, &st_muted, "");
+    lv_obj_align(lbl_kbd_state, LV_ALIGN_TOP_RIGHT, 0, 66);
+
+    build_light_card(pn, 0, 136);
+    build_light_card(pn, 1, 302);
+
+    c = mk_card(pn, 0, 468, PANEL_W, 110, "BATTERY COLOURS");
+    d = mk_label(c, &st_muted, "Green from 50%, amber from 20%, red below that (blinking under 10%), blue while "
+                               "charging or on USB power.  The lights switch off while the screen sleeps.");
+    lv_obj_set_width(d, PANEL_W - 40);
+    lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(d, 0, 30);
+}
+
+static void set_checked(lv_obj_t *o, bool on)
+{
+    if (on != lv_obj_has_state(o, LV_STATE_CHECKED)) {
+        if (on) lv_obj_add_state(o, LV_STATE_CHECKED);
+        else lv_obj_remove_state(o, LV_STATE_CHECKED);
+    }
+}
+
+static void refresh_keyboard(void)
+{
+    tab5_kbd_lights_t cfg;
+    tab5_keyboard_get_lights(&cfg);
+    set_checked(sw_kbd_custom, cfg.custom);
+    set_text(lbl_kbd_state, tab5_keyboard_is_connected() ? "Keyboard connected" : "Keyboard not detected");
+    for (int i = 0; i < 2; i++) {
+        const tab5_kbd_light_t *l = &cfg.light[i];
+        uint32_t o = (uint32_t)light_opt_index(l);
+        if (lv_dropdown_get_selected(dd_light[i]) != o) lv_dropdown_set_selected(dd_light[i], o);
+        if (!lv_slider_is_dragged(slider_light[i])) {
+            lv_slider_set_value(slider_light[i], l->brightness < 5 ? 5 : l->brightness, LV_ANIM_OFF);
+        }
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d%%", (int)lv_slider_get_value(slider_light[i]));
+        set_text(lbl_light_pct[i], buf);
+        set_checked(cb_light_caps[i], l->caps_lock);
+        uint32_t rgb = cfg.custom ? tab5_keyboard_light_colour(i) : 0;
+        lv_obj_set_style_bg_color(swatch_light[i], rgb ? lv_color_hex(rgb) : devos_theme_get()->surface_active, 0);
+        lv_obj_set_style_border_color(swatch_light[i], devos_theme_get()->text_secondary, 0);
+        /* greyed out while the keyboard drives its own lights */
+        lv_obj_set_style_opa(card_light[i], cfg.custom ? LV_OPA_COVER : LV_OPA_50, 0);
+        lv_obj_t *w[] = {dd_light[i], slider_light[i], cb_light_caps[i]};
+        for (unsigned k = 0; k < 3; k++) {
+            if (cfg.custom) lv_obj_remove_state(w[k], LV_STATE_DISABLED);
+            else lv_obj_add_state(w[k], LV_STATE_DISABLED);
+        }
     }
 }
 
@@ -1328,6 +1442,7 @@ static void refresh_visible(void)
     switch (s_section) {
     case SEC_WIFI:    refresh_wifi(); break;
     case SEC_DISPLAY: refresh_display(); break;
+    case SEC_KEYBOARD: refresh_keyboard(); break;
     case SEC_POWER:   refresh_power(); break;
     case SEC_TIME:    refresh_time(); break;
     case SEC_SYSTEM:  refresh_system(); break;
@@ -1400,6 +1515,7 @@ static void settings_init(void)
     }
     build_wifi_panel(panels[SEC_WIFI]);
     build_display_panel(panels[SEC_DISPLAY]);
+    build_keyboard_panel(panels[SEC_KEYBOARD]);
     build_power_panel(panels[SEC_POWER]);
     build_time_panel(panels[SEC_TIME]);
     build_system_panel(panels[SEC_SYSTEM]);
