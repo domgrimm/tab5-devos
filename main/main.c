@@ -15,11 +15,9 @@
 
 /* Apps */
 #include "apps/app_launcher/app_launcher.h"
-#include "apps/app_opendev/app_opendev.h"
 #include "apps/app_terminal/app_terminal.h"
 #include "apps/app_editor/app_editor.h"
 #include "apps/app_tailscale/app_tailscale.h"
-#include "apps/app_antigravity/app_antigravity.h"
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
 
@@ -32,6 +30,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_err.h"
 
 #if LV_USE_LOG
@@ -228,6 +227,30 @@ static void power_backlight_cb(int percent)
     bsp_tab5_set_brightness((uint8_t)percent);
 }
 
+/* OpenDev and Antigravity were removed: forget the server tokens they kept
+ * (OpenChamber device token, bridge token). Only writes when there is
+ * something left to erase, so this costs nothing after the first boot. */
+static void forget_removed_apps(void)
+{
+#ifdef ESP_PLATFORM
+    static const char *const ns[] = {"opendev", "agy"};
+    for (size_t i = 0; i < sizeof(ns) / sizeof(ns[0]); i++) {
+        nvs_iterator_t it = NULL;
+        bool used = nvs_entry_find(NVS_DEFAULT_PART_NAME, ns[i], NVS_TYPE_ANY, &it) == ESP_OK;
+        nvs_release_iterator(it);
+        nvs_handle_t h;
+        if (used && nvs_open(ns[i], NVS_READWRITE, &h) == ESP_OK) {
+            if (nvs_erase_all(h) == ESP_OK) nvs_commit(h);
+            nvs_close(h);
+            printf("[devOS] Erased saved %s settings (app removed)\n", ns[i]);
+        }
+    }
+#else
+    remove(TAB5_SD_MOUNT_POINT "/.devos/opendev_nvs.json");
+    remove(TAB5_SD_MOUNT_POINT "/.devos/agy_nvs.json");
+#endif
+}
+
 static void devos_system_bringup(void)
 {
     printf("\n==================================================\n");
@@ -242,6 +265,7 @@ static void devos_system_bringup(void)
     /* 2. MicroSD auto-scaffolding & VFS mount */
     printf("[devOS] 2/8 Initializing Storage...\n");
     devos_storage_init();
+    forget_removed_apps();
 
     /* 3. A164 Keyboard bring-up */
     printf("[devOS] 3/8 Initializing A164 Keyboard...\n");
@@ -284,11 +308,6 @@ static void devos_system_bringup(void)
 
     /* 8. Register all applications */
     printf("[devOS] 8/8 Registering Applications...\n");
-    printf("[devOS]   - Registering OpenDev...\n");
-    devos_core_register_app(app_opendev_get_descriptor());
-#ifdef ESP_PLATFORM
-    vTaskDelay(pdMS_TO_TICKS(10));
-#endif
     printf("[devOS]   - Registering Terminal...\n");
     devos_core_register_app(app_terminal_get_descriptor());
 #ifdef ESP_PLATFORM
@@ -301,11 +320,6 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering Tailscale...\n");
     devos_core_register_app(app_tailscale_get_descriptor());
-#ifdef ESP_PLATFORM
-    vTaskDelay(pdMS_TO_TICKS(10));
-#endif
-    printf("[devOS]   - Registering Antigravity...\n");
-    devos_core_register_app(app_antigravity_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
@@ -390,7 +404,7 @@ void app_main(void)
     printf("[devOS] Booting app_main on Core %d...\n", xPortGetCoreID());
 
     /* Initialize NVS early: persistent config (OTA feed, Tailscale auth key,
-     * opendev/agy tokens) opens the "nvs" partition, and nvs_open() fails with
+     * SSH keys) opens the "nvs" partition, and nvs_open() fails with
      * ESP_ERR_NVS_NOT_INITIALIZED until this runs. Kept non-fatal so a corrupt
      * or version-bumped partition can't block boot. */
     esp_err_t nvs_ret = nvs_flash_init();

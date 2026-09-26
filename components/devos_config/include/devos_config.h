@@ -32,13 +32,9 @@ extern "C" {
 #define DEVOS_BOTTOM_BAR_HEIGHT     32
 #define DEVOS_CONTENT_HEIGHT        (DEVOS_SCREEN_HEIGHT - DEVOS_TOP_BAR_HEIGHT)
 
-/* --- Responsive Tri-Pane Layout State Geometry --- */
+/* --- Side panel widths (editor file list, terminal connections) --- */
 #define DEVOS_PANE_LEFT_WIDTH       260
 #define DEVOS_PANE_RIGHT_WIDTH      300
-#define DEVOS_PANE_CENTER_TRIPANE   720     /* 1280 - 260 - 300 */
-#define DEVOS_PANE_CENTER_LEFTONLY  1020    /* 1280 - 260 */
-#define DEVOS_PANE_CENTER_RIGHTONLY 980     /* 1280 - 300 */
-#define DEVOS_PANE_CENTER_FOCUS     1280    /* Full screen focus mode */
 
 /* --- Terminal Geometry --- */
 #define DEVOS_TERM_FONT_WIDTH       8
@@ -82,10 +78,8 @@ extern "C" {
     #define DEVOS_CORE_UI_INPUT     0
 #endif
 
-/* --- Networking & Bridge Defaults --- */
-#define DEVOS_AGY_BRIDGE_PORT       8420
+/* --- Networking Defaults --- */
 #define DEVOS_SIM_VNC_PORT          6080
-#define DEVOS_OPENCODE_DEFAULT_PORT 4096
 
 /* --- Battery --- */
 /* Stock Tab5 NP-F550-style 2S pack: 7.4 V x 2000 mAh. Used only for the
@@ -93,24 +87,16 @@ extern "C" {
 #define DEVOS_BATTERY_CAPACITY_MWH  14800
 
 /* --- Applications Enumeration --- */
+/* The number is the Sym+<digit> shortcut (Sym+H is Home). */
 typedef enum {
-    DEVOS_APP_LAUNCHER = 0,     /* [1] Home Screen / App Launcher Dashboard */
-    DEVOS_APP_OPENDEV = 1,      /* [1] OpenDev: Remote AI coding agent */
-    DEVOS_APP_TERMINAL = 2,     /* [2] Terminal/SSH: Multi-session ANSI PTY shell */
-    DEVOS_APP_EDITOR = 3,       /* [3] Markdown: Notes & documentation editor */
-    DEVOS_APP_TAILSCALE = 4,    /* [4] Tailscale: Mesh network manager */
-    DEVOS_APP_ANTIGRAVITY = 5,  /* [5] Antigravity: Native AGY client */
-    DEVOS_APP_SETTINGS = 6,     /* [6] Settings: Wi-Fi, Display, Power, NVS */
-    DEVOS_APP_COUNT
+    DEVOS_APP_LAUNCHER = 0,     /* Home Screen / App Launcher Dashboard */
+    DEVOS_APP_TERMINAL = 1,     /* Sym+1 Terminal/SSH: Multi-session ANSI PTY shell */
+    DEVOS_APP_EDITOR = 2,       /* Sym+2 Editor: SD card Markdown & text editor */
+    DEVOS_APP_TAILSCALE = 3,    /* Sym+3 Tailscale: Mesh network manager */
+    DEVOS_APP_SETTINGS = 4,     /* Sym+4 Settings: Wi-Fi, Display, Power, NVS */
+    DEVOS_APP_COUNT,
+    DEVOS_APP_NONE = 255        /* no app shown yet */
 } devos_app_id_t;
-
-/* --- Responsive Tri-Pane Viewport States --- */
-typedef enum {
-    DEVOS_VIEWPORT_TRIPANE = 0,    /* Both left & right sidebars visible (260 | 720 | 300) */
-    DEVOS_VIEWPORT_LEFT_ONLY,      /* Right collapsed (260 | 1020) */
-    DEVOS_VIEWPORT_RIGHT_ONLY,     /* Left collapsed (980 | 300) */
-    DEVOS_VIEWPORT_FOCUS           /* Both collapsed (1280 full width) */
-} devos_viewport_mode_t;
 
 #ifdef __cplusplus
 }

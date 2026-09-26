@@ -67,13 +67,13 @@ int main(void)
     assert(devos_core_find_app("launcher") == &launcher_desc);
 
     /* 3. Register Core System Apps */
-    devos_app_descriptor_t opendev_desc = {
-        .id = DEVOS_APP_OPENDEV,
-        .uid = "opendev",
-        .name = "OpenDev",
-        .title = "OpenDev Agent",
-        .icon = LV_SYMBOL_PLAY,
-        .category = "agents",
+    devos_app_descriptor_t editor_desc = {
+        .id = DEVOS_APP_EDITOR,
+        .uid = "editor",
+        .name = "Editor",
+        .title = "Markdown Editor",
+        .icon = LV_SYMBOL_EDIT,
+        .category = "tools",
         .get_telemetry_lines = test_telemetry_1,
     };
     devos_app_descriptor_t terminal_desc = {
@@ -85,14 +85,14 @@ int main(void)
         .category = "systems",
         .get_telemetry_lines = test_telemetry_2,
     };
-    devos_core_register_app(&opendev_desc);
+    devos_core_register_app(&editor_desc);
     devos_core_register_app(&terminal_desc);
     assert(devos_core_app_count() == 3);
 
     /* Verify find by UID and Index */
-    assert(devos_core_find_app("opendev") == &opendev_desc);
+    assert(devos_core_find_app("editor") == &editor_desc);
     assert(devos_core_find_app("terminal") == &terminal_desc);
-    assert(devos_core_get_app_at(1) == &opendev_desc);
+    assert(devos_core_get_app_at(1) == &editor_desc);
     assert(devos_core_get_app_at(2) == &terminal_desc);
 
     /* 4. Register Modular Drop-in Apps without predefined IDs (Auto-ID allocation) */
@@ -142,7 +142,7 @@ int main(void)
 
     /* 8. Telemetry callback verification */
     char lines[3][64];
-    int lc = opendev_desc.get_telemetry_lines(lines);
+    int lc = editor_desc.get_telemetry_lines(lines);
     assert(lc == 3);
     assert(strcmp(lines[0], "* Test line 1") == 0);
     assert(strcmp(lines[1], "* Test line 2") == 0);
@@ -151,7 +151,7 @@ int main(void)
     /* 9. Layout Persistence Test (JSON parsing & generation) */
     FILE *f = fopen("/tmp/test_layout.json", "w");
     assert(f != NULL);
-    fprintf(f, "[\n  \"calc_app\",\n  \"terminal\",\n  \"opendev\"\n]\n");
+    fprintf(f, "[\n  \"calc_app\",\n  \"terminal\",\n  \"editor\"\n]\n");
     fclose(f);
 
     /* Read and parse JSON back */
@@ -181,15 +181,15 @@ int main(void)
     assert(pcount == 3);
     assert(strcmp(parsed_uids[0], "calc_app") == 0);
     assert(strcmp(parsed_uids[1], "terminal") == 0);
-    assert(strcmp(parsed_uids[2], "opendev") == 0);
+    assert(strcmp(parsed_uids[2], "editor") == 0);
     printf("JSON slot persistence test passed: parsed %d UIDs correctly.\n", pcount);
 
-    /* 10. Global Hotkey test (Fn + 1 .. Fn + 8) */
-    devos_core_dispatch_key('1', DEVOS_MOD_FN);
-    assert(devos_core_get_current_app() == DEVOS_APP_OPENDEV);
+    /* 10. Global Hotkey test (Sym + 1 .. Sym + 8) */
     devos_core_dispatch_key('2', DEVOS_MOD_FN);
+    assert(devos_core_get_current_app() == DEVOS_APP_EDITOR);
+    devos_core_dispatch_key('1', DEVOS_MOD_FN);
     assert(devos_core_get_current_app() == DEVOS_APP_TERMINAL);
-    printf("Global hotkey Fn + 1..8 dispatching verified.\n");
+    printf("Global hotkey Sym + 1..8 dispatching verified.\n");
 
     printf("\n=== All Phase 7 Unit Tests Passed! ===\n");
     return 0;

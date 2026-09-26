@@ -41,10 +41,6 @@ static const devos_palette_t palette_dark = {
     .top_bar_bg       = LV_COLOR_MAKE(0x0E, 0x11, 0x16),
     .bottom_bar_bg    = LV_COLOR_MAKE(0x0E, 0x11, 0x16),
     .telemetry_bg     = LV_COLOR_MAKE(0x16, 0x19, 0x22),
-    .thinking_bg      = LV_COLOR_MAKE(0x15, 0x1C, 0x26),
-    .thinking_border  = LV_COLOR_MAKE(0x23, 0x31, 0x47),
-    .tool_card_bg     = LV_COLOR_MAKE(0x13, 0x1A, 0x22),
-    .tool_card_border = LV_COLOR_MAKE(0x20, 0x2E, 0x3F),
     .code_bg          = LV_COLOR_MAKE(0x0B, 0x0D, 0x11),
 
     .ansi = {
@@ -90,10 +86,6 @@ static const devos_palette_t palette_light = {
     .top_bar_bg       = LV_COLOR_MAKE(0xE2, 0xE8, 0xF0),
     .bottom_bar_bg    = LV_COLOR_MAKE(0xE2, 0xE8, 0xF0),
     .telemetry_bg     = LV_COLOR_MAKE(0xEA, 0xEE, 0xF4),
-    .thinking_bg      = LV_COLOR_MAKE(0xF1, 0xF5, 0xF9),
-    .thinking_border  = LV_COLOR_MAKE(0xCB, 0xD5, 0xE1),
-    .tool_card_bg     = LV_COLOR_MAKE(0xFA, 0xFA, 0xFA),
-    .tool_card_border = LV_COLOR_MAKE(0xD1, 0xD5, 0xDB),
     .code_bg          = LV_COLOR_MAKE(0xEA, 0xEE, 0xF3),
 
     .ansi = {

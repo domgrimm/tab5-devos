@@ -49,22 +49,16 @@ static devos_telemetry_t telemetry_data = {
     .rtc_date_str           = "Wednesday, Sep 20",
     .time_valid             = true,
 
-    .opendev_status         = "Idle",
-    .opendev_model          = "Sonnet 3.7",
     .terminal_sessions      = 2,
     .terminal_host          = "workstation (bash)",
     .terminal_requested_host = "",
     .editor_file            = "welcome.md",
     .editor_file_kb         = 14,
-    .agy_bridge_online      = true,
-    .agy_subagents_count    = 2
 };
 #else
 /* Target: start empty. devos_sysmon fills in hardware/network data within the
  * first second and apps update their own fields; nothing here is invented. */
-static devos_telemetry_t telemetry_data = {
-    .opendev_status         = "Offline",
-};
+static devos_telemetry_t telemetry_data;
 #endif
 
 #ifndef ESP_PLATFORM
@@ -93,7 +87,7 @@ static void detect_local_ip(char *out_ip, size_t max_len)
 
 void devos_core_init(void)
 {
-    current_app_id = DEVOS_APP_COUNT;
+    current_app_id = DEVOS_APP_NONE;
     previous_app_id = DEVOS_APP_LAUNCHER;
 
 #ifndef ESP_PLATFORM

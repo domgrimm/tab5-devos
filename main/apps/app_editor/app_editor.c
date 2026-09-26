@@ -9,8 +9,9 @@
  * Keys (editor): Ctrl+S save, Ctrl+N new, Ctrl+F find, Ctrl+G next match,
  * Ctrl+Z undo, Ctrl+X/C/V cut/copy/paste (selection or whole line),
  * Ctrl+K delete line, Ctrl+D duplicate line, Ctrl+A select all, Ctrl+P
- * Edit/Split/Preview, Ctrl+B bold, Sym+Left/Right line start/end,
- * Sym+Up/Down page, Alt+Left/Right word, Tab indent, Esc -> file list.
+ * Edit/Split/Preview, Ctrl+B bold, Ctrl+Enter tick a task, Sym+Left/Right
+ * line start/end, Sym+Up/Down page, Alt+Left/Right word, Tab indent,
+ * Sym+L / Sym+F hide the file list, Esc -> file list.
  * Keys (file list): arrows, Enter open, Backspace up a folder, N new file,
  * F new folder, R rename, D/Del delete, H hidden files, Esc -> editor.
  */
@@ -20,8 +21,6 @@
 #include "devos_core.h"
 #include "devos_mdview.h"
 #include "devos_codeview.h"
-#include "opendev_client.h"
-#include "agy_client.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -62,8 +61,8 @@ static lv_obj_t *screen = NULL;
 static lv_obj_t *sidebar, *lbl_side_title, *lbl_path, *file_list, *lbl_side_hint;
 static lv_obj_t *btn_add_file, *btn_add_dir;
 static lv_obj_t *main_area, *top_bar, *lbl_fn;
-static lv_obj_t *btn_tree, *btn_save, *btn_find, *btn_attach, *btn_mode;
-static lv_obj_t *lbl_btn_tree, *lbl_btn_save, *lbl_btn_find, *lbl_btn_attach, *lbl_btn_mode;
+static lv_obj_t *btn_tree, *btn_save, *btn_find, *btn_mode;
+static lv_obj_t *lbl_btn_tree, *lbl_btn_save, *lbl_btn_find, *lbl_btn_mode;
 static lv_obj_t *ta_editor, *preview_scroll, *viewer_scroll, *lbl_empty;
 static lv_obj_t *find_bar, *ta_find, *lbl_find_info;
 static lv_obj_t *status_bar, *lbl_status;
@@ -1053,11 +1052,10 @@ static void apply_layout(void)
     lv_obj_set_pos(main_area, main_x, 0);
 
     lv_obj_align(btn_mode, LV_ALIGN_RIGHT_MID, -8, 0);
-    lv_obj_align_to(btn_attach, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-    lv_obj_align_to(btn_find, btn_attach, LV_ALIGN_OUT_LEFT_MID, -6, 0);
+    lv_obj_align_to(btn_find, btn_mode, LV_ALIGN_OUT_LEFT_MID, -6, 0);
     lv_obj_align_to(btn_save, btn_find, LV_ALIGN_OUT_LEFT_MID, -6, 0);
     lv_obj_align_to(btn_tree, btn_save, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-    int lbl_w = main_w - 460;
+    int lbl_w = main_w - 380;
     lv_obj_set_width(lbl_fn, lbl_w < 120 ? 120 : lbl_w);
     set_btn_active(btn_tree, lbl_btn_tree, s_sidebar_visible);
     set_btn_active(btn_find, lbl_btn_find, s_find_open);
@@ -1234,12 +1232,12 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     lv_obj_set_style_bg_color(top_bar, p->top_bar_bg, 0);
     lv_obj_set_style_border_color(top_bar, p->surface_border, 0);
     lv_obj_set_style_text_color(lbl_fn, p->accent_primary, 0);
-    lv_obj_t *bs[] = {btn_save, btn_attach, btn_mode, btn_add_file, btn_add_dir};
+    lv_obj_t *bs[] = {btn_save, btn_mode, btn_add_file, btn_add_dir};
     for (unsigned i = 0; i < sizeof(bs) / sizeof(bs[0]); i++) {
         lv_obj_set_style_bg_color(bs[i], p->surface, 0);
         lv_obj_set_style_border_color(bs[i], p->surface_border, 0);
     }
-    lv_obj_t *ls[] = {lbl_btn_save, lbl_btn_attach, lbl_btn_mode};
+    lv_obj_t *ls[] = {lbl_btn_save, lbl_btn_mode};
     for (unsigned i = 0; i < sizeof(ls) / sizeof(ls[0]); i++) lv_obj_set_style_text_color(ls[i], p->text_primary, 0);
     lv_obj_set_style_bg_color(ta_editor, p->code_bg, 0);
     lv_obj_set_style_text_color(ta_editor, p->text_primary, 0);
@@ -1306,31 +1304,6 @@ static void add_dir_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     modal_open(MODAL_NEW_DIR, NULL);
-}
-
-static void attach_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    if (!s_file[0]) {
-        flash("Open a note to attach");
-        return;
-    }
-    const char *text = s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
-    if (!text || !*text) {
-        flash("Note is empty");
-        return;
-    }
-    static EXT_RAM_BSS_ATTR char msg[OPENDEV_BLOCK_MAX];
-    snprintf(msg, sizeof(msg), "[Context from %s]:\n%s", s_file, text);
-    if (opendev_client_status() == OPENDEV_UP && opendev_client_active() >= 0 && opendev_client_send(msg) == 0) {
-        flash("Attached to the open OpenCode conversation");
-        return;
-    }
-    if (agy_client_status() == AGY_UP && agy_client_send(msg, NULL) == 0) {
-        flash("Attached to the Antigravity conversation");
-        return;
-    }
-    flash("Attach failed: no agent conversation open");
 }
 
 static void editor_click_cb(lv_event_t *e)
@@ -1413,10 +1386,6 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
     if (mods & DEVOS_MOD_FN) {
         if (key == 'l' || key == 'L') {                 /* Sym+L: file list */
             tree_cb(NULL);
-            return true;
-        }
-        if (key == 'a' || key == 'A') {                 /* Sym+A: attach to the agent */
-            attach_cb(NULL);
             return true;
         }
         if (key == 'f' || key == 'F') {                 /* Sym+F: focus (hide the file list) */
@@ -1751,7 +1720,6 @@ static void editor_init(void)
     btn_tree = mk_btn(top_bar, LV_SYMBOL_DIRECTORY " Files", 76, tree_cb, &lbl_btn_tree);
     btn_save = mk_btn(top_bar, LV_SYMBOL_SAVE " Save", 70, save_cb, &lbl_btn_save);
     btn_find = mk_btn(top_bar, LV_SYMBOL_EYE_OPEN " Find", 70, find_cb, &lbl_btn_find);
-    btn_attach = mk_btn(top_bar, LV_SYMBOL_UPLOAD " Attach", 80, attach_cb, &lbl_btn_attach);
     btn_mode = mk_btn(top_bar, "Edit", 76, mode_cb, &lbl_btn_mode);
     lv_obj_set_style_text_color(lbl_btn_mode, p->accent_primary, 0);
 
@@ -1899,7 +1867,7 @@ static void editor_init(void)
 
 static void editor_show(void)
 {
-    /* pick up files changed elsewhere (agents, a PC) */
+    /* pick up files changed elsewhere (e.g. edited on a PC) */
     load_dir();
     list_rebuild();
     if (s_file[0] && !s_dirty && !s_readonly) {
@@ -1954,50 +1922,4 @@ devos_app_descriptor_t *app_editor_get_descriptor(void)
     app_descriptor.handle_key = editor_handle_key;
     app_descriptor.get_telemetry_lines = editor_telemetry_lines;
     return &app_descriptor;
-}
-
-/* ------------------------------------------------------------- agent API */
-const char *app_editor_get_active_filename(void)
-{
-    return s_file[0] ? base_name(s_file) : NULL;
-}
-
-const char *app_editor_get_active_text(void)
-{
-    if (!s_file[0]) return NULL;
-    return s_readonly ? s_buf : lv_textarea_get_text(ta_editor);
-}
-
-static bool save_into(const char *folder, const char *title, const char *ext, const char *content)
-{
-    if (!title || !content) return false;
-    char clean[64];
-    size_t ci = 0;
-    for (const char *p = title; *p && ci < sizeof(clean) - 1; p++) {
-        char c = *p;
-        if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') clean[ci++] = c;
-        else if ((c == ' ' || c == ':' || c == '/') && ci > 0 && clean[ci - 1] != '_') clean[ci++] = '_';
-    }
-    clean[ci] = '\0';
-    if (!ci) snprintf(clean, sizeof(clean), "%s", folder);
-    /* keep a given extension, else add ours */
-    char name[80];
-    const char *dot = strrchr(clean, '.');
-    if (dot && strcasecmp(dot, ext) == 0) snprintf(name, sizeof(name), "%s", clean);
-    else snprintf(name, sizeof(name), "%s%s", clean, ext);
-    char dir[ED_PATH_MAX + 16], rel[ED_PATH_MAX];
-    abs_path(folder, dir, sizeof(dir));
-    mkdir(dir, 0755);                       /* fine if it exists */
-    join(folder, name, rel, sizeof(rel));
-    return write_file(rel, content);
-}
-
-bool app_editor_save_plan(const char *title, const char *content)
-{
-    return save_into("plans", title, ".md", content);
-}
-
-bool app_editor_save_diff(const char *title, const char *diff_content)
-{
-    return save_into("diffs", title, ".diff", diff_content);
 }
