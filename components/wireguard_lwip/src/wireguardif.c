@@ -72,6 +72,12 @@ void wireguardif_disable_socket_bind(void) {
 	g_disable_socket_bind = true;
 }
 
+// devOS: back to normal (own UDP socket + timer) mode for a plain WireGuard
+// tunnel after MicroLink has set magicsock mode earlier in the boot.
+void wireguardif_enable_socket_bind(void) {
+	g_disable_socket_bind = false;
+}
+
 bool wireguardif_is_wireguard_packet(const uint8_t *data, size_t len) {
 	if (len < 4) return false;
 	// WireGuard message types are 1-4 in the first 32-bit LE word
@@ -397,6 +403,19 @@ static void wireguardif_process_response_message(struct wireguard_device *device
 		// Packet bad
 		printf("[WG] Handshake response INVALID (crypto failed)\n");
 	}
+}
+
+static bool peer_add_ip(struct wireguard_peer *peer, ip_addr_t ip, ip_addr_t mask);
+static err_t wireguardif_lookup_peer(struct netif *netif, u8_t peer_index, struct wireguard_peer **out);
+
+// devOS: extra AllowedIPs for a peer (wireguardif_add_peer takes only one).
+err_t wireguardif_add_allowed_ip(struct netif *netif, u8_t peer_index, const ip_addr_t *ip, const ip_addr_t *mask) {
+	struct wireguard_peer *peer;
+	err_t result = wireguardif_lookup_peer(netif, peer_index, &peer);
+	if (result == ERR_OK && !peer_add_ip(peer, *ip, *mask)) {
+		result = ERR_MEM;
+	}
+	return result;
 }
 
 static bool peer_add_ip(struct wireguard_peer *peer, ip_addr_t ip, ip_addr_t mask) {

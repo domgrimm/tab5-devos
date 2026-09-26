@@ -167,6 +167,10 @@ void wireguardif_periodic(struct netif *netif);
 // Call before wireguardif_init to prevent WireGuard from binding its own socket.
 // The caller is then responsible for receiving packets and calling wireguardif_inject_packet.
 void wireguardif_disable_socket_bind(void);
+// devOS: undo wireguardif_disable_socket_bind() before a normal-mode init
+void wireguardif_enable_socket_bind(void);
+// devOS: add another AllowedIPs entry to a peer (up to WIREGUARD_MAX_SRC_IPS)
+err_t wireguardif_add_allowed_ip(struct netif *netif, u8_t peer_index, const ip_addr_t *ip, const ip_addr_t *mask);
 
 // Set the UDP output callback for magicsock mode
 // When socket binding is disabled, this callback is used to send packets

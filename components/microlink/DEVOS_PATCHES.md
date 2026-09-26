@@ -45,3 +45,17 @@ devOS talks to it only through `components/devos_tailnet`.
 
 Everything else is upstream as-is (cellular, network switching and the HTTP
 config server stay disabled in Kconfig).
+
+## wireguard_lwip patches (for the WireGuard app, `components/devos_wireguard`)
+
+W1. `src/wireguardif.c/.h`: `wireguardif_enable_socket_bind()`. MicroLink sets
+    the file-global magicsock flag and upstream never cleared it, so a plain
+    tunnel created after Tailscale had run once came up with no UDP socket
+    and no timer.
+W2. `src/wireguardif.c/.h`: `wireguardif_add_allowed_ip()` (wraps the static
+    `peer_add_ip`) and `WIREGUARD_MAX_SRC_IPS` 2 -> 4, so a peer can have
+    several AllowedIPs.
+W3. `src/wireguard-platform-esp32.c`: handshake TAI64N timestamps use the
+    wall clock once it is set (after 2023), else uptime as before. Peers
+    drop initiations that aren't newer than the last one they saw, so
+    uptime-based stamps failed after every reboot.
