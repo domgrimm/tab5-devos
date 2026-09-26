@@ -1,6 +1,7 @@
 /* devos_codeview: see devos_codeview.h. */
 #include "devos_codeview.h"
 #include "devos_theme.h"
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,6 +9,47 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 
 #define CV_LINE_H    DEVOS_CODEVIEW_LINE_H
 #define CV_MAX_LINES 6000
+
+/* One line of (pretty-printed) JSON, coloured by token; monospace, so a
+ * run starting at column c is drawn at x0 + c * 8. */
+static void cv_draw_json_line(lv_layer_t *layer, lv_draw_label_dsc_t *ld, int x0, int y,
+                              const char *line, size_t len, const devos_palette_t *p)
+{
+    char run[300];
+    size_t i = 0;
+    while (i < len) {
+        size_t st = i;
+        lv_color_t col = p->text_secondary;
+        char c = line[i];
+        if (c == '"') {
+            for (i++; i < len && line[i] != '"'; i++) if (line[i] == '\\') i++;
+            if (i < len) i++;
+            size_t k = i;
+            while (k < len && line[k] == ' ') k++;
+            col = (k < len && line[k] == ':') ? p->accent_primary : p->accent_secondary;
+        } else if ((c >= '0' && c <= '9') || c == '-') {
+            while (i < len && (isalnum((unsigned char)line[i]) || line[i] == '.' || line[i] == '-' || line[i] == '+')) i++;
+            col = p->accent_warning;
+        } else if (isalpha((unsigned char)c)) {
+            while (i < len && isalpha((unsigned char)line[i])) i++;
+            col = p->ansi[13];                          /* true / false / null */
+        } else if (c == ' ') {
+            while (i < len && line[i] == ' ') i++;
+            continue;
+        } else {
+            while (i < len && strchr("{}[],:", line[i])) i++;
+            if (i == st) i++;
+        }
+        size_t n = i - st;
+        if (n > sizeof(run) - 1) n = sizeof(run) - 1;
+        memcpy(run, line + st, n);
+        run[n] = '\0';
+        ld->color = col;
+        ld->text = run;
+        lv_area_t tr = { x0 + (int32_t)st * 8, y, x0 + (int32_t)(st + n) * 8 + 8, y + CV_LINE_H - 1 };
+        lv_draw_label(layer, ld, &tr);
+    }
+}
 
 static void cv_draw_cb(lv_event_t *e)
 {
@@ -37,6 +79,11 @@ static void cv_draw_cb(lv_event_t *e)
         if (len > sizeof(line) - 1) len = sizeof(line) - 1;
         for (size_t i = 0; i < len; i++) line[i] = (s[i] == '\t' || (unsigned char)s[i] < 32) ? ' ' : s[i];
         line[len] = '\0';
+        int y = a.y1 + r * CV_LINE_H;
+        if (cv->json) {
+            cv_draw_json_line(layer, &ld, a.x1 + 4, y, line, len, p);
+            continue;
+        }
         lv_color_t col = p->text_primary;
         bool band = false;
         if (cv->plain) { /* ordinary text: no diff colours */ }
@@ -45,7 +92,6 @@ static void cv_draw_cb(lv_event_t *e)
         else if (line[0] == '@' && line[1] == '@') col = p->accent_primary;
         else if (!strncmp(line, "diff ", 5) || !strncmp(line, "---", 3) || !strncmp(line, "+++", 3) ||
                  !strncmp(line, "index ", 6)) col = p->text_secondary;
-        int y = a.y1 + r * CV_LINE_H;
         if (band) {
             rd.bg_color = col;
             lv_area_t br = { a.x1, y, a.x2, y + CV_LINE_H - 1 };

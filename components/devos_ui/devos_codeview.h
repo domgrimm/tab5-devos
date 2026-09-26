@@ -1,7 +1,8 @@
 #pragma once
 /* devos_codeview: monospace text/diff viewer that draws only the visible
  * lines, so 6000-line diffs scroll smoothly. Diff lines are coloured
- * (+ green band, - red band, @@ accent, headers dimmed). */
+ * (+ green band, - red band, @@ accent, headers dimmed); with `json` set,
+ * JSON tokens are coloured instead (see devos_json_pretty). */
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -17,6 +18,7 @@ typedef struct {
     int *off;               /* line start offsets */
     int n;
     bool plain;             /* true: plain text (no diff colours) */
+    bool json;              /* true: colour JSON tokens (keys, strings, numbers) */
 } devos_codeview_t;
 
 /* Turn `scroll` (an empty lv_obj) into a code view. */
