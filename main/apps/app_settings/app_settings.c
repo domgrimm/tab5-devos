@@ -6,13 +6,21 @@
  * re-coloured on theme change (lv_obj_report_style_change), so new widgets
  * follow the theme without per-widget bookkeeping.
  *
- * Keyboard: Up/Down pick a section; Tab/Right moves into the Wi-Fi network
- * list (Up/Down/Enter), Left/Esc goes back; S rescans. In the password dialog
- * the physical keyboard types, Enter connects, Esc cancels. An on-screen
- * keyboard covers the touch-only case.
+ * Keyboard (AGENTS.md invariant 9): the section list has focus first -
+ * Up/Down pick a section, Tab/Right/Enter move into its panel, Esc goes Home.
+ * In a panel the controls use devos_focus (Up/Down/Tab move, Left/Right change,
+ * Space toggles, Enter presses / opens a list) and Esc goes back to the list.
+ * The Wi-Fi panel has three regions (Tab cycles): the Disconnect / Scan
+ * buttons, the available networks (Up/Down, Enter connects) and the saved
+ * networks (Enter connects, D/Del forgets, "Add network..." below them);
+ * S scans, A adds a network, X disconnects. In the dialog the physical
+ * keyboard types into the focused field, Tab moves, Enter connects / saves,
+ * Esc cancels. The on-screen keyboard only appears without a keyboard.
+ * Each panel shows its keys in a hint line at the bottom.
  */
 #include "app_settings.h"
 #include "devos_config.h"
+#include "devos_focus.h"
 #include "devos_theme.h"
 #include "devos_power.h"
 #include "devos_ota.h"
@@ -45,6 +53,7 @@ static const char *const s_sec_labels[SEC_COUNT] = {
 #define PANEL_PAD    20
 #define PANEL_W      (CONTENT_W - 2 * PANEL_PAD)
 #define PANEL_H      (DEVOS_CONTENT_HEIGHT - 2 * PANEL_PAD)
+#define HINT_H       24     /* key hint line at the bottom of each panel */
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
@@ -59,13 +68,24 @@ static lv_style_t st_screen, st_nav, st_nav_btn, st_nav_sel, st_card, st_header,
 /* ---- navigation ---- */
 static lv_obj_t *nav_btns[SEC_COUNT];
 static lv_obj_t *panels[SEC_COUNT];
+static lv_obj_t *lbl_hint[SEC_COUNT];
 static int s_section = SEC_WIFI;
-static bool s_focus_list = false;      /* keyboard focus in the Wi-Fi network list */
+/* Keyboard focus is in the section list or (s_in_panel) in the section's
+ * panel. Each panel's controls are a devos_focus list; the Wi-Fi network
+ * lists draw their own selection. */
+static bool s_in_panel = false;
+static devos_focus_t s_nav_focus;          /* focus ring on the section list */
+static devos_focus_t s_pf[SEC_COUNT];      /* each panel's controls */
 
 /* ---- Wi-Fi panel ---- */
+/* Regions, in Tab order: Disconnect / Scan, available networks, saved
+ * networks (whose last entry is the "Add network..." button). */
+enum { WF_TOP = 0, WF_AVAIL, WF_SAVED, WF_COUNT };
+static int s_wifi_zone = WF_AVAIL;
 static lv_obj_t *lbl_wifi_state, *lbl_wifi_detail, *lbl_wifi_error;
-static lv_obj_t *btn_wifi_disconnect, *btn_wifi_scan, *lbl_scan_btn;
+static lv_obj_t *btn_wifi_disconnect, *btn_wifi_scan, *lbl_scan_btn, *btn_wifi_add;
 static lv_obj_t *list_avail, *lbl_avail_hdr, *list_saved;
+static devos_focus_t s_wifi_add_focus;     /* ring on "Add network..." */
 static devos_wifi_ap_t s_aps[DEVOS_WIFI_MAX_SCAN];
 static int s_ap_count = 0;
 static lv_obj_t *s_ap_rows[DEVOS_WIFI_MAX_SCAN];
@@ -74,11 +94,14 @@ static uint32_t s_last_gen = 0xFFFFFFFFu;
 static char s_last_list_key[80] = "";
 static devos_wifi_saved_t s_saved[DEVOS_WIFI_MAX_SAVED];
 static int s_saved_count = 0;
+static lv_obj_t *s_saved_rows[DEVOS_WIFI_MAX_SAVED];
+static int s_sel_saved = 0;                /* == s_saved_count: "Add network..." */
 
 /* ---- password / add-network dialog ---- */
-static lv_obj_t *overlay, *modal, *lbl_modal_title, *ta_ssid, *ta_pass, *cb_show, *kb, *lbl_modal_ok;
+static lv_obj_t *overlay, *modal, *lbl_modal_title, *ta_ssid, *ta_pass, *cb_show, *kb, *lbl_modal_ok,
+                *lbl_modal_hint;
 static enum { MODAL_WIFI, MODAL_FEED } s_modal_mode = MODAL_WIFI;
-static lv_obj_t *s_focused_ta = NULL;
+static devos_focus_t s_mf;                 /* the dialog's fields and buttons */
 static bool s_modal_hidden_net = false;
 static char s_modal_ssid[33];
 
@@ -326,6 +349,76 @@ static void style_switch(lv_obj_t *o)
     lv_obj_add_style(o, &st_knob, LV_PART_KNOB);
 }
 
+/* Refresh a dropdown from live state, but not while its list is open (the
+ * user is browsing it). */
+static void sync_dropdown(lv_obj_t *dd, uint32_t sel)
+{
+    if (!lv_dropdown_is_open(dd) && lv_dropdown_get_selected(dd) != sel) lv_dropdown_set_selected(dd, sel);
+}
+
+/* ======================================================================== */
+/* Keyboard focus                                                           */
+/* ======================================================================== */
+static void update_hint(void);
+static void wifi_highlight(void);
+
+static bool obj_usable(lv_obj_t *o)
+{
+    return o && !lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN) && !lv_obj_has_state(o, LV_STATE_DISABLED);
+}
+
+/* A control that got hidden / disabled under the focus (Disconnect, the OTA
+ * button while busy): drop it with its ring. */
+static void focus_drop_unusable(devos_focus_t *f)
+{
+    if (devos_focus_get(f) && !obj_usable(devos_focus_get(f))) devos_focus_clear(f);
+}
+
+/* Keep devos_focus in step with a dropdown list opened / closed by touch. */
+static void focus_sync_dropdown(devos_focus_t *f)
+{
+    lv_obj_t *o = devos_focus_get(f);
+    if (!o || !lv_obj_check_type(o, &lv_dropdown_class)) return;
+    bool open = lv_dropdown_is_open(o);
+    if (open && !f->dd_open) f->dd_orig = lv_dropdown_get_selected(o);
+    f->dd_open = open;
+}
+
+/* Left / Right walk a row of buttons (they have no value to change). */
+static bool focus_button_row_key(devos_focus_t *f, uint32_t key)
+{
+    lv_obj_t *o = devos_focus_get(f);
+    if ((key != LV_KEY_LEFT && key != LV_KEY_RIGHT) || !o || !lv_obj_check_type(o, &lv_button_class)) return false;
+    devos_focus_move(f, key == LV_KEY_RIGHT ? 1 : -1);
+    return true;
+}
+
+/* A tap on a panel control moves the keyboard focus into that panel. */
+static void panel_pressed_cb(lv_event_t *e)
+{
+    int sec = (int)(intptr_t)lv_event_get_user_data(e);
+    if (sec != s_section) return;
+    s_in_panel = true;
+    devos_focus_clear(&s_nav_focus);
+    if (sec == SEC_WIFI) {
+        if (lv_event_get_current_target(e) == btn_wifi_add) {
+            s_wifi_zone = WF_SAVED;
+            s_sel_saved = s_saved_count;
+        } else {
+            s_wifi_zone = WF_TOP;
+        }
+        wifi_highlight();
+    }
+    update_hint();
+}
+
+/* Register a panel control (registration order = focus order). */
+static void focus_add(int sec, devos_focus_t *f, lv_obj_t *o)
+{
+    devos_focus_add(f, o);
+    lv_obj_add_event_cb(o, panel_pressed_cb, LV_EVENT_PRESSED, (void *)(intptr_t)sec);
+}
+
 /* ======================================================================== */
 /* Navigation                                                               */
 /* ======================================================================== */
@@ -336,7 +429,8 @@ static void select_section(int sec)
     if (sec < 0) sec = SEC_COUNT - 1;
     if (sec >= SEC_COUNT) sec = 0;
     s_section = sec;
-    s_focus_list = false;
+    s_in_panel = false;
+    for (int i = 0; i < SEC_COUNT; i++) devos_focus_clear(&s_pf[i]);
     for (int i = 0; i < SEC_COUNT; i++) {
         if (i == sec) {
             lv_obj_add_state(nav_btns[i], LV_STATE_CHECKED);
@@ -351,6 +445,8 @@ static void select_section(int sec)
         devos_net_wifi_scan_start();   /* fresh list whenever Wi-Fi is opened */
     }
     refresh_visible();
+    wifi_highlight();
+    update_hint();
 }
 
 static void nav_btn_cb(lv_event_t *e)
@@ -413,11 +509,71 @@ static void connect_or_prompt(const devos_wifi_ap_t *ap)
     }
 }
 
+/* Draw the keyboard selection: the selected row of the focused list, or the
+ * ring on a button (Disconnect / Scan / Add network...). */
+static void wifi_highlight(void)
+{
+    bool on = s_in_panel && s_section == SEC_WIFI;
+    for (int i = 0; i < s_ap_count; i++) {
+        if (!s_ap_rows[i]) continue;
+        if (on && s_wifi_zone == WF_AVAIL && i == s_sel_row) {
+            lv_obj_add_state(s_ap_rows[i], LV_STATE_CHECKED);
+            lv_obj_scroll_to_view(s_ap_rows[i], LV_ANIM_ON);
+        } else {
+            lv_obj_remove_state(s_ap_rows[i], LV_STATE_CHECKED);
+        }
+    }
+    for (int i = 0; i < s_saved_count; i++) {
+        if (!s_saved_rows[i]) continue;
+        if (on && s_wifi_zone == WF_SAVED && i == s_sel_saved) {
+            lv_obj_add_state(s_saved_rows[i], LV_STATE_CHECKED);
+            lv_obj_scroll_to_view(s_saved_rows[i], LV_ANIM_ON);
+        } else {
+            lv_obj_remove_state(s_saved_rows[i], LV_STATE_CHECKED);
+        }
+    }
+    if (!(on && s_wifi_zone == WF_TOP)) devos_focus_clear(&s_pf[SEC_WIFI]);
+    if (on && s_wifi_zone == WF_SAVED && s_sel_saved >= s_saved_count) {
+        if (!devos_focus_get(&s_wifi_add_focus)) devos_focus_set(&s_wifi_add_focus, btn_wifi_add);
+    } else {
+        devos_focus_clear(&s_wifi_add_focus);
+    }
+}
+
+/* A tap in a network list puts the keyboard focus there too. */
+static void wifi_touch_zone(int zone)
+{
+    s_in_panel = true;
+    devos_focus_clear(&s_nav_focus);
+    s_wifi_zone = zone;
+    wifi_highlight();
+    update_hint();
+}
+
+static void wifi_connect_saved(int idx)
+{
+    if (idx < 0 || idx >= s_saved_count) return;
+    devos_wifi_status_t st;
+    devos_net_wifi_get_status(&st);
+    if (st.state == DEVOS_WIFI_STATE_CONNECTED && strcmp(st.ssid, s_saved[idx].ssid) == 0) return;
+    devos_net_wifi_connect(s_saved[idx].ssid, NULL);
+}
+
+static void wifi_forget(int idx)
+{
+    if (idx < 0 || idx >= s_saved_count) return;
+    /* the selection stays on the next row, or the one above for the last */
+    if (s_sel_saved == idx && idx == s_saved_count - 1 && idx > 0) s_sel_saved--;
+    devos_net_wifi_forget(s_saved[idx].ssid);
+    s_last_list_key[0] = '\0';   /* rebuild the lists on the next refresh */
+}
+
 static void ap_row_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx >= 0 && idx < s_ap_count) {
         s_sel_row = idx;
+        wifi_touch_zone(WF_AVAIL);
         connect_or_prompt(&s_aps[idx]);
     }
 }
@@ -425,15 +581,20 @@ static void ap_row_cb(lv_event_t *e)
 static void saved_connect_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < s_saved_count) devos_net_wifi_connect(s_saved[idx].ssid, NULL);
+    if (idx >= 0 && idx < s_saved_count) {
+        s_sel_saved = idx;
+        wifi_touch_zone(WF_SAVED);
+        wifi_connect_saved(idx);
+    }
 }
 
 static void saved_forget_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx >= 0 && idx < s_saved_count) {
-        devos_net_wifi_forget(s_saved[idx].ssid);
-        s_last_list_key[0] = '\0';   /* force a list rebuild */
+        s_sel_saved = idx;
+        wifi_touch_zone(WF_SAVED);
+        wifi_forget(idx);
     }
 }
 
@@ -455,23 +616,20 @@ static void disconnect_btn_cb(lv_event_t *e)
     devos_net_wifi_disconnect();
 }
 
-static void highlight_row(void)
-{
-    for (int i = 0; i < s_ap_count; i++) {
-        if (!s_ap_rows[i]) continue;
-        if (s_focus_list && i == s_sel_row) {
-            lv_obj_add_state(s_ap_rows[i], LV_STATE_CHECKED);
-            lv_obj_scroll_to_view(s_ap_rows[i], LV_ANIM_ON);
-        } else {
-            lv_obj_remove_state(s_ap_rows[i], LV_STATE_CHECKED);
-        }
-    }
-}
-
 static void rebuild_lists(const devos_wifi_status_t *st)
 {
+    /* Keep the keyboard selection on the same network when a new scan
+     * re-sorts the list. */
+    char sel_ssid[sizeof(s_aps[0].ssid)];
+    snprintf(sel_ssid, sizeof(sel_ssid), "%s", s_sel_row < s_ap_count ? s_aps[s_sel_row].ssid : "");
     s_ap_count = devos_net_wifi_scan_results(s_aps, DEVOS_WIFI_MAX_SCAN);
     s_saved_count = devos_net_wifi_saved_list(s_saved, DEVOS_WIFI_MAX_SAVED);
+    for (int i = 0; sel_ssid[0] && i < s_ap_count; i++) {
+        if (strcmp(s_aps[i].ssid, sel_ssid) == 0) {
+            s_sel_row = i;
+            break;
+        }
+    }
 
     /* Available networks */
     lv_obj_clean(list_avail);
@@ -516,16 +674,19 @@ static void rebuild_lists(const devos_wifi_status_t *st)
         mk_label(row, &st_muted, meta);
     }
     if (s_sel_row >= s_ap_count) s_sel_row = s_ap_count ? s_ap_count - 1 : 0;
-    highlight_row();
 
     /* Saved networks */
     lv_obj_clean(list_saved);
+    memset(s_saved_rows, 0, sizeof(s_saved_rows));
     if (s_saved_count == 0) {
         mk_label(list_saved, &st_muted, "No saved networks yet.\nNetworks are remembered after\nthey connect successfully.");
     }
     for (int i = 0; i < s_saved_count; i++) {
         lv_obj_t *row = lv_obj_create(list_saved);
         lv_obj_remove_style_all(row);
+        lv_obj_add_style(row, &st_row, 0);
+        lv_obj_add_style(row, &st_row_sel, LV_STATE_CHECKED);
+        s_saved_rows[i] = row;
         lv_obj_set_size(row, lv_pct(100), 44);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -544,6 +705,8 @@ static void rebuild_lists(const devos_wifi_status_t *st)
         }
         mk_btn(row, LV_SYMBOL_TRASH, &st_btn_danger, saved_forget_cb, (void *)(intptr_t)i, NULL);
     }
+    if (s_sel_saved > s_saved_count) s_sel_saved = s_saved_count;
+    wifi_highlight();
 }
 
 static void refresh_wifi(void)
@@ -625,13 +788,24 @@ static bool modal_open(void)
     return overlay && !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void focus_ta(lv_obj_t *ta)
+/* The on-screen keyboard types into the focused text field. */
+static void modal_sync_kb(void)
 {
-    s_focused_ta = ta;
-    if (ta_ssid) lv_obj_remove_state(ta_ssid, LV_STATE_FOCUSED);
-    lv_obj_remove_state(ta_pass, LV_STATE_FOCUSED);
-    lv_obj_add_state(ta, LV_STATE_FOCUSED);
-    lv_keyboard_set_textarea(kb, ta);
+    lv_obj_t *o = devos_focus_get(&s_mf);
+    if (o && lv_obj_check_type(o, &lv_textarea_class)) lv_keyboard_set_textarea(kb, o);
+}
+
+static void modal_focus(lv_obj_t *o)
+{
+    devos_focus_set(&s_mf, o);
+    modal_sync_kb();
+}
+
+/* The OSK is only for when no keyboard is attached. */
+static void modal_show_osk(void)
+{
+    if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void close_modal(void)
@@ -640,7 +814,7 @@ static void close_modal(void)
     lv_textarea_set_text(ta_pass, "");     /* don't keep the password around */
     lv_textarea_set_text(ta_ssid, "");
     lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-    s_focused_ta = NULL;
+    devos_focus_clear(&s_mf);              /* keys go back to the panel */
 }
 
 static void submit_modal(void)
@@ -656,7 +830,7 @@ static void submit_modal(void)
     const char *ssid = s_modal_hidden_net ? lv_textarea_get_text(ta_ssid) : s_modal_ssid;
     const char *pass = lv_textarea_get_text(ta_pass);
     if (!ssid || !ssid[0]) {
-        focus_ta(ta_ssid);
+        modal_focus(ta_ssid);
         return;
     }
     size_t pl = strlen(pass);
@@ -677,8 +851,8 @@ static void kb_event_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_READY) {
-        if (s_modal_hidden_net && s_focused_ta == ta_ssid) {
-            focus_ta(ta_pass);
+        if (s_modal_hidden_net && devos_focus_get(&s_mf) == ta_ssid) {
+            modal_focus(ta_pass);
         } else {
             submit_modal();
         }
@@ -689,9 +863,9 @@ static void kb_event_cb(lv_event_t *e)
 
 static void ta_click_cb(lv_event_t *e)
 {
-    lv_obj_t *ta = lv_event_get_target(e);
-    focus_ta(ta);
-    lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);   /* bring the OSK back */
+    LV_UNUSED(e);          /* devos_focus moved the focus to the tapped field */
+    modal_sync_kb();
+    modal_show_osk();      /* bring the OSK back (touch-only case) */
 }
 
 static void show_pw_cb(lv_event_t *e)
@@ -709,6 +883,8 @@ static void open_modal(const char *ssid, bool hidden_net)
     lv_textarea_set_max_length(ta_pass, 64);
     lv_textarea_set_placeholder_text(ta_pass, "Password (leave empty for an open network)");
     lv_label_set_text(lbl_modal_ok, LV_SYMBOL_OK "  Connect");
+    lv_label_set_text(lbl_modal_hint, hidden_net ? "Tab  next field   Enter  next field / connect   Esc  cancel"
+                                                 : "Tab  next field   Enter  connect   Esc  cancel");
     char title[64];
     if (hidden_net) {
         snprintf(title, sizeof(title), "Add a network");
@@ -723,13 +899,8 @@ static void open_modal(const char *ssid, bool hidden_net)
     lv_obj_remove_state(cb_show, LV_STATE_CHECKED);
     lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(overlay);
-    /* Touch users get the on-screen keyboard; it hides on the first physical key. */
-    if (tab5_keyboard_is_connected()) {
-        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    }
-    focus_ta(hidden_net ? ta_ssid : ta_pass);
+    modal_show_osk();
+    modal_focus(hidden_net ? ta_ssid : ta_pass);
 }
 
 static void open_feed_modal(void)
@@ -746,11 +917,11 @@ static void open_feed_modal(void)
     devos_ota_get_feed(feed, sizeof(feed));
     lv_textarea_set_text(ta_pass, feed);
     lv_label_set_text(lbl_modal_ok, LV_SYMBOL_OK "  Save");
+    lv_label_set_text(lbl_modal_hint, "Tab  next   Enter  save   Esc  cancel");
     lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(overlay);
-    if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    focus_ta(ta_pass);
+    modal_show_osk();
+    modal_focus(ta_pass);
 }
 
 static void build_modal(void)
@@ -784,6 +955,7 @@ static void build_modal(void)
     lv_textarea_set_placeholder_text(ta_ssid, "Network name (SSID)");
     lv_obj_set_width(ta_ssid, lv_pct(100));
     lv_obj_add_event_cb(ta_ssid, ta_click_cb, LV_EVENT_CLICKED, NULL);
+    devos_focus_add(&s_mf, ta_ssid);
 
     ta_pass = lv_textarea_create(modal);
     lv_obj_add_style(ta_pass, &st_ta, 0);
@@ -794,6 +966,7 @@ static void build_modal(void)
     lv_textarea_set_placeholder_text(ta_pass, "Password (leave empty for an open network)");
     lv_obj_set_width(ta_pass, lv_pct(100));
     lv_obj_add_event_cb(ta_pass, ta_click_cb, LV_EVENT_CLICKED, NULL);
+    devos_focus_add(&s_mf, ta_pass);
 
     lv_obj_t *row = lv_obj_create(modal);
     lv_obj_remove_style_all(row);
@@ -801,15 +974,21 @@ static void build_modal(void)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_set_style_pad_all(row, 6, 0);   /* room for the focus rings */
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
     cb_show = lv_checkbox_create(row);
     lv_checkbox_set_text(cb_show, "Show password");
     lv_obj_add_style(cb_show, &st_text, 0);
     lv_obj_add_event_cb(cb_show, show_pw_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_set_flex_grow(cb_show, 1);
+    devos_focus_add(&s_mf, cb_show);
 
-    mk_btn(row, "Cancel", NULL, modal_cancel_cb, NULL, NULL);
-    mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, modal_connect_cb, NULL, &lbl_modal_ok);
+    devos_focus_add(&s_mf, mk_btn(row, "Cancel", NULL, modal_cancel_cb, NULL, NULL));
+    devos_focus_add(&s_mf, mk_btn(row, LV_SYMBOL_OK "  Connect", &st_btn_primary, modal_connect_cb, NULL,
+                                  &lbl_modal_ok));
+
+    lbl_modal_hint = mk_label(modal, &st_muted, "");
 
     kb = lv_keyboard_create(overlay);
     lv_obj_add_style(kb, &st_kb, 0);
@@ -835,9 +1014,11 @@ static void build_wifi_panel(lv_obj_t *pn)
     lv_obj_align(btn_wifi_scan, LV_ALIGN_TOP_RIGHT, 0, 0);
     btn_wifi_disconnect = mk_btn(c, LV_SYMBOL_CLOSE "  Disconnect", &st_btn_danger, disconnect_btn_cb, NULL, NULL);
     lv_obj_align(btn_wifi_disconnect, LV_ALIGN_TOP_RIGHT, -150, 0);
+    focus_add(SEC_WIFI, &s_pf[SEC_WIFI], btn_wifi_disconnect);
+    focus_add(SEC_WIFI, &s_pf[SEC_WIFI], btn_wifi_scan);
 
     const int list_y = 124 + 16;
-    const int list_h = PANEL_H - list_y;
+    const int list_h = PANEL_H - list_y - HINT_H;
     const int left_w = 596;
 
     lv_obj_t *ca = mk_card(pn, 0, list_y, left_w, list_h, NULL);
@@ -859,8 +1040,9 @@ static void build_wifi_panel(lv_obj_t *pn)
     lv_obj_set_style_pad_row(list_saved, 4, 0);
     lv_obj_set_scroll_dir(list_saved, LV_DIR_VER);
 
-    lv_obj_t *add = mk_btn(cs, LV_SYMBOL_PLUS "  Add network...", NULL, add_network_cb, NULL, NULL);
-    lv_obj_align(add, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    btn_wifi_add = mk_btn(cs, LV_SYMBOL_PLUS "  Add network...", NULL, add_network_cb, NULL, NULL);
+    lv_obj_align(btn_wifi_add, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    focus_add(SEC_WIFI, &s_wifi_add_focus, btn_wifi_add);
 }
 
 /* ======================================================================== */
@@ -964,6 +1146,7 @@ static void build_display_panel(lv_obj_t *pn)
     style_switch(theme_switch);
     if (devos_theme_get_type() == DEVOS_THEME_LIGHT) lv_obj_add_state(theme_switch, LV_STATE_CHECKED);
     lv_obj_add_event_cb(theme_switch, theme_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_DISPLAY, &s_pf[SEC_DISPLAY], theme_switch);
     mk_icon(c, 112, 62, sun_icon_draw_cb);
 
     c = mk_card(pn, 0, 148, PANEL_W, 132, "BRIGHTNESS");
@@ -975,6 +1158,7 @@ static void build_display_panel(lv_obj_t *pn)
     lv_obj_set_size(slider_bright, PANEL_W - 160, 14);
     lv_obj_set_pos(slider_bright, 8, 72);
     lv_obj_add_event_cb(slider_bright, bright_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_DISPLAY, &s_pf[SEC_DISPLAY], slider_bright);
     lbl_bright = mk_label(c, &st_title, "100%");
     lv_obj_align(lbl_bright, LV_ALIGN_TOP_RIGHT, 0, 58);
 
@@ -989,6 +1173,7 @@ static void build_display_panel(lv_obj_t *pn)
     lv_obj_set_pos(dd_dim, 100, 58);
     style_dropdown(dd_dim);
     lv_obj_add_event_cb(dd_dim, timeout_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_DISPLAY, &s_pf[SEC_DISPLAY], dd_dim);
     l = mk_label(c, &st_text, "Turn off after");
     lv_obj_set_pos(l, 380, 70);
     dd_sleep = lv_dropdown_create(c);
@@ -997,7 +1182,7 @@ static void build_display_panel(lv_obj_t *pn)
     lv_obj_set_pos(dd_sleep, 510, 58);
     style_dropdown(dd_sleep);
     lv_obj_add_event_cb(dd_sleep, timeout_cb, LV_EVENT_VALUE_CHANGED, NULL);
-
+    focus_add(SEC_DISPLAY, &s_pf[SEC_DISPLAY], dd_sleep);
 }
 
 static void refresh_display(void)
@@ -1010,8 +1195,8 @@ static void refresh_display(void)
     set_text(lbl_bright, buf);
     uint32_t di = (uint32_t)opt_index(s_dim_opts_s, 6, devos_power_dim_after_s(), 2);
     uint32_t si = (uint32_t)opt_index(s_sleep_opts_s, 6, devos_power_sleep_after_s(), 2);
-    if (lv_dropdown_get_selected(dd_dim) != di) lv_dropdown_set_selected(dd_dim, di);
-    if (lv_dropdown_get_selected(dd_sleep) != si) lv_dropdown_set_selected(dd_sleep, si);
+    sync_dropdown(dd_dim, di);
+    sync_dropdown(dd_sleep, si);
     bool light = devos_theme_get_type() == DEVOS_THEME_LIGHT;
     if (light != lv_obj_has_state(theme_switch, LV_STATE_CHECKED)) {
         if (light) lv_obj_add_state(theme_switch, LV_STATE_CHECKED);
@@ -1077,6 +1262,7 @@ static void build_light_card(lv_obj_t *pn, int i, int y)
     lv_obj_set_pos(dd_light[i], 44, 36);
     style_dropdown(dd_light[i]);
     lv_obj_add_event_cb(dd_light[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_KEYBOARD, &s_pf[SEC_KEYBOARD], dd_light[i]);
     lv_obj_t *l = mk_label(c, &st_text, "Brightness");
     lv_obj_set_pos(l, 300, 48);
     slider_light[i] = lv_slider_create(c);
@@ -1086,6 +1272,7 @@ static void build_light_card(lv_obj_t *pn, int i, int y)
     lv_obj_set_pos(slider_light[i], 410, 50);
     lv_obj_add_event_cb(slider_light[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(slider_light[i], kbd_light_cb, LV_EVENT_RELEASED, NULL);
+    focus_add(SEC_KEYBOARD, &s_pf[SEC_KEYBOARD], slider_light[i]);
     lbl_light_pct[i] = mk_label(c, &st_title, "20%");
     lv_obj_align(lbl_light_pct[i], LV_ALIGN_TOP_RIGHT, 0, 38);
     cb_light_caps[i] = lv_checkbox_create(c);
@@ -1094,6 +1281,7 @@ static void build_light_card(lv_obj_t *pn, int i, int y)
     lv_obj_add_style(cb_light_caps[i], &st_indicator, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_set_pos(cb_light_caps[i], 0, 94);
     lv_obj_add_event_cb(cb_light_caps[i], kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_KEYBOARD, &s_pf[SEC_KEYBOARD], cb_light_caps[i]);
 }
 
 static void build_keyboard_panel(lv_obj_t *pn)
@@ -1106,6 +1294,7 @@ static void build_keyboard_panel(lv_obj_t *pn)
     lv_obj_set_pos(sw_kbd_custom, 0, 60);
     style_switch(sw_kbd_custom);
     lv_obj_add_event_cb(sw_kbd_custom, kbd_light_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_KEYBOARD, &s_pf[SEC_KEYBOARD], sw_kbd_custom);
     lv_obj_t *l = mk_label(c, &st_text, "Set the lights from devOS");
     lv_obj_set_pos(l, 80, 66);
     lbl_kbd_state = mk_label(c, &st_muted, "");
@@ -1139,7 +1328,7 @@ static void refresh_keyboard(void)
     for (int i = 0; i < 2; i++) {
         const tab5_kbd_light_t *l = &cfg.light[i];
         uint32_t o = (uint32_t)light_opt_index(l);
-        if (lv_dropdown_get_selected(dd_light[i]) != o) lv_dropdown_set_selected(dd_light[i], o);
+        sync_dropdown(dd_light[i], o);
         if (!lv_slider_is_dragged(slider_light[i])) {
             lv_slider_set_value(slider_light[i], l->brightness < 5 ? 5 : l->brightness, LV_ANIM_OFF);
         }
@@ -1193,6 +1382,7 @@ static void build_power_panel(lv_obj_t *pn)
     lv_obj_set_pos(lbl_pwr_state, 0, 30);
     lv_obj_t *b = mk_btn(c, LV_SYMBOL_POWER "  Sleep now", NULL, sleep_btn_cb, NULL, NULL);
     lv_obj_set_pos(b, 0, 66);
+    focus_add(SEC_POWER, &s_pf[SEC_POWER], b);
     lv_obj_t *h = mk_label(c, &st_muted, "Turns the backlight off. Any key or touch wakes it.");
     lv_obj_set_pos(h, 170, 76);
 }
@@ -1280,6 +1470,7 @@ static void build_time_panel(lv_obj_t *pn)
     style_dropdown(dd_tz);
     lv_dropdown_set_selected(dd_tz, (uint32_t)devos_sysmon_timezone_index());
     lv_obj_add_event_cb(dd_tz, tz_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_TIME, &s_pf[SEC_TIME], dd_tz);
 }
 
 static void refresh_time(void)
@@ -1311,9 +1502,7 @@ static void refresh_time(void)
         break;
     }
     set_text(lbl_clock_src, buf);
-    if (lv_dropdown_get_selected(dd_tz) != (uint32_t)devos_sysmon_timezone_index()) {
-        lv_dropdown_set_selected(dd_tz, (uint32_t)devos_sysmon_timezone_index());
-    }
+    sync_dropdown(dd_tz, (uint32_t)devos_sysmon_timezone_index());
 }
 
 /* ======================================================================== */
@@ -1351,8 +1540,10 @@ static void build_system_panel(lv_obj_t *pn)
     btn_ota = mk_btn(c, LV_SYMBOL_REFRESH "  Check for updates", NULL, ota_check_cb, NULL, &lbl_ota_btn);
     lv_obj_set_pos(btn_ota, 0, 58);
     lv_obj_set_width(btn_ota, 210);
+    focus_add(SEC_SYSTEM, &s_pf[SEC_SYSTEM], btn_ota);
     lv_obj_t *b = mk_btn(c, LV_SYMBOL_EDIT "  Feed...", NULL, ota_feed_cb, NULL, NULL);
     lv_obj_set_pos(b, 222, 58);
+    focus_add(SEC_SYSTEM, &s_pf[SEC_SYSTEM], b);
     lbl_ota = mk_label(c, &st_muted, "");
     lv_obj_set_pos(lbl_ota, 0, 104);
     lv_obj_set_width(lbl_ota, PANEL_W - 40);
@@ -1488,6 +1679,11 @@ static void settings_init(void)
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_COLUMN);
     lv_obj_remove_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
 
+    devos_focus_init(&s_nav_focus);
+    devos_focus_init(&s_wifi_add_focus);
+    devos_focus_init(&s_mf);
+    for (int i = 0; i < SEC_COUNT; i++) devos_focus_init(&s_pf[i]);
+
     lv_obj_t *title = mk_label(nav, &st_title, "Settings");
     lv_obj_set_style_pad_left(title, 8, 0);
     lv_obj_set_style_pad_bottom(title, 10, 0);
@@ -1500,6 +1696,7 @@ static void settings_init(void)
         lv_label_set_text(l, s_sec_labels[i]);
         lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_add_event_cb(b, nav_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        devos_focus_add(&s_nav_focus, b);
         nav_btns[i] = b;
     }
 
@@ -1519,6 +1716,10 @@ static void settings_init(void)
     build_power_panel(panels[SEC_POWER]);
     build_time_panel(panels[SEC_TIME]);
     build_system_panel(panels[SEC_SYSTEM]);
+    for (int i = 0; i < SEC_COUNT; i++) {
+        lbl_hint[i] = mk_label(panels[i], &st_muted, "");
+        lv_obj_align(lbl_hint[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    }
     build_modal();
 
     devos_theme_add_listener(apply_theme, NULL);
@@ -1529,34 +1730,270 @@ static void settings_init(void)
 static void settings_show(void)
 {
     select_section(s_section);
+    devos_focus_set(&s_nav_focus, nav_btns[s_section]);   /* keys start in the section list */
 }
 
 static void settings_hide(void)
 {
+    if (!screen) return;
     close_modal();
+    /* don't leave a dropdown list open on the top layer */
+    for (int i = 0; i < SEC_COUNT; i++) devos_focus_clear(&s_pf[i]);
+    lv_obj_t *dds[] = { dd_dim, dd_sleep, dd_light[0], dd_light[1], dd_tz };
+    for (size_t i = 0; i < sizeof(dds) / sizeof(dds[0]); i++) lv_dropdown_close(dds[i]);
 }
 
 /* ---- keyboard ---- */
+static void update_hint(void)
+{
+    if (!lbl_hint[s_section]) return;
+    const char *h;
+    if (!s_in_panel) {
+        h = s_section == SEC_WIFI ? "Up / Down  section   Tab / Enter  networks   S  scan   A  add network   Esc  home"
+                                  : "Up / Down  section   Tab / Enter  controls   Esc  home";
+    } else if (s_section != SEC_WIFI && s_pf[s_section].dd_open) {
+        h = "Up / Down  choose   Enter  confirm   Esc  cancel";
+    } else {
+        switch (s_section) {
+        case SEC_WIFI:
+            if (s_wifi_zone == WF_TOP) {
+                h = "Left / Right  move   Enter  press   Tab  networks   S  scan   A  add network   Esc  sections";
+            } else if (s_wifi_zone == WF_AVAIL) {
+                h = "Up / Down  select   Enter  connect   Tab / Right  saved   S  scan   A  add network   "
+                    "X  disconnect   Esc  sections";
+            } else if (s_sel_saved >= s_saved_count) {
+                h = "Up / Down  select   Enter  add a network   Tab  buttons   Left  available   Esc  sections";
+            } else {
+                h = "Up / Down  select   Enter  connect   D / Del  forget   Tab  buttons   Left  available   "
+                    "Esc  sections";
+            }
+            break;
+        case SEC_DISPLAY:
+        case SEC_KEYBOARD:
+            h = "Up / Down  move   Left / Right  change   Space  toggle   Enter  open list   Esc  sections";
+            break;
+        case SEC_POWER:
+            h = "Enter  sleep now   Esc  sections";
+            break;
+        case SEC_TIME:
+            h = "Left / Right  change   Enter  open the list   Esc  sections";
+            break;
+        default:
+            h = "Up / Down / Left / Right  move   Enter  press   Esc  sections";
+            break;
+        }
+    }
+    set_text(lbl_hint[s_section], h);
+}
+
+/* ---- Wi-Fi regions ---- */
+static bool wifi_zone_ok(int z)
+{
+    if (z == WF_TOP) return obj_usable(btn_wifi_disconnect) || obj_usable(btn_wifi_scan);
+    if (z == WF_AVAIL) return s_ap_count > 0;
+    return true;    /* the saved list always ends in "Add network..." */
+}
+
+static void wifi_set_zone(int z)
+{
+    s_wifi_zone = z;
+    devos_focus_clear(&s_pf[SEC_WIFI]);
+    devos_focus_clear(&s_wifi_add_focus);
+    if (z == WF_TOP) devos_focus_first(&s_pf[SEC_WIFI]);
+    wifi_highlight();
+}
+
+/* Tab / Aa+Tab: the next / previous region that has something in it. */
+static void wifi_step_zone(int dir)
+{
+    int z = s_wifi_zone;
+    for (int k = 0; k < WF_COUNT; k++) {
+        z = (z + dir + WF_COUNT) % WF_COUNT;
+        if (wifi_zone_ok(z)) break;
+    }
+    wifi_set_zone(z);
+}
+
+static int list_step(uint32_t key)
+{
+    if (key == LV_KEY_DOWN) return 1;
+    if (key == LV_KEY_UP) return -1;
+    if (key == DEVOS_KEY_PGDN) return 8;
+    if (key == DEVOS_KEY_PGUP) return -8;
+    return 0;
+}
+
+static void leave_panel(void);
+
+static bool wifi_handle_key(uint32_t key, uint8_t mods)
+{
+    devos_focus_t *f = &s_pf[SEC_WIFI];
+    bool enter = key == '\r' || key == '\n';
+    int step = list_step(key);
+
+    if (key == '\t') {
+        wifi_step_zone((mods & DEVOS_MOD_SHIFT) ? -1 : 1);
+        return true;
+    }
+    if (key == LV_KEY_ESC) return false;              /* back to the section list */
+    /* The region emptied (rescan) or its button went away: show where the
+     * focus is now before acting on anything. */
+    focus_drop_unusable(f);
+    if (!wifi_zone_ok(s_wifi_zone)) {
+        wifi_step_zone(1);
+        return true;
+    }
+    if (s_wifi_zone == WF_TOP && !devos_focus_get(f)) {
+        devos_focus_first(f);
+        return true;
+    }
+
+    switch (s_wifi_zone) {
+    case WF_TOP:
+        if (key == LV_KEY_UP || key == LV_KEY_DOWN || key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
+            devos_focus_move(f, (key == LV_KEY_DOWN || key == LV_KEY_RIGHT) ? 1 : -1);
+            return true;
+        }
+        return devos_focus_key(f, key, mods);          /* Enter / Space press */
+    case WF_AVAIL:
+        if (step) {
+            s_sel_row = LV_CLAMP(0, s_sel_row + step, s_ap_count - 1);
+            wifi_highlight();
+            return true;
+        }
+        if (enter) {
+            if (s_sel_row < s_ap_count) connect_or_prompt(&s_aps[s_sel_row]);
+            return true;
+        }
+        if (key == LV_KEY_RIGHT) {
+            wifi_set_zone(WF_SAVED);
+            return true;
+        }
+        if (key == LV_KEY_LEFT) {
+            leave_panel();
+            return true;
+        }
+        return false;
+    default:    /* WF_SAVED: rows 0..n-1, then n = "Add network..." */
+        if (step) {
+            s_sel_saved = LV_CLAMP(0, s_sel_saved + step, s_saved_count);
+            wifi_highlight();
+            return true;
+        }
+        if (enter) {
+            if (s_sel_saved >= s_saved_count) open_modal("", true);
+            else wifi_connect_saved(s_sel_saved);
+            return true;
+        }
+        if (key == 'd' || key == 'D' || key == LV_KEY_DEL) {
+            wifi_forget(s_sel_saved);
+            return true;
+        }
+        if (key == LV_KEY_LEFT) {
+            if (wifi_zone_ok(WF_AVAIL)) wifi_set_zone(WF_AVAIL);
+            else leave_panel();
+            return true;
+        }
+        return false;
+    }
+}
+
+/* Wi-Fi letter shortcuts, from the section list or the panel. */
+static bool wifi_shortcut_key(uint32_t key)
+{
+    if (s_section != SEC_WIFI) return false;
+    if (key == 's' || key == 'S') {
+        devos_net_wifi_scan_start();
+        return true;
+    }
+    if (key == 'a' || key == 'A') {
+        open_modal("", true);
+        return true;
+    }
+    if ((key == 'x' || key == 'X') && obj_usable(btn_wifi_disconnect)) {
+        devos_net_wifi_disconnect();
+        return true;
+    }
+    return false;
+}
+
+/* ---- section list <-> panel ---- */
+static void enter_panel(int dir)
+{
+    s_in_panel = true;
+    devos_focus_clear(&s_nav_focus);
+    if (s_section == SEC_WIFI) {
+        s_wifi_zone = WF_AVAIL;                       /* the network list first */
+        if (dir < 0 || !wifi_zone_ok(WF_AVAIL)) wifi_step_zone(dir < 0 ? -1 : 1);
+        else wifi_set_zone(WF_AVAIL);
+    } else {
+        devos_focus_t *f = &s_pf[s_section];
+        devos_focus_clear(f);
+        devos_focus_move(f, dir < 0 ? -1 : 1);        /* first (or last) control */
+    }
+    update_hint();
+}
+
+static void leave_panel(void)
+{
+    s_in_panel = false;
+    devos_focus_clear(&s_pf[s_section]);
+    wifi_highlight();
+    devos_focus_set(&s_nav_focus, nav_btns[s_section]);
+    update_hint();
+}
+
+static bool nav_handle_key(uint32_t key, uint8_t mods)
+{
+    if (key == LV_KEY_UP || key == LV_KEY_DOWN) {
+        select_section(s_section + (key == LV_KEY_DOWN ? 1 : -1));
+        devos_focus_set(&s_nav_focus, nav_btns[s_section]);
+        return true;
+    }
+    if (key == '\t' || key == LV_KEY_RIGHT || key == '\r' || key == '\n') {
+        enter_panel((key == '\t' && (mods & DEVOS_MOD_SHIFT)) ? -1 : 1);
+        return true;
+    }
+    return false;   /* Esc falls through to the core (back to Home) */
+}
+
+static bool panel_handle_key(uint32_t key, uint8_t mods)
+{
+    if (s_section == SEC_WIFI) {
+        if (wifi_handle_key(key, mods)) return true;
+    } else {
+        devos_focus_t *f = &s_pf[s_section];
+        focus_drop_unusable(f);
+        focus_sync_dropdown(f);
+        if (devos_focus_key(f, key, mods) || focus_button_row_key(f, key)) return true;
+    }
+    if (key == LV_KEY_ESC) {
+        leave_panel();
+        return true;
+    }
+    return false;
+}
+
 static bool modal_handle_key(uint32_t key, uint8_t mods)
 {
     if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-    if (key == LV_KEY_ESC) { close_modal(); return true; }
-    if (key == '\r' || key == '\n') {
-        if (s_modal_hidden_net && s_focused_ta == ta_ssid) focus_ta(ta_pass);
+    bool enter = key == '\r' || key == '\n';
+    lv_obj_t *o = devos_focus_get(&s_mf);
+    if (enter && o == cb_show) {           /* Enter confirms; Space ticks the box */
+        submit_modal();
+        return true;
+    }
+    if (devos_focus_key(&s_mf, key, mods)) {   /* typing, Tab, Up/Down, buttons, checkbox */
+        if (modal_open()) modal_sync_kb();
+        return true;
+    }
+    if (key == LV_KEY_ESC) {
+        close_modal();
+    } else if (enter) {                    /* Enter in a text field */
+        if (s_modal_hidden_net && o == ta_ssid) modal_focus(ta_pass);
         else submit_modal();
-        return true;
-    }
-    if (key == '\t' && s_modal_hidden_net) {
-        focus_ta(s_focused_ta == ta_ssid ? ta_pass : ta_ssid);
-        return true;
-    }
-    if (!s_focused_ta) return true;
-    if (key == '\b') { lv_textarea_delete_char(s_focused_ta); return true; }
-    if (key == LV_KEY_DEL) { lv_textarea_delete_char_forward(s_focused_ta); return true; }
-    if (key == LV_KEY_LEFT) { lv_textarea_cursor_left(s_focused_ta); return true; }
-    if (key == LV_KEY_RIGHT) { lv_textarea_cursor_right(s_focused_ta); return true; }
-    if (key >= 32 && key <= 126 && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN))) {
-        lv_textarea_add_char(s_focused_ta, (char)key);
+    } else {
+        focus_button_row_key(&s_mf, key);  /* Left / Right between Cancel and OK */
     }
     return true;   /* the dialog owns the keyboard */
 }
@@ -1564,43 +2001,14 @@ static bool modal_handle_key(uint32_t key, uint8_t mods)
 static bool settings_handle_key(uint32_t key, uint8_t mods)
 {
     if (modal_open()) return modal_handle_key(key, mods);
-    if (mods & DEVOS_MOD_FN) return false;   /* global Sym shortcuts */
+    if (mods & (DEVOS_MOD_FN | DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) return false;   /* global shortcuts */
 
-    if (s_focus_list && s_section == SEC_WIFI) {
-        if (key == LV_KEY_UP) {
-            if (s_sel_row > 0) s_sel_row--;
-            highlight_row();
-            return true;
-        }
-        if (key == LV_KEY_DOWN) {
-            if (s_sel_row < s_ap_count - 1) s_sel_row++;
-            highlight_row();
-            return true;
-        }
-        if (key == '\r' || key == '\n') {
-            if (s_sel_row < s_ap_count) connect_or_prompt(&s_aps[s_sel_row]);
-            return true;
-        }
-        if (key == LV_KEY_LEFT || key == LV_KEY_ESC) {
-            s_focus_list = false;
-            highlight_row();
-            return true;
-        }
-    } else {
-        if (key == LV_KEY_UP) { select_section(s_section - 1); return true; }
-        if (key == LV_KEY_DOWN) { select_section(s_section + 1); return true; }
-        if (s_section == SEC_WIFI &&
-            (key == '\t' || key == LV_KEY_RIGHT || key == '\r' || key == '\n') && s_ap_count > 0) {
-            s_focus_list = true;
-            highlight_row();
-            return true;
-        }
+    bool used = wifi_shortcut_key(key) || (s_in_panel ? panel_handle_key(key, mods) : nav_handle_key(key, mods));
+    if (used) {
+        refresh_visible();     /* show the effect now (e.g. light controls enabled) */
+        update_hint();
     }
-    if (s_section == SEC_WIFI && (key == 's' || key == 'S')) {
-        devos_net_wifi_scan_start();
-        return true;
-    }
-    return false;   /* Esc falls through to the core (back to Home) */
+    return used;
 }
 
 /* ---- launcher tile ---- */

@@ -196,7 +196,7 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   One-click / one-key instant connect.
         *   Supports importing standard SSH config from `/sdcard/.ssh/config`.
     *   **Side Panel Controls:**
-        *   Toggle shortcut: **`Sym + L`**, the same key that hides the editor's file list.
+        *   Keyboard: **`Sym + L`** opens the panel and moves focus into it (a second press hides it); in the panel Up/Down select, Tab jumps between sections, Enter opens, `N` new, `E` edit, `D` disconnect / delete, `K` device key, `Esc` back to the shell. With no session, Tab reaches the panel too.
         *   Touch toggle: Left margin chevron handle and top header `[Sessions]` icon.
 *   **Dynamic PTY Resizing on Panel Toggle:**
     *   *Side Panel Collapsed (Fullscreen Terminal):* Canvas occupies full 1280px width, rendering **160 columns × 45 lines** (with 8×16 font).
@@ -318,9 +318,38 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
 
 ## 4. Hardware Integration: Keyboard, Display, & Power
 
+### 4.0 Interaction Model: Keyboard First, Touch Second (non-negotiable)
+
+The A164 keyboard is the primary input; the touch screen is secondary. **Every app, panel, dialog
+and control must be fully usable from the keyboard alone**, and everything must also work by touch.
+Nothing may be touch-only. This is AGENTS.md invariant 9.
+
+| Keys | Meaning everywhere |
+| :--- | :--- |
+| Arrows | Move the selection / focus (Up / Down in lists and forms, all four in grids) |
+| `Tab` / `Aa + Tab` | Next / previous region or field |
+| `Enter` | Activate: open, connect, confirm, press the focused button |
+| `Space` | Toggle a checkbox or switch; pause a live view |
+| `Left` / `Right` | Change the focused value (slider, dropdown, switch) |
+| `Esc` | Back out one level: dialog, then field / panel, then the Home Screen |
+| Letters | Frequent actions (shown on screen) |
+| `Sym + <key>` | System shortcuts (§4.1); apps may use `Sym + L` for their side panel |
+
+*   **Visible focus** at all times: the accent focus ring (`devos_focus`), a selection border, or a
+    text cursor. The ring appears after a key press and hides again when the user taps.
+*   **Discoverable keys:** each screen shows its shortcuts in a hint line or footer.
+*   **Dialogs** focus their first field / default button when they open; `Enter` confirms, `Esc`
+    cancels, and focus returns to where it was.
+*   **Text entry** uses the hardware keyboard; on-screen keyboards only appear when no keyboard is
+    attached.
+*   **Shared helper:** `components/devos_ui/devos_focus.h` gives forms, dialogs and button rows the
+    standard behaviour (focus order, focus ring, sliders / dropdowns / switches / checkboxes / text
+    fields driven by keys). Custom lists handle their keys in `handle_key`.
+*   **Verification:** every UI change is walked through keyboard-only in the simulator.
+
 ### 4.1 Tab5 Keyboard Driver (A164)
 
-The Tab5 physical keyboard is a critical input surface for `devOS`.
+The Tab5 physical keyboard is the primary input surface for `devOS` (see §4.0).
 
 *   **Hardware Interconnect:**
     *   Controller: STM32F030C8T6.

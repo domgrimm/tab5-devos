@@ -27,6 +27,7 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define WG_DIR      TAB5_SD_MOUNT_POINT "/wireguard"
 #define MAX_FILES   10
 #define ROW_H       52
+#define KEYS_H      24                  /* key hints footer */
 
 typedef struct {
     char path[160];
@@ -42,6 +43,7 @@ static lv_obj_t *card_det, *lbl_det_hdr, *lbl_det;
 static lv_obj_t *card_imp, *lbl_imp_hdr, *file_rows[MAX_FILES], *file_lbl[MAX_FILES], *lbl_imp_hint, *btn_rescan,
                 *lbl_rescan;
 static lv_obj_t *overlay, *modal, *lbl_modal, *btn_m_ok, *lbl_m_ok, *btn_m_cancel, *lbl_m_cancel;
+static lv_obj_t *lbl_keys;
 
 static conf_file_t s_files[MAX_FILES];
 static int s_file_n;
@@ -445,8 +447,17 @@ static void refresh(bool force)
         lv_obj_set_style_border_color(file_rows[i], sel ? p->accent_primary : p->surface_border, 0);
         lv_obj_set_style_border_width(file_rows[i], sel ? 2 : 1, 0);
     }
-    set_text(lbl_imp_hint, s_file_n ? "Tap a file (or Tab, then Enter) to import it."
+    set_text(lbl_imp_hint, s_file_n ? "Tab to the files, then Enter (or tap one) to import it."
                                     : "No .conf files found. Copy wg-quick configs to /wireguard on the SD card.");
+
+    /* what the keys do right now */
+    const char *keys;
+    if (s_modal == M_DELETE_FILE) keys = "Enter or Y  delete the file        Esc or N  keep it";
+    else if (s_modal == M_DELETE_TUNNEL) keys = "Enter or Y  delete the tunnel        Esc or N  cancel";
+    else if (s_focus_files) keys = "Up / Down  pick a file    Enter  import    Tab  tunnels    R  rescan    Esc  home";
+    else keys = "Up / Down  pick a tunnel    Enter  connect / disconnect    D  delete    Tab  SD files    "
+                "R  rescan    Esc  home";
+    set_text(lbl_keys, keys);
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -484,6 +495,7 @@ static void apply_theme(const devos_palette_t *p, void *ud)
     lv_obj_set_style_text_color(lbl_det, p->text_primary, 0);
     lv_obj_set_style_text_color(lbl_imp_hint, p->text_secondary, 0);
     lv_obj_set_style_text_color(lbl_tun_empty, p->text_secondary, 0);
+    lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
     style_btn(btn_conn, lbl_conn, p, true);
     style_btn(btn_del, lbl_del, p, false);
     style_btn(btn_rescan, lbl_rescan, p, false);
@@ -584,7 +596,7 @@ static void wg_init(void)
     lv_obj_align(btn_del, LV_ALIGN_TOP_RIGHT, 0, 66);
 
     /* tunnels */
-    card_tun = mk_card(16, 174, 560, DEVOS_CONTENT_HEIGHT - 186, "TUNNELS", &lbl_tun_hdr);
+    card_tun = mk_card(16, 174, 560, DEVOS_CONTENT_HEIGHT - 186 - KEYS_H, "TUNNELS", &lbl_tun_hdr);
     for (int i = 0; i < DEVOS_WG_MAX_TUNNELS; i++) {
         lv_obj_t *r = lv_obj_create(card_tun);
         lv_obj_set_size(r, lv_pct(100), ROW_H);
@@ -616,7 +628,7 @@ static void wg_init(void)
     lv_label_set_long_mode(lbl_det, LV_LABEL_LONG_WRAP);
 
     /* SD import */
-    card_imp = mk_card(592, 448, DEVOS_SCREEN_WIDTH - 608, DEVOS_CONTENT_HEIGHT - 460, "IMPORT FROM SD CARD", &lbl_imp_hdr);
+    card_imp = mk_card(592, 448, DEVOS_SCREEN_WIDTH - 608, DEVOS_CONTENT_HEIGHT - 460 - KEYS_H, "IMPORT FROM SD CARD", &lbl_imp_hdr);
     lv_obj_add_flag(card_imp, LV_OBJ_FLAG_SCROLLABLE);
     btn_rescan = mk_btn(card_imp, LV_SYMBOL_REFRESH "  Rescan", 110, rescan_cb, &lbl_rescan);
     lv_obj_set_height(btn_rescan, 28);
@@ -637,6 +649,9 @@ static void wg_init(void)
         lv_obj_align(file_lbl[i], LV_ALIGN_LEFT_MID, 0, 0);
         file_rows[i] = r;
     }
+
+    lbl_keys = mk_label(screen, &lv_font_montserrat_12, "");
+    lv_obj_set_pos(lbl_keys, 20, DEVOS_CONTENT_HEIGHT - KEYS_H + 2);
 
     /* confirm dialog */
     overlay = lv_obj_create(screen);
@@ -660,6 +675,9 @@ static void wg_init(void)
     lv_obj_align(btn_m_ok, LV_ALIGN_BOTTOM_RIGHT, -166, 0);
     btn_m_cancel = mk_btn(modal, "Cancel", 150, m_cancel_cb, &lbl_m_cancel);
     lv_obj_align(btn_m_cancel, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_t *mk = mk_label(modal, &lv_font_montserrat_12, "Enter or Y: yes\nEsc or N: no");
+    lv_obj_align(mk, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_text_color(mk, p->text_secondary, 0);
 
     scan_files();
     apply_theme(p, NULL);

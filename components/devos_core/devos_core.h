@@ -67,6 +67,8 @@ typedef struct {
     char     tailscale_ip[20];
     uint8_t  tailscale_peers_online;
     char     tailscale_derp[20];
+    bool     wireguard_online;      /* a WireGuard tunnel is up (handshake done) */
+    char     wireguard_ip[20];      /* our tunnel address, no prefix */
 
     /* Storage & Memory */
     bool     sd_mounted;
