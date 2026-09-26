@@ -30,12 +30,12 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
    * Must support both **Dark Cyberdeck** and **High-Contrast Light** palettes. Colors must update instantly when `devos_theme_toggle()` is called (`Sym + T`).
 
 6. **Automatic MicroSD Scaffolding:**
-   * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/.devos/`, `/.devos/logs/`) and missing starter templates (`notes/welcome.md`, `.ssh/bookmarks.json`). Zero manual file creation on PC/Mac.
+   * When a MicroSD card is mounted, `devos_storage_bootstrap()` must automatically create all missing folders (`/.ssh/`, `/notes/`, `/wireguard/`, `/.devos/`, `/.devos/logs/`) and missing starter templates (`notes/welcome.md`, `.ssh/bookmarks.json`). Zero manual file creation on PC/Mac.
 
 7. **Shared Engines, Never Forked Renderers or Parsers:**
    * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview and any future rich-text view. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
    * One JSON reader (`components/devos_json/`), used today by `devos_ota`. Same rule: extend, don't duplicate.
-   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once.
+   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel.
 
 8. **Modular Self-Registering Apps:**
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
@@ -73,14 +73,17 @@ tab5-devos/
 │   ├── devos_ui/                  # LVGL v9 theme engine, widgets, top bar, code viewer (devos_codeview)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
-│   ├── devos_json/                # Shared minimal JSON reader (used by devos_ota)
+│   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
+│   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
+│   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
 │   ├── devos_ota/                 # OTA manifest check + target flash path
 │   ├── devos_sysmon/              # 1 Hz system telemetry (battery, Wi-Fi, SD, heap, CPU, clock)
 │   ├── devos_tailnet/             # Tailscale client on top of MicroLink
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator (no LVGL)
-│   ├── microlink/                 # Tailscale / WireGuard client component
+│   ├── microlink/                 # Tailscale client component
+│   ├── wireguard_lwip/            # WireGuard for lwIP (MicroLink and devos_wireguard)
 │   └── libssh2_port/              # libssh2 SSH client component & PTY manager
 ├── main/
 │   ├── main.c                     # Hardware bring-up, task creation, launch
@@ -89,6 +92,8 @@ tab5-devos/
 │   │   ├── app_terminal/          # Multi-session SSH client (collapsible panel)
 │   │   ├── app_editor/            # SD card file browser, Markdown & text editor
 │   │   ├── app_tailscale/         # Tailnet status & peer list
+│   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
+│   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
@@ -122,7 +127,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + L`, `Sym + 1..4`).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + L`, `Sym + 1..6`).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target

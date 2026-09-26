@@ -14,10 +14,15 @@
   |   Memory: 28.4 MB Free PSRAM             | CPU: Core 0: 4% | Core 1: 18%    |
   |                                                                             |
   |  +----------------+  +----------------+  +----------------+  +------------+ |
-  |  | [1] Terminal   |  | [2] Editor     |  | [3] Tailscale  |  | [4] Setti..| |
-  |  | SSH + VT100    |  | SD Card Files  |  | Mesh Net       |  | System     | |
-  |  | * 1 Session    |  | * todo.md      |  | * 6 Peers      |  | * Wi-Fi    | |
+  |  | [1] Terminal   |  | [2] Editor     |  | [3] Tailscale  |  | [4] WireGu.| |
+  |  | SSH + VT100    |  | SD Card Files  |  | Mesh Net       |  | VPN tunnel | |
+  |  | * 1 Session    |  | * todo.md      |  | * 6 Peers      |  | * Off      | |
   |  +----------------+  +----------------+  +----------------+  +------------+ |
+  |  +----------------+  +----------------+                                     |
+  |  | [5] MQTT       |  | [6] Settings   |                                     |
+  |  | Broker traffic |  | System         |                                     |
+  |  | * 4.2 msg/s    |  | * Wi-Fi        |                                     |
+  |  +----------------+  +----------------+                                     |
   |                                                                             |
   |               ◄ [Page 1 / 1]  ●                    [⇋ Arrange]             |
   +-----------------------------------------------------------------------------+
@@ -58,8 +63,8 @@ graph TD
         LVGL["LVGL v9 GUI Engine (PPA Accelerated)"]
         UI_TopBar["Top Status Bar & Notifications"]
         UI_Launcher["Home Screen / App Launcher Dashboard"]
-        UI_WM["Window & App Switcher (Sym+1..4 / Alt+Tab)"]
-        UI_Apps["devOS Applications (Terminal, Editor, Tailscale, Settings)"]
+        UI_WM["Window & App Switcher (Sym+1..6 / Alt+Tab)"]
+        UI_Apps["devOS Applications (Terminal, Editor, Tailscale, WireGuard, MQTT, Settings)"]
         KbdDrv["Tab5 I2C Keyboard Driver (HID/Char)"]
         TouchDrv["GT911 Touch Driver"]
         SD_FS["MicroSD Storage (FATFS / VFS)"]
@@ -78,7 +83,7 @@ graph TD
         ESPHosted["ESP-Hosted (SDIO link to ESP32-C6)"]
         WiFi["Wi-Fi 6 Station Manager"]
         LwIP["lwIP TCP/IP Stack"]
-        MicroLink["MicroLink (Tailscale / WireGuard Tunnel)"]
+        MicroLink["MicroLink (Tailscale) / devos_wireguard (plain WireGuard tunnel)"]
         mbedTLS["mbedTLS Hardware Accelerated Crypto"]
         NetRouter["devOS Virtual Socket & Tunnel Router"]
 
@@ -91,9 +96,11 @@ graph TD
 
     subgraph BackgroundDaemons ["Background Services (FreeRTOS Tasks)"]
         SSHClient["SSH Engine (libssh2 / PTY)"]
+        MQTTClient["MQTT 3.1.1 client (devos_mqtt)"]
         PowerDaemon["Power & Battery Telemetry (INA226)"]
 
         NetRouter --> SSHClient
+        NetRouter --> MQTTClient
     end
 
     BackgroundDaemons -.->|"Thread-safe FreeRTOS Queues"| UI_Apps
@@ -270,11 +277,42 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
         *   *Dark Mode:* Deep black background (`#0C0E14`) with bright, saturated ANSI colors.
         *   *Light Mode:* High-contrast light paper background (`#F8FAFC`) with dark, high-contrast ANSI colors (preventing washed-out yellow/cyan text on light backgrounds).
     *   **Markdown Editor:** Editor canvas switches from Dark Editor (monokai/charcoal) to Clean Paper (black text on crisp white with light code block backgrounds).
-    *   **Keyboard lights:** the A164's two status LEDs can follow the theme accent (Settings > Display > Keyboard lights), with the left one amber while caps lock is on.
+    *   **Keyboard lights:** the A164's two status LEDs are set in Settings > Keyboard: each light can follow the theme accent, show battery level, or take a fixed colour, with its own brightness and an optional caps-lock indicator.
 *   **Toggle Controls:**
     *   **Global Hotkey:** **`Sym + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
     *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Sym + T`.
     *   **Boot Default:** Dark Cyberdeck. (NVS persistence of the theme preference is not yet implemented.)
+
+---
+
+### 3.8 WireGuard Client (`app_wireguard`, `devos_wireguard`)
+
+*   **Configs:** standard wg-quick `.conf` files (`[Interface]` PrivateKey / Address / DNS / MTU /
+    ListenPort, `[Peer]` PublicKey / PresharedKey / Endpoint / AllowedIPs / PersistentKeepalive),
+    IPv4 only (IPv6 entries are skipped). Imported from `/wireguard` or the card's root; the app
+    offers to delete the file afterwards because it holds the private key.
+*   **Storage:** up to 4 tunnels in NVS (`wireguard` namespace), so the SD file isn't needed.
+*   **Tunnel:** vendored wireguard-lwip in normal mode (own UDP socket bound to the Wi-Fi netif,
+    everything on the lwIP thread; patches W1-W3 in `components/microlink/DEVOS_PATCHES.md`).
+*   **Routing:** the Address subnet routes to the tunnel netif; for other AllowedIPs (including
+    `0.0.0.0/0`) `devos_net` binds app sockets to the tunnel address via
+    `devos_net_set_route_hook()`, so SSH / MQTT connections go through it. Full tunnels also use
+    the config's DNS server while up.
+*   **Limits:** one tunnel at a time and never together with Tailscale (UDP 51820, routes and
+    internal RAM); QR import waits on a camera driver (see Reality check).
+
+### 3.9 MQTT Monitor & Publisher (`app_mqtt`, `devos_mqtt`)
+
+*   **Engine:** MQTT 3.1.1 over plain TCP (no TLS) through the `devos_net` socket helpers, one
+    worker task on core 0: connect, subscribe (up to 4 filters, default `#`, QoS 2 so messages keep
+    their own QoS), keepalive, publish queue, reconnect with backoff. Messages go into a 500-slot
+    ring in PSRAM (payloads kept up to 4 KB) plus a sorted topic table.
+*   **UI:** topic list with counts (pick one to filter), a live stream that follows new messages
+    until you scroll up (Pause, Clear), and the selected message pretty-printed with JSON
+    highlighting (`devos_json_pretty` + `devos_codeview`), plain text or a hex dump.
+*   **Publishing:** topic / payload / QoS / retain, templates in `/mqtt/templates.json` with
+    `{{ts}}` `{{time}}` `{{battery}}` `{{uptime}}` placeholders; Alt+1..9 sends a template.
+*   **Settings:** broker in `/.devos/mqtt.json`, password in NVS.
 
 ---
 
@@ -298,7 +336,7 @@ The Tab5 physical keyboard is a critical input surface for `devOS`.
 *   **Global Hotkeys** (the A164 has **no Fn key**; its modifiers are Sym / Aa / Ctrl / Alt. devOS runs the keyboard in Normal/matrix mode so Sym can be the system modifier. Sym + punctuation still types the Sym-layer symbol, so the side panel toggle is `Sym + L` rather than `[`):
     *   `1` .. `8` (from Home Screen): Launch the tile in that slot on the current page.
     *   `Sym + H`: Global Home Screen return from any application.
-    *   `Sym + 1` .. `Sym + 4`: Switch to Terminal, Editor, Tailscale or Settings from anywhere.
+    *   `Sym + 1` .. `Sym + 6`: Switch to Terminal, Editor, Tailscale, WireGuard, MQTT or Settings from anywhere.
     *   `Sym + T`: **Toggle Dark / Light Theme** system-wide.
     *   `Sym + -` / `Sym + +`: Screen brightness.
     *   `Sym + L`: Toggle the left panel (editor file list, terminal connections).
@@ -346,7 +384,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
     *   **Direct Developer URLs:** `http://10.2.132.54:6080/vnc.html` (direct LAN) or `http://100.77.11.92:6080/vnc.html` (Tailscale).
 *   **Emulated Inputs:**
     *   *Mouse clicks & drags* map directly to GT911 capacitive touch events (tap, swipe, scroll).
-    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + L` for side panels, `Sym + 1`..`4` and `1`..`8` for apps).
+    *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + L` for side panels, `Sym + 1`..`6` and `1`..`8` for apps).
 *   **One-Command Runner Script (`tools/sim/run_web_sim.sh`):**
     *   Automatically handles building the desktop simulator target with CMake/Ninja, launching or restarting the Xvfb/noVNC background service, and binding to port `6080`.
 
@@ -373,7 +411,9 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
 >    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
-> 6. Missing: command palette, audio, camera, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+> 6. Missing: command palette, audio, camera (needed for WireGuard QR import; the camera stack needs
+>    the new `i2c_master` driver, so the whole BSP I2C layer must move off the legacy driver first),
+>    IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
@@ -389,7 +429,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Build Top Status Bar (Wi-Fi RSSI, Local IP with conditional Tailscale mesh icon, Battery percentage via INA226, RTC Clock; theme control lives in Settings + `Sym + T`).
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..8] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
-- [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..4`, `Sym + H`).
+- [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..6`, `Sym + H`).
 - [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
@@ -445,7 +485,9 @@ tab5-devos/
 │   ├── devos_ui/                  # LVGL v9 themes, widgets, top bar, code viewer (devos_codeview)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP routing, virtual transport
 │   ├── devos_storage/             # MicroSD mount, auto-scaffolding bootstrap
-│   ├── devos_json/                # Shared minimal JSON reader (used by devos_ota)
+│   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
+│   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
+│   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
 │   ├── devos_ota/                 # OTA manifest check + target flash path
@@ -454,7 +496,8 @@ tab5-devos/
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator
 │   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
-│   ├── microlink/                 # Tailscale / WireGuard client
+│   ├── microlink/                 # Tailscale client
+│   ├── wireguard_lwip/            # WireGuard for lwIP (used by MicroLink and devos_wireguard)
 │   └── libssh2_port/              # libssh2 SSH client component
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
@@ -463,6 +506,8 @@ tab5-devos/
 │   │   ├── app_terminal/          # SSH client & ANSI terminal emulator
 │   │   ├── app_editor/            # SD card file browser, Markdown & text editor
 │   │   ├── app_tailscale/         # Tailnet status & peer manager UI
+│   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
+│   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

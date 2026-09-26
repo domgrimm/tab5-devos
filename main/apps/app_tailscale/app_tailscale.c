@@ -7,6 +7,7 @@
 #include "app_tailscale.h"
 #include "devos_config.h"
 #include "devos_tailnet.h"
+#include "devos_wireguard.h"
 #include "devos_theme.h"
 #include "tab5_keyboard.h"
 #include <stdio.h>
@@ -186,12 +187,22 @@ static bool state_is_active(devos_ts_state_t st)
 
 static void open_key_dialog(void);
 
+/* Tailscale and a WireGuard tunnel can't run together (UDP 51820, routes). */
+static bool s_wg_blocked;
+static bool wg_blocks(void)
+{
+    s_wg_blocked = devos_wg_active();
+    return s_wg_blocked;
+}
+
 static void toggle_conn(void)
 {
     devos_ts_info_t info;
     devos_tailnet_get_info(&info);
     if (state_is_active(info.state)) {
         devos_tailnet_disconnect();
+    } else if (wg_blocks()) {
+        /* message shown by refresh_ui */
     } else if (!info.registered && !info.has_auth_key) {
         open_key_dialog();
     } else {
@@ -279,7 +290,7 @@ static void key_submit(void)
     if (!k || strncmp(k, "tskey-", 6) != 0) return;     /* keep the dialog open */
     devos_tailnet_set_auth_key(k);
     close_dialogs();
-    devos_tailnet_connect();
+    if (!wg_blocks()) devos_tailnet_connect();
     refresh_ui();
 }
 
@@ -494,7 +505,12 @@ static void refresh_ui(void)
     set_text(lbl_line2, buf);
 
     /* Message: error / login URL */
-    if (info.last_error[0]) {
+    if (s_wg_blocked && !devos_wg_active()) s_wg_blocked = false;
+    if (s_wg_blocked) {
+        set_text(lbl_msg, "A WireGuard tunnel is running. Disconnect it in the WireGuard app first - "
+                          "the two can't run at the same time.");
+        lv_obj_remove_flag(lbl_msg, LV_OBJ_FLAG_HIDDEN);
+    } else if (info.last_error[0]) {
         snprintf(buf, sizeof(buf), "%s%s%s", info.last_error, info.login_url[0] ? "\nLogin URL: " : "",
                  info.login_url);
         set_text(lbl_msg, buf);
