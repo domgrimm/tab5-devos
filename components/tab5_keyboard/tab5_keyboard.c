@@ -1,6 +1,7 @@
 #include "tab5_keyboard.h"
 #include "devos_core.h"
 #include <stdio.h>
+#include <string.h>
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c.h"
@@ -110,32 +111,51 @@ static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 static uint8_t current_modifiers = DEVOS_MOD_NONE;
 
 /* ---- indicator lights ----
- * Written on the GUI task only; the keyboard task applies them whenever
- * s_led_gen moves (and after a re-attach), so the UI never waits on I2C. */
-static volatile uint8_t s_led_mode = TAB5_KBD_LIGHTS_STATUS;
-static volatile uint8_t s_led_bright = 20;
+ * The GUI task sets the config; the keyboard task works out the register
+ * values every loop (battery level, caps lock and blinking change them too)
+ * and writes only what changed, so the UI never waits on I2C. */
+static tab5_kbd_lights_t s_lights = {
+    .custom = false,
+    .light = {
+        { .source = TAB5_KBD_LIGHT_ACCENT, .brightness = 20, .caps_lock = true, .rgb = 0x00E5FF },
+        { .source = TAB5_KBD_LIGHT_BATTERY, .brightness = 20, .caps_lock = false, .rgb = 0x00E5FF },
+    },
+};
 static volatile uint32_t s_led_accent = 0x00E5FF;
 static volatile bool s_led_off;
-static volatile uint32_t s_led_gen = 1;
 
 #define KBD_LIGHTS_NVS_NS  "devos"
-#define KBD_LIGHTS_NVS_KEY "kbd_lights"   /* u16: mode | brightness << 8 */
+#define KBD_LIGHTS_NVS_KEY "kbd_lights2"   /* blob: tab5_kbd_lights_t */
 
-void tab5_keyboard_set_lights(tab5_kbd_lights_t mode, uint8_t brightness, bool save)
+#ifdef ESP_PLATFORM
+static portMUX_TYPE s_lights_mux = portMUX_INITIALIZER_UNLOCKED;
+#define LIGHTS_LOCK()   portENTER_CRITICAL(&s_lights_mux)
+#define LIGHTS_UNLOCK() portEXIT_CRITICAL(&s_lights_mux)
+#else
+#define LIGHTS_LOCK()
+#define LIGHTS_UNLOCK()
+#endif
+
+void tab5_keyboard_set_lights(const tab5_kbd_lights_t *cfg, bool save)
 {
-    if (mode >= TAB5_KBD_LIGHTS_COUNT) mode = TAB5_KBD_LIGHTS_STATUS;
-    if (brightness > 100) brightness = 100;
-    if (mode != s_led_mode || brightness != s_led_bright) {
-        s_led_mode = (uint8_t)mode;
-        s_led_bright = brightness;
-        s_led_gen++;
+    if (!cfg) return;
+    tab5_kbd_lights_t c = *cfg;
+    for (int i = 0; i < 2; i++) {
+        if (c.light[i].source > TAB5_KBD_LIGHT_BATTERY) c.light[i].source = TAB5_KBD_LIGHT_OFF;
+        if (c.light[i].brightness > 100) c.light[i].brightness = 100;
+        c.light[i].rgb &= 0xFFFFFF;
     }
+    LIGHTS_LOCK();
+    s_lights = c;
+    LIGHTS_UNLOCK();
 #ifdef ESP_PLATFORM
     nvs_handle_t h;
-    uint16_t v = (uint16_t)(mode | (brightness << 8)), old = 0;
     if (save && nvs_open(KBD_LIGHTS_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        if (nvs_get_u16(h, KBD_LIGHTS_NVS_KEY, &old) != ESP_OK || old != v) {
-            if (nvs_set_u16(h, KBD_LIGHTS_NVS_KEY, v) == ESP_OK) nvs_commit(h);
+        tab5_kbd_lights_t old;
+        size_t n = sizeof(old);
+        if (nvs_get_blob(h, KBD_LIGHTS_NVS_KEY, &old, &n) != ESP_OK || n != sizeof(old) ||
+            memcmp(&old, &c, sizeof(c)) != 0) {
+            if (nvs_set_blob(h, KBD_LIGHTS_NVS_KEY, &c, sizeof(c)) == ESP_OK) nvs_commit(h);
         }
         nvs_close(h);
     }
@@ -144,27 +164,68 @@ void tab5_keyboard_set_lights(tab5_kbd_lights_t mode, uint8_t brightness, bool s
 #endif
 }
 
-void tab5_keyboard_get_lights(tab5_kbd_lights_t *mode, uint8_t *brightness)
+void tab5_keyboard_get_lights(tab5_kbd_lights_t *cfg)
 {
-    if (mode) *mode = (tab5_kbd_lights_t)s_led_mode;
-    if (brightness) *brightness = s_led_bright;
+    if (!cfg) return;
+    LIGHTS_LOCK();
+    *cfg = s_lights;
+    LIGHTS_UNLOCK();
 }
 
 void tab5_keyboard_set_accent(uint32_t rgb)
 {
-    rgb &= 0xFFFFFF;
-    if (rgb != s_led_accent) {
-        s_led_accent = rgb;
-        s_led_gen++;
-    }
+    s_led_accent = rgb & 0xFFFFFF;
 }
 
 void tab5_keyboard_lights_suspend(bool off)
 {
-    if (off != s_led_off) {
-        s_led_off = off;
-        s_led_gen++;
+    s_led_off = off;
+}
+
+#ifdef ESP_PLATFORM
+static uint32_t scale_rgb(uint32_t rgb, unsigned num, unsigned den)
+{
+    if (!den) return 0;
+    uint32_t r = ((rgb >> 16) & 0xFF) * num / den, g = ((rgb >> 8) & 0xFF) * num / den, b = (rgb & 0xFF) * num / den;
+    return (r << 16) | (g << 8) | b;
+}
+
+#endif
+
+static bool amber_ish(uint32_t rgb)
+{
+    unsigned r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+    return r > 180 && g > 90 && g < 210 && b < 90;
+}
+
+/* Colour a light shows right now (0 = dark). */
+static uint32_t light_colour(const tab5_kbd_light_t *l, bool caps, bool blink_on)
+{
+    uint32_t c = 0;
+    switch (l->source) {
+    case TAB5_KBD_LIGHT_COLOUR: c = l->rgb; break;
+    case TAB5_KBD_LIGHT_ACCENT: c = s_led_accent; break;
+    case TAB5_KBD_LIGHT_BATTERY: {
+        const devos_telemetry_t *t = devos_telemetry_get();
+        if (!t || !t->battery_valid) c = 0;
+        else if (t->battery_charging || !t->battery_present) c = 0x2979FF;
+        else if (t->battery_percent >= 50) c = 0x00E676;
+        else if (t->battery_percent >= 20) c = 0xFFB300;
+        else c = (t->battery_percent >= 10 || blink_on) ? 0xFF3030 : 0;
+        break;
     }
+    default: break;
+    }
+    if (caps && l->caps_lock) c = amber_ish(c) ? 0xFF3030 : 0xFFB300;
+    return c;
+}
+
+uint32_t tab5_keyboard_light_colour(int idx)
+{
+    if (idx < 0 || idx > 1) return 0;
+    tab5_kbd_lights_t cfg;
+    tab5_keyboard_get_lights(&cfg);
+    return light_colour(&cfg.light[idx], tab5_keyboard_caps_lock(), true);
 }
 
 #ifdef ESP_PLATFORM
@@ -366,57 +427,66 @@ static void reset_state(void)
     s_rep_row = s_rep_col = -1;
 }
 
-static uint32_t lights_colour(tab5_kbd_lights_t m)
+/* Last values written (-1 = unknown, e.g. after a re-plug). */
+static int s_led_reg_mode = -1, s_led_reg_bright = -1;
+static int64_t s_led_reg_rgb[2] = {-1, -1};
+
+static void lights_invalidate(void)
 {
-    switch (m) {
-    case TAB5_KBD_LIGHTS_ACCENT: return s_led_accent;
-    case TAB5_KBD_LIGHTS_CYAN:   return 0x00E5FF;
-    case TAB5_KBD_LIGHTS_GREEN:  return 0x00E676;
-    case TAB5_KBD_LIGHTS_AMBER:  return 0xFFB300;
-    case TAB5_KBD_LIGHTS_RED:    return 0xFF3030;
-    case TAB5_KBD_LIGHTS_PURPLE: return 0xB060FF;
-    case TAB5_KBD_LIGHTS_WHITE:  return 0xFFFFFF;
-    default:                     return 0;
-    }
+    s_led_reg_mode = s_led_reg_bright = -1;
+    s_led_reg_rgb[0] = s_led_reg_rgb[1] = -1;
 }
 
-static void lights_apply(bool caps)
+static void lights_update(bool caps)
 {
-    tab5_kbd_lights_t m = (tab5_kbd_lights_t)s_led_mode;
-    if (s_led_off || m == TAB5_KBD_LIGHTS_OFF) {
-        kbd_write_reg(KBD_REG_MODE_RGB, 1);
-        kbd_write_rgb(KBD_REG_RGB1_B, 0);
-        kbd_write_rgb(KBD_REG_RGB2_B, 0);
-        return;
+    tab5_kbd_lights_t cfg;
+    LIGHTS_LOCK();
+    cfg = s_lights;
+    LIGHTS_UNLOCK();
+    bool blink_on = (esp_timer_get_time() / 500000) & 1;
+
+    int mode = cfg.custom || s_led_off ? 1 : 0;
+    int bright = -1;
+    uint32_t rgb[2] = {0, 0};
+    if (mode == 0) {
+        bright = cfg.light[0].brightness > cfg.light[1].brightness ? cfg.light[0].brightness
+                                                                   : cfg.light[1].brightness;
+    } else if (!s_led_off) {
+        /* one brightness register: set it to the brighter light, scale the other */
+        unsigned b0 = cfg.light[0].brightness, b1 = cfg.light[1].brightness;
+        unsigned top = b0 > b1 ? b0 : b1;
+        bright = (int)top;
+        rgb[0] = scale_rgb(light_colour(&cfg.light[0], caps, blink_on), b0, top);
+        rgb[1] = scale_rgb(light_colour(&cfg.light[1], caps, blink_on), b1, top);
     }
-    kbd_write_reg(KBD_REG_BRIGHTNESS, s_led_bright);
-    if (m == TAB5_KBD_LIGHTS_STATUS) {
-        kbd_write_reg(KBD_REG_MODE_RGB, 0);
-        return;
+    if (bright >= 0 && bright != s_led_reg_bright &&
+        kbd_write_reg(KBD_REG_BRIGHTNESS, (uint8_t)bright) == ESP_OK) s_led_reg_bright = bright;
+    if (mode != s_led_reg_mode && kbd_write_reg(KBD_REG_MODE_RGB, (uint8_t)mode) == ESP_OK) s_led_reg_mode = mode;
+    if (mode == 1) {
+        static const uint8_t base[2] = {KBD_REG_RGB1_B, KBD_REG_RGB2_B};
+        for (int i = 0; i < 2; i++) {
+            if ((int64_t)rgb[i] != s_led_reg_rgb[i]) {
+                kbd_write_rgb(base[i], rgb[i]);
+                s_led_reg_rgb[i] = rgb[i];
+            }
+        }
     }
-    uint32_t c = lights_colour(m);
-    uint32_t caps_c = m == TAB5_KBD_LIGHTS_AMBER ? 0xFF3030 : 0xFFB300;
-    kbd_write_reg(KBD_REG_MODE_RGB, 1);
-    kbd_write_rgb(KBD_REG_RGB1_B, caps ? caps_c : c);
-    kbd_write_rgb(KBD_REG_RGB2_B, c);
 }
 
 static void lights_load(void)
 {
     nvs_handle_t h;
-    uint16_t v = 0;
-    if (nvs_open(KBD_LIGHTS_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_u16(h, KBD_LIGHTS_NVS_KEY, &v) == ESP_OK) {
-            tab5_keyboard_set_lights((tab5_kbd_lights_t)(v & 0xFF), (uint8_t)(v >> 8), false);
-        }
-        nvs_close(h);
+    if (nvs_open(KBD_LIGHTS_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    tab5_kbd_lights_t c;
+    size_t n = sizeof(c);
+    if (nvs_get_blob(h, KBD_LIGHTS_NVS_KEY, &c, &n) == ESP_OK && n == sizeof(c)) {
+        tab5_keyboard_set_lights(&c, false);
     }
+    nvs_close(h);
 }
 
 static void keyboard_task(void *pvParameters)
 {
-    uint32_t led_applied = 0;
-    bool led_caps = false;
     (void)pvParameters;
     int failures = 0;
     int diag = 0;
@@ -431,7 +501,7 @@ static void keyboard_task(void *pvParameters)
                 kbd_read_reg(KBD_REG_FW_VERSION, &fw, 1);
                 printf("[kbd] Tab5 keyboard attached (Normal mode), fw=0x%02x\n", fw);
                 reset_state();
-                led_applied = s_led_gen - 1;      /* re-apply the lights */
+                lights_invalidate();              /* re-apply the lights */
                 failures = 0;
                 diag = 10;
                 s_connected = true;
@@ -468,14 +538,7 @@ static void keyboard_task(void *pvParameters)
         current_modifiers = (s_ctrl ? DEVOS_MOD_CTRL : 0) | (s_alt ? DEVOS_MOD_ALT : 0) |
                             (s_aa ? DEVOS_MOD_SHIFT : 0) | (s_sym ? DEVOS_MOD_FN : 0);
 
-        uint32_t gen = s_led_gen;
-        bool caps = s_caps;
-        bool colour = s_led_mode >= TAB5_KBD_LIGHTS_ACCENT && !s_led_off;
-        if (gen != led_applied || (colour && caps != led_caps)) {
-            lights_apply(caps);
-            led_applied = gen;
-            led_caps = caps;
-        }
+        lights_update(s_caps);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

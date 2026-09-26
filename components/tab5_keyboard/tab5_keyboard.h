@@ -34,29 +34,36 @@ bool tab5_keyboard_is_connected(void);
 /* Caps lock (tap Aa) state. */
 bool tab5_keyboard_caps_lock(void);
 
-/* The keyboard's two RGB indicator lights (left, right). */
+/* The keyboard's two RGB indicator lights: 0 = left, 1 = right. */
 typedef enum {
-    TAB5_KBD_LIGHTS_OFF = 0,
-    TAB5_KBD_LIGHTS_STATUS,     /* keyboard firmware drives them (power-on default) */
-    TAB5_KBD_LIGHTS_ACCENT,     /* the theme's accent colour */
-    TAB5_KBD_LIGHTS_CYAN,
-    TAB5_KBD_LIGHTS_GREEN,
-    TAB5_KBD_LIGHTS_AMBER,
-    TAB5_KBD_LIGHTS_RED,
-    TAB5_KBD_LIGHTS_PURPLE,
-    TAB5_KBD_LIGHTS_WHITE,
-    TAB5_KBD_LIGHTS_COUNT
+    TAB5_KBD_LIGHT_OFF = 0,
+    TAB5_KBD_LIGHT_COLOUR,      /* the light's rgb */
+    TAB5_KBD_LIGHT_ACCENT,      /* the theme's accent colour */
+    TAB5_KBD_LIGHT_BATTERY,     /* green >= 50%, amber >= 20%, red below (blinks
+                                 * under 10%), blue while charging / on USB */
+} tab5_kbd_light_src_t;
+
+typedef struct {
+    uint8_t source;             /* tab5_kbd_light_src_t */
+    uint8_t brightness;         /* 0-100 */
+    bool caps_lock;             /* turn amber (red over amber) while caps lock is on */
+    uint32_t rgb;               /* 0xRRGGBB for TAB5_KBD_LIGHT_COLOUR */
+} tab5_kbd_light_t;
+
+typedef struct {
+    bool custom;                /* false: the keyboard firmware drives both lights */
+    tab5_kbd_light_t light[2];
 } tab5_kbd_lights_t;
 
-/* Choose the lights (brightness 0-100). In the colour modes the left light
- * turns amber (red when the colour is amber) while caps lock is on. `save`
- * persists the choice (NVS); call from the GUI task. */
-void tab5_keyboard_set_lights(tab5_kbd_lights_t mode, uint8_t brightness, bool save);
-void tab5_keyboard_get_lights(tab5_kbd_lights_t *mode, uint8_t *brightness);
-/* Accent colour 0xRRGGBB for TAB5_KBD_LIGHTS_ACCENT (main follows the theme). */
+/* Apply (and with `save`, persist in NVS) the lights. GUI task. */
+void tab5_keyboard_set_lights(const tab5_kbd_lights_t *cfg, bool save);
+void tab5_keyboard_get_lights(tab5_kbd_lights_t *cfg);
+/* Accent colour 0xRRGGBB for TAB5_KBD_LIGHT_ACCENT (main follows the theme). */
 void tab5_keyboard_set_accent(uint32_t rgb);
 /* Lights off while the screen sleeps. */
 void tab5_keyboard_lights_suspend(bool off);
+/* What light idx shows now (0xRRGGBB before brightness; for previews). */
+uint32_t tab5_keyboard_light_colour(int idx);
 
 #ifdef __cplusplus
 }
