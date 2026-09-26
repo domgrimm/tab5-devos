@@ -22,24 +22,27 @@ static uint32_t free_mb = 0;
 static const char *WELCOME_MD_CONTENT =
 "# Welcome to devOS on M5Stack Tab5!\n\n"
 "devOS is a developer-focused mobile cyberdeck firmware for the M5Stack Tab5 with A164 keyboard.\n\n"
-"## Markdown Editor Shortcuts\n\n"
-"- **`Ctrl + S`**: Save active file\n"
-"- **`Ctrl + N`**: Create new note (untitled-N.md)\n"
-"- **`Ctrl + O`**: Focus file list\n"
-"- **`Ctrl + P`**: Cycle Edit / Split / Preview views\n"
-"- **`Sym + L`**: Toggle file sidebar (fullscreen editing)\n"
-"- **`Tab`**: Toggle focus between file list and editor\n\n"
+"## Editor\n\n"
+"The file list on the left browses the whole SD card: **Enter** opens, **Backspace** goes up a folder, "
+"**N** new file, **F** new folder, **R** rename, **D** delete, **H** hidden files. **Esc** switches "
+"between the list and the editor.\n\n"
+"- **`Ctrl + S`**: Save (it also saves by itself after 30 s idle and when you leave)\n"
+"- **`Ctrl + N`**: New file\n"
+"- **`Ctrl + P`**: Cycle Edit / Split / Preview\n"
+"- **`Ctrl + F`**, **`Enter`**: Find, next match\n"
+"- **`Ctrl + Z`**: Undo\n"
+"- **`Ctrl + X / C / V`**: Cut / copy / paste (the selection, or the whole line)\n"
+"- **`Ctrl + Enter`**: Tick or untick a task\n"
+"- **`Ctrl + K`** / **`Ctrl + D`**: Delete / duplicate the line\n"
+"- **`Sym + L`**: Hide the file list\n\n"
 "## Global Keyboard Shortcuts\n\n"
 "The Tab5 keyboard has no Fn key: hold **`Sym`** for system shortcuts.\n"
 "Tap **`Aa`** for caps lock, hold it for Shift.\n\n"
-"- **`1` .. `8`**: Quick launch app from Home Screen\n"
-"- **`Sym + H`** or **`Esc`**: Global return to Home Screen (Esc goes to the remote shell in Terminal)\n"
-"- **`Sym + 1` .. `Sym + 8`**: Instant app switch from anywhere\n"
+"- **`Sym + 1`** Terminal, **`Sym + 2`** Editor, **`Sym + 3`** Tailscale, **`Sym + 4`** Settings\n"
+"- **`Sym + H`** or **`Esc`**: Home Screen (Esc goes to the remote shell in Terminal)\n"
+"- **`1` .. `8`**: Launch an app from the Home Screen\n"
 "- **`Sym + T`**: Toggle Dark Cyberdeck / High-Contrast Light theme\n"
 "- **`Sym + -` / `Sym + +`**: Screen brightness\n"
-"- **`Sym + F`**: Toggle Focus Mode in AI Agent & Antigravity views\n"
-"- **`Sym + L`**: Toggle Left Sidebar (Sessions, Subagents, Bookmarks)\n"
-"- **`Sym + R`**: Toggle Right Inspector (Files, Diffs, Artifacts)\n"
 "- **`Sym + Up` / `Sym + Down`**: Page Up / Page Down\n"
 "- **`Alt + Tab`**: Switch to previous application\n\n"
 "## Hardware Quick Reference\n\n"
@@ -48,22 +51,12 @@ static const char *WELCOME_MD_CONTENT =
 "| SoC | ESP32-P4 | Dual RISC-V @ 400MHz | 32MB PSRAM |\n"
 "| Display | 5.0\" 1280x720 | MIPI-DSI | ST7123 |\n"
 "| Keyboard | A164 70-Key | Ext.Port1 I2C 0x6D | STM32F030 |\n"
-"| Power | NP-F550 | INA226 I2C 0x40 | Telemetry |\n\n"
-"## Firmware Sample\n\n"
-"```c\n"
-"#include \"devos_config.h\"\n\n"
-"int main(void) {\n"
-"    devos_system_bringup();\n"
-"    return 0;\n"
-"}\n"
-"```\n\n"
+"| Power | NP-F550 | INA226 I2C 0x41 | Telemetry |\n\n"
 "> Distraction-free mobile engineering on the edge.\n\n"
-"### Feature Milestones\n\n"
-"- [x] Dual-core FreeRTOS architecture\n"
-"- [x] 160-column interactive SSH terminal\n"
-"- [x] Full Markdown editor with Nimbus Mono 14\n"
-"- [ ] OpenCode & OpenChamber remote client\n"
-"- [ ] Native Antigravity agent integration\n";
+"### Features\n\n"
+"- [x] Multi-session SSH terminal\n"
+"- [x] Markdown editor and SD card file browser\n"
+"- [x] Tailscale\n";
 
 /* Saved SSH hosts start empty: add them from the Terminal app. */
 static const char *BOOKMARKS_JSON_CONTENT = "[\n]\n";
@@ -106,12 +99,6 @@ bool devos_storage_bootstrap(const char *mount_point)
     make_dir_if_missing(path_buf);
 
     snprintf(path_buf, sizeof(path_buf), "%s/notes", mount_point);
-    make_dir_if_missing(path_buf);
-
-    snprintf(path_buf, sizeof(path_buf), "%s/plans", mount_point);
-    make_dir_if_missing(path_buf);
-
-    snprintf(path_buf, sizeof(path_buf), "%s/diffs", mount_point);
     make_dir_if_missing(path_buf);
 
     snprintf(path_buf, sizeof(path_buf), "%s/.devos", mount_point);

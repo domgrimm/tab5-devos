@@ -90,15 +90,11 @@ typedef struct {
     bool     time_valid;            /* wall clock set (RTC or NTP) */
 
     /* App Subsystem Statuses */
-    char     opendev_status[24];
-    char     opendev_model[24];
     uint8_t  terminal_sessions;
     char     terminal_host[32];
     char     terminal_requested_host[64];
     char     editor_file[32];
     uint32_t editor_file_kb;
-    bool     agy_bridge_online;
-    uint8_t  agy_subagents_count;
 } devos_telemetry_t;
 
 /* Core Engine API */
@@ -126,9 +122,6 @@ void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb);
 typedef void (*devos_theme_toggle_fn)(void);
 void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb);
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers);
-void devos_core_toggle_focus_mode(void);
-void devos_core_toggle_left_panel(void);
-void devos_core_toggle_right_panel(void);
 
 #ifdef __cplusplus
 }

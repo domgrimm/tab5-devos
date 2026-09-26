@@ -100,8 +100,9 @@ static void rebuild_card_widgets(void);
 
 /* --------------------------------------------------------------------------
  * Persistence: order + hidden cards
- *   {"order": ["opendev", ...], "hidden": ["template"]}
- * Older files are a bare array of uids (or legacy ints 1..6).
+ *   {"order": ["terminal", ...], "hidden": ["template"]}
+ * Older files are a bare array of uids (or legacy ints 1..6). Uids of apps
+ * that are no longer registered are dropped.
  * -------------------------------------------------------------------------- */
 static bool is_hidden(const char *uid)
 {
@@ -174,7 +175,8 @@ static int index_of(char list[][DEVOS_MAX_UID], int n, const char *uid)
     return -1;
 }
 
-/* Parse the uid strings of the JSON array starting at p (stops at ']'). */
+/* Parse the uid strings of the JSON array starting at p (stops at ']').
+ * Legacy ints use the old numbering (1 OpenDev .. 6 Settings). */
 static void parse_uid_array(const char *p, char out[][DEVOS_MAX_UID], int *n,
                             char reg[][DEVOS_MAX_UID], int reg_count)
 {
@@ -190,7 +192,8 @@ static void parse_uid_array(const char *p, char out[][DEVOS_MAX_UID], int *n,
             }
         } else if (*p >= '1' && *p <= '6') {
             const char *luid = legacy_id_to_uid(*p - '0');
-            if (luid && index_of(out, *n, luid) < 0) snprintf(out[(*n)++], DEVOS_MAX_UID, "%s", luid);
+            if (luid && index_of(reg, reg_count, luid) >= 0 && index_of(out, *n, luid) < 0)
+                snprintf(out[(*n)++], DEVOS_MAX_UID, "%s", luid);
             p++;
         } else {
             p++;

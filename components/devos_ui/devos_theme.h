@@ -37,10 +37,6 @@ typedef struct {
     lv_color_t top_bar_bg;
     lv_color_t bottom_bar_bg;
     lv_color_t telemetry_bg;
-    lv_color_t thinking_bg;
-    lv_color_t thinking_border;
-    lv_color_t tool_card_bg;
-    lv_color_t tool_card_border;
     lv_color_t code_bg;
 
     /* Terminal 16-color ANSI Palette */
