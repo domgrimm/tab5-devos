@@ -65,7 +65,7 @@ static lv_obj_t *btn_tree, *btn_save, *btn_find, *btn_mode;
 static lv_obj_t *lbl_btn_tree, *lbl_btn_save, *lbl_btn_find, *lbl_btn_mode;
 static lv_obj_t *ta_editor, *preview_scroll, *viewer_scroll, *lbl_empty;
 static lv_obj_t *find_bar, *ta_find, *lbl_find_info;
-static lv_obj_t *status_bar, *lbl_status;
+static lv_obj_t *status_bar, *lbl_status, *lbl_keys;
 static lv_obj_t *modal, *lbl_modal_title, *lbl_modal_desc, *ta_modal, *btn_modal_ok, *lbl_modal_ok;
 static devos_codeview_t s_viewer;
 
@@ -106,6 +106,7 @@ static void apply_layout(void);
 static void refresh_status(void);
 static void list_rebuild(void);
 static void list_paint(void);
+static void refresh_keys(void);
 static void render_preview(bool keep_scroll);
 static void open_path(const char *rel);
 static bool save_file(void);
@@ -346,6 +347,7 @@ static void list_rebuild(void)
 
 static void list_paint(void)
 {
+    refresh_keys();
     const devos_palette_t *p = devos_theme_get();
     for (int r = 0; r < s_row_count; r++) {
         int ei = s_row_ent[r];
@@ -829,6 +831,7 @@ static void find_open(bool open)
         lv_label_set_text(lbl_find_info, "Enter: next   Esc: close");
     }
     apply_layout();
+    refresh_keys();
 }
 
 /* ------------------------------------------------------------------ modal */
@@ -836,6 +839,7 @@ static void modal_close(void)
 {
     s_modal = MODAL_NONE;
     lv_obj_add_flag(modal, LV_OBJ_FLAG_HIDDEN);
+    refresh_keys();
 }
 
 static bool s_modal_fresh;   /* the suggested name is untouched: typing replaces it */
@@ -893,6 +897,7 @@ static void modal_open(ed_modal_t kind, const char *target_rel)
     lv_obj_set_style_text_color(lbl_modal_ok, kind == MODAL_DELETE ? lv_color_white() : lv_color_black(), 0);
     lv_obj_remove_flag(modal, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(modal);
+    refresh_keys();
 }
 
 static void modal_confirm(void)
@@ -1126,6 +1131,20 @@ static void render_preview(bool keep_scroll)
     if (keep_scroll && y > 0) lv_obj_scroll_to_y(preview_scroll, y, LV_ANIM_OFF);
 }
 
+static void refresh_keys(void)
+{
+    /* what the keys do right now (the file list has its own hint) */
+    const char *keys;
+    if (s_modal != MODAL_NONE) keys = "Enter confirms   Esc cancels";
+    else if (s_focus_list) keys = s_file[0] ? "Esc  back to the editor" : "";
+    else if (s_find_open) keys = "Type to find   Enter next   Esc close";
+    else if (!s_file[0]) keys = "Esc  file list   Ctrl+N  new file";
+    else if (s_readonly) keys = "Arrows  scroll   Esc  file list";
+    else if (s_view == VIEW_PREVIEW) keys = "Up / Down  scroll   Ctrl+P  edit   Esc  file list";
+    else keys = "Esc  files   Ctrl+S  save   Ctrl+F  find   Ctrl+P  preview   Ctrl+Z  undo   Ctrl+N  new";
+    if (lbl_keys && strcmp(lv_label_get_text(lbl_keys), keys) != 0) lv_label_set_text(lbl_keys, keys);
+}
+
 static void refresh_status(void)
 {
     if (!lbl_status) return;
@@ -1171,6 +1190,8 @@ static void refresh_status(void)
         snprintf(buf + l, sizeof(buf) - l, "     %s", s_flash);
     }
     if (strcmp(lv_label_get_text(lbl_status), buf) != 0) lv_label_set_text(lbl_status, buf);
+
+    refresh_keys();
 
     char title[ED_PATH_MAX + 24];
     if (s_file[0]) snprintf(title, sizeof(title), "%s%s", s_file, s_dirty ? "  [*]" : "");
@@ -1255,6 +1276,7 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     lv_obj_set_style_text_color(lbl_find_info, p->text_secondary, 0);
     lv_obj_set_style_bg_color(status_bar, p->bg_alt, 0);
     lv_obj_set_style_text_color(lbl_status, p->text_secondary, 0);
+    lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
     lv_obj_set_style_bg_color(modal, p->surface, 0);
     lv_obj_set_style_border_color(modal, p->accent_primary, 0);
     lv_obj_set_style_text_color(lbl_modal_title, p->accent_primary, 0);
@@ -1686,7 +1708,7 @@ static void editor_init(void)
     lv_obj_set_scroll_dir(file_list, LV_DIR_VER);
 
     lbl_side_hint = lv_label_create(sidebar);
-    lv_label_set_text(lbl_side_hint, "Enter open  Bksp up  Esc editor\nN file  F folder  R rename  D delete");
+    lv_label_set_text(lbl_side_hint, "Enter open  Bksp up  Esc editor\nN file  F folder  R rename  D delete  H hidden");
     lv_obj_align(lbl_side_hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_text_font(lbl_side_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_side_hint, p->text_secondary, 0);
@@ -1796,6 +1818,10 @@ static void editor_init(void)
     lv_label_set_text(lbl_status, "");
     lv_obj_align(lbl_status, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_12, 0);
+    lbl_keys = lv_label_create(status_bar);
+    lv_label_set_text(lbl_keys, "");
+    lv_obj_align(lbl_keys, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_set_style_text_font(lbl_keys, &lv_font_montserrat_12, 0);
 
     /* ---- name / confirm dialog ---- */
     modal = lv_obj_create(screen);

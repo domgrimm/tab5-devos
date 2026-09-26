@@ -69,6 +69,7 @@ else()
         components/devos_ui/devos_theme.c
         components/devos_ui/devos_top_bar.c
         components/devos_ui/devos_codeview.c
+        components/devos_ui/devos_focus.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/bsp_tab5/bsp_tab5.c

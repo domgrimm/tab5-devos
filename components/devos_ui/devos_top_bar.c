@@ -10,6 +10,7 @@ static lv_obj_t *lbl_home = NULL;
 static lv_obj_t *lbl_wifi = NULL;
 static lv_obj_t *box_ip = NULL;
 static lv_obj_t *icon_tailscale = NULL;
+static lv_obj_t *icon_wireguard = NULL;
 static lv_obj_t *lbl_ip = NULL;
 static lv_obj_t *lbl_battery = NULL;
 static lv_obj_t *lbl_clock = NULL;
@@ -30,6 +31,49 @@ static void tailscale_icon_click_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     devos_core_switch_app(DEVOS_APP_TAILSCALE);
+}
+
+static void wireguard_icon_click_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    devos_core_switch_app(DEVOS_APP_WIREGUARD);
+}
+
+/* WireGuard mark (16x16): a red roundel with the white curled dragon,
+ * reduced to a hooked stroke and an eye. */
+static void wireguard_icon_draw_cb(lv_event_t *e)
+{
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_obj_t *obj = lv_event_get_current_target(e);
+    lv_area_t c;
+    lv_obj_get_coords(obj, &c);
+
+    lv_draw_rect_dsc_t disc;
+    lv_draw_rect_dsc_init(&disc);
+    disc.radius = LV_RADIUS_CIRCLE;
+    disc.bg_color = lv_color_hex(0xC4262E);
+    disc.bg_opa = LV_OPA_COVER;
+    lv_draw_rect(layer, &disc, &c);
+
+    lv_draw_arc_dsc_t arc;
+    lv_draw_arc_dsc_init(&arc);
+    arc.color = lv_color_white();
+    arc.width = 2;
+    arc.rounded = 1;
+    arc.center.x = c.x1 + 7;
+    arc.center.y = c.y1 + 9;
+    arc.radius = 4;
+    arc.start_angle = 180;          /* left, over the top, round to the lower right */
+    arc.end_angle = 60;
+    lv_draw_arc(layer, &arc);
+
+    lv_draw_rect_dsc_t eye;
+    lv_draw_rect_dsc_init(&eye);
+    eye.radius = LV_RADIUS_CIRCLE;
+    eye.bg_color = lv_color_white();
+    eye.bg_opa = LV_OPA_COVER;
+    lv_area_t ea = { c.x1 + 10, c.y1 + 3, c.x1 + 12, c.y1 + 5 };
+    lv_draw_rect(layer, &eye, &ea);
 }
 
 static void tailscale_icon_draw_cb(lv_event_t *e)
@@ -168,6 +212,18 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_add_event_cb(icon_tailscale, tailscale_icon_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
     lv_obj_add_event_cb(icon_tailscale, tailscale_icon_click_cb, LV_EVENT_CLICKED, NULL);
 
+    /* WireGuard mark (16x16), shown while a tunnel is up */
+    icon_wireguard = lv_obj_create(box_ip);
+    lv_obj_set_size(icon_wireguard, 16, 16);
+    lv_obj_set_style_bg_opa(icon_wireguard, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(icon_wireguard, 0, 0);
+    lv_obj_set_style_pad_all(icon_wireguard, 0, 0);
+    lv_obj_clear_flag(icon_wireguard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(icon_wireguard, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(icon_wireguard, 16);
+    lv_obj_add_event_cb(icon_wireguard, wireguard_icon_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(icon_wireguard, wireguard_icon_click_cb, LV_EVENT_CLICKED, NULL);
+
     /* Local IP Label */
     lbl_ip = lv_label_create(box_ip);
     lv_label_set_text(lbl_ip, "IP: Offline");
@@ -177,6 +233,9 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     const devos_telemetry_t *init_t = devos_telemetry_get();
     if (!init_t || !init_t->tailscale_online) {
         lv_obj_add_flag(icon_tailscale, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!init_t || !init_t->wireguard_online) {
+        lv_obj_add_flag(icon_wireguard, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* 4. Clock (Far Right) */
@@ -241,6 +300,12 @@ void devos_top_bar_update(void)
         } else {
             lv_obj_add_flag(icon_tailscale, LV_OBJ_FLAG_HIDDEN);
         }
+    }
+
+    /* WireGuard mark next to the IP while a tunnel is up */
+    if (icon_wireguard) {
+        if (t->wireguard_online) lv_obj_remove_flag(icon_wireguard, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(icon_wireguard, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* Local Network IP (Always shown, whether Tailscale is connected or not) */

@@ -5,11 +5,21 @@
 #include "devos_net.h"
 #include "devos_storage.h"
 #include "devos_tailnet.h"
+#include "devos_wireguard.h"
 #include "bsp_tab5.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+
+/* "10.8.0.2/24" -> "10.8.0.2" (empty when the tunnel isn't up). */
+static void wg_address(const devos_wg_info_t *wg, bool up, char *out, size_t cap)
+{
+    size_t l = up ? strcspn(wg->address, "/") : 0;
+    if (l > cap - 1) l = cap - 1;
+    memcpy(out, wg->address, l);
+    out[l] = '\0';
+}
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
@@ -135,6 +145,9 @@ typedef struct {
     uint8_t  ts_peers;
     char     ts_derp[20];
 
+    bool     wg_online;
+    char     wg_ip[20];
+
     bool     sd_mounted;
     uint32_t sd_total_mb;
     uint32_t sd_free_mb;
@@ -255,6 +268,10 @@ static void sample(snapshot_t *n, uint32_t tick)
         n->ts_ip[0] = n->ts_derp[0] = '\0';
         n->ts_peers = 0;
     }
+    static devos_wg_info_t wg;             /* sysmon task only */
+    devos_wg_get_info(&wg);
+    n->wg_online = wg.state == DEVOS_WG_UP;
+    wg_address(&wg, n->wg_online, n->wg_ip, sizeof(n->wg_ip));
 
     n->sd_mounted = devos_storage_is_mounted();
     if (n->sd_mounted && (tick % 30 == 0 || n->sd_total_mb == 0)) {
@@ -364,6 +381,8 @@ void devos_sysmon_apply(void)
     snprintf(t.tailscale_ip, sizeof(t.tailscale_ip), "%s", n.ts_ip);
     snprintf(t.tailscale_derp, sizeof(t.tailscale_derp), "%s", n.ts_derp);
     t.tailscale_peers_online = n.ts_peers;
+    t.wireguard_online = n.wg_online;
+    snprintf(t.wireguard_ip, sizeof(t.wireguard_ip), "%s", n.wg_ip);
 
     t.sd_mounted = n.sd_mounted;
     t.sd_total_mb = n.sd_total_mb;
@@ -408,6 +427,10 @@ void devos_sysmon_apply(void)
     snprintf(t.tailscale_ip, sizeof(t.tailscale_ip), "%.19s", t.tailscale_online ? ts.ip : "");
     snprintf(t.tailscale_derp, sizeof(t.tailscale_derp), "%.19s", t.tailscale_online ? ts.derp : "");
     t.tailscale_peers_online = t.tailscale_online ? (uint8_t)ts.peer_count : 0;
+    devos_wg_info_t wg;
+    devos_wg_get_info(&wg);
+    t.wireguard_online = wg.state == DEVOS_WG_UP;
+    wg_address(&wg, t.wireguard_online, t.wireguard_ip, sizeof(t.wireguard_ip));
     t.uptime_s = (uint32_t)(time(NULL) - s_boot);
     fill_time(&t);
     devos_telemetry_update(&t);

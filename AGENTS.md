@@ -19,7 +19,7 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
    * *Reserve Internal SRAM (`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA`):* Keep at least **120 KB contiguous internal SRAM free** for mbedTLS / SSH handshakes, Wi-Fi SDIO DMA descriptors, and FreeRTOS task stacks.
 
 3. **Collapsible Side Panels:**
-   * The editor's file list and the terminal's connections panel are 260px left panels (`DEVOS_PANE_LEFT_WIDTH`). `Sym + L` toggles them; `Sym + F` also hides the editor's file list. An app that adds a side panel uses the same width and the same key.
+   * The editor's file list and the terminal's connections panel are 260px left panels (`DEVOS_PANE_LEFT_WIDTH`). `Sym + L` shows / hides them (the terminal's first press opens the panel and moves keyboard focus into it, a second press hides it; `Esc` there returns to the shell); `Sym + F` also hides the editor's file list. An app that adds a side panel uses the same width and the same key.
    * The Tab5 keyboard has **no Fn key**: every system shortcut is `Sym + <letter/digit/arrow>` (Sym + punctuation must keep typing its symbol, e.g. `Sym + [` = `{`). User-facing text says "Sym".
 
 4. **Dynamic Terminal PTY Resizing:**
@@ -40,6 +40,23 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 8. **Modular Self-Registering Apps:**
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
    * Adding a new application must never require modifying the Home Screen (`app_launcher.c`) or hardcoding app IDs into closed enums. Use `main/apps/app_template/` as the canonical reference.
+
+9. **Keyboard First, Touch Second:**
+   * **Every screen, panel, dialog and control must be fully usable from the physical keyboard alone.** Touch is a secondary input: everything also works by touch, but nothing may be touch-only. A feature isn't done until it has been walked through keyboard-only in the simulator.
+   * **One key model everywhere:**
+     * Arrows move the selection or focus (Up / Down in lists and forms, all four in grids).
+     * `Tab` / `Aa + Tab` move between regions or fields.
+     * `Enter` activates: open, connect, confirm, press the focused button.
+     * `Space` toggles checkboxes and switches (and pauses live views).
+     * `Left` / `Right` change the focused value (slider, dropdown, switch).
+     * `Esc` backs out one level: close the dialog, then leave the field or panel, then (unhandled) go to the Home Screen.
+     * Frequent actions get a letter shortcut.
+     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel).
+   * **Visible focus:** whatever the next key will act on is always highlighted: the accent focus ring from `devos_focus`, an app's selection border, or a text cursor.
+   * **Discoverable:** every screen shows its keys (a hint line or footer); the welcome note lists the global ones.
+   * **Dialogs** take keyboard focus when they open (first field or default button) and give it back when they close; `Enter` confirms, `Esc` cancels.
+   * **Text entry** uses the hardware keyboard. On-screen keyboards appear only when no keyboard is attached (`tab5_keyboard_is_connected()`).
+   * **Implementation:** forms, dialogs and button rows use `devos_focus` (`components/devos_ui/devos_focus.h`): register the controls in order, pass keys from `handle_key`. Custom lists (file lists, streams, peer rows) handle keys in `handle_key` and draw their own selection.
 
 ---
 
@@ -187,6 +204,6 @@ When implementing tasks from [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md):
 3. **Write modular code** in `components/` before connecting to `main.c`.
 4. **Test in simulation first:**
    * After creating or modifying any UI/UX component, compile the simulator (`ninja -C build_sim`).
-   * Verify the UI via `./tools/sim/run_web_sim.sh`.
+   * Verify the UI via `./tools/sim/run_web_sim.sh`, **keyboard-only first** (invariant 9): reach every control and dialog without the mouse, then check touch.
    * Notify the developer with the direct verification URL (**`http://100.77.11.92:6080/vnc.html`**) so they can interactively test the UI from their Mac browser without flashing.
 5. **Update PLAN.md** milestone checkboxes as features are completed and verified.

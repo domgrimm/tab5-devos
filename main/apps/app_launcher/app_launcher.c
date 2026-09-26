@@ -73,9 +73,18 @@ static lv_obj_t *btn_arrange_reset = NULL;
 static lv_obj_t *lbl_arrange_reset = NULL;
 static int last_registered_count = -1;
 
-/* Bottom Navigation Hint Bar */
+/* Bottom Navigation Hint Bar: every key of the screen (keyboard first,
+ * AGENTS.md invariant 9). Each touch control has a key: Prev / Next / dots =
+ * PgUp / PgDn (Sym+Up/Down, Sym+Left/Right), Arrange / Done = E, Defaults = R,
+ * eye = H. */
 static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
+#define HINT_NORMAL \
+    "[Arrows/Tab] Move  |  [Enter/Tap] Launch  |  [1-8] Launch tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN \
+    "] Page  |  [E] Arrange  |  [Sym+T] Theme  |  [Sym+H] Home from any app"
+#define HINT_ARRANGE \
+    "[Arrows/Tab] Move  |  [Enter/Tap] Pick up / drop  |  [1-8] Pick / swap slot  |  [H] Hide / show  |  " \
+    "[R] Defaults  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page  |  [Esc] Cancel / done"
 
 /* Slot Mapping & Carousel State */
 /* slot_uids is what the carousel shows: every app in arrange mode, only the
@@ -419,6 +428,7 @@ static void hide_btn_cb(lv_event_t *e)
 static void card_click_cb(lv_event_t *e)
 {
     int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    focused_slot = slot;                    /* keyboard focus follows taps */
 
     if (!arrange_mode) {
         /* Normal Mode: Launch the selected app */
@@ -553,18 +563,19 @@ static void update_pagination_ui(void)
         if (arrange_mode) {
             lv_obj_remove_flag(banner_arrange, LV_OBJ_FLAG_HIDDEN);
             if (selected_slot >= 0 && selected_slot < active_app_count) {
-                char b_buf[128];
+                char b_buf[192];
                 devos_app_descriptor_t *sel_app = devos_core_find_app(slot_uids[selected_slot]);
                 snprintf(b_buf, sizeof(b_buf),
-                         LV_SYMBOL_SHUFFLE " Slot %d (%s) selected. Tap destination tile on any page to swap!",
+                         LV_SYMBOL_SHUFFLE " Slot %d (%s) picked up: arrows to its new place (any page) + Enter, "
+                         "or 1-8 / tap the card to swap with  |  [Esc] Cancel",
                          selected_slot + 1, sel_app ? sel_app->name : "App");
                 lv_label_set_text(lbl_arrange_banner, b_buf);
             } else {
-                char b_buf[160];
+                char b_buf[192];
                 snprintf(b_buf, sizeof(b_buf), "%s",
                          s_hide_notice[0] ? s_hide_notice
-                                          : LV_SYMBOL_SHUFFLE " ARRANGE: tap a card, then where it should go  |  "
-                                            LV_SYMBOL_EYE_OPEN " hides / shows a card  |  [R] Reset  |  [Done]");
+                                          : LV_SYMBOL_SHUFFLE " ARRANGE: Enter or tap a card, then Enter or tap where it goes  |  "
+                                            "[H] / " LV_SYMBOL_EYE_OPEN " hides / shows a card  |  [R] Defaults  |  [E] / [Esc] Done");
                 lv_label_set_text(lbl_arrange_banner, b_buf);
             }
         } else {
@@ -574,13 +585,7 @@ static void update_pagination_ui(void)
 
     /* 6. Bottom Hint Bar */
     if (lbl_bottom_hint) {
-        if (arrange_mode) {
-            lv_label_set_text(lbl_bottom_hint,
-                "[Tap] Select & Swap  |  [1-8] Swap Slot  |  [H] Hide / show focused card  |  [R] Reset  |  [Esc/Done] Exit");
-        } else {
-            lv_label_set_text(lbl_bottom_hint,
-                "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page Flip  |  [Sym+E] Arrange  |  [Sym+T] Theme");
-        }
+        lv_label_set_text(lbl_bottom_hint, arrange_mode ? HINT_ARRANGE : HINT_NORMAL);
     }
 }
 
@@ -682,10 +687,12 @@ static void refresh_cards(void)
             lv_obj_set_style_border_width(c->card_btn, 3, 0);
             lv_obj_set_style_border_width(c->card_btn, 3, LV_STATE_FOCUSED);
         } else if (arrange_mode) {
+            /* the keyboard focus (what Enter / H act on) gets a heavy border */
+            int bw = focused_slot == i ? 3 : 1;
             lv_obj_set_style_border_color(c->card_btn, p->border_highlight, 0);
             lv_obj_set_style_border_color(c->card_btn, p->border_highlight, LV_STATE_FOCUSED);
-            lv_obj_set_style_border_width(c->card_btn, 1, 0);
-            lv_obj_set_style_border_width(c->card_btn, 1, LV_STATE_FOCUSED);
+            lv_obj_set_style_border_width(c->card_btn, bw, 0);
+            lv_obj_set_style_border_width(c->card_btn, bw, LV_STATE_FOCUSED);
         } else if (focused_slot == i) {
             lv_obj_set_style_border_color(c->card_btn, p->border_highlight, 0);
             lv_obj_set_style_border_color(c->card_btn, p->border_highlight, LV_STATE_FOCUSED);
@@ -717,9 +724,12 @@ void app_launcher_update_telemetry(void)
     }
     if (lbl_clock_date) lv_label_set_text(lbl_clock_date, buf);
 
-    char ts[48] = "", bat[72], sd[48];
+    char ts[48] = "", wg[48] = "", bat[72], sd[48], net[224];
     if (t->tailscale_online) {
         snprintf(ts, sizeof(ts), "Tailscale: %s  |  ", t->tailscale_ip);
+    }
+    if (t->wireguard_online) {
+        snprintf(wg, sizeof(wg), "WireGuard: %.19s  |  ", t->wireguard_ip);
     }
     if (!t->battery_valid) {
         snprintf(bat, sizeof(bat), "Battery: n/a");
@@ -746,8 +756,8 @@ void app_launcher_update_telemetry(void)
         snprintf(sd, sizeof(sd), "SD: %.1f GB free of %.1f GB",
                  t->sd_free_mb / 1024.0f, t->sd_total_mb / 1024.0f);
     }
-    snprintf(buf, sizeof(buf), "%s%s  |  %s", ts, bat, sd);
-    if (lbl_net_power) lv_label_set_text(lbl_net_power, buf);
+    snprintf(net, sizeof(net), "%s%s%s  |  %s", ts, wg, bat, sd);
+    if (lbl_net_power) lv_label_set_text(lbl_net_power, net);
 
     snprintf(buf, sizeof(buf), "Memory: %.1f MB PSRAM free, %u KB SRAM free  |  CPU: Core 0 %d%%  |  Core 1 %d%%  |  Up %luh%02lum",
              t->free_psram_kb / 1024.0f,
@@ -777,7 +787,7 @@ void app_launcher_update_telemetry(void)
  * -------------------------------------------------------------------------- */
 static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
 {
-    /* 1. Toggle Arrange Mode: 'e' / 'E' or Fn + E */
+    /* 1. Toggle Arrange Mode: 'e' / 'E' or Sym + E */
     if (key == 'e' || key == 'E' || ((modifiers & DEVOS_MOD_FN) && (key == 'e' || key == 'E'))) {
         app_launcher_toggle_arrange_mode();
         return true;
@@ -804,15 +814,20 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
 
     /* 3. Arrange Mode Key Controls */
     if (arrange_mode) {
-        if (key == LV_KEY_ESC) {
-            app_launcher_set_arrange_mode(false);
+        if (key == LV_KEY_ESC) {            /* one level: drop the picked card, then leave */
+            if (selected_slot >= 0) {
+                selected_slot = -1;
+                refresh_cards();
+            } else {
+                app_launcher_set_arrange_mode(false);
+            }
             return true;
         }
         if (key == 'r' || key == 'R') {
             app_launcher_reset_layout();
             return true;
         }
-        if ((key == 'h' || key == 'H') && modifiers == DEVOS_MOD_NONE) {
+        if ((key == 'h' || key == 'H') && !(modifiers & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN))) {
             toggle_hidden(selected_slot >= 0 ? selected_slot : focused_slot);
             return true;
         }
@@ -820,6 +835,7 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
         if (key >= '1' && key <= '8') {
             int slot = current_page * TILES_PER_PAGE + (key - '1');
             if (slot < active_app_count) {
+                focused_slot = slot;
                 if (selected_slot == -1) {
                     selected_slot = slot;
                     refresh_cards();
@@ -848,7 +864,20 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
         }
     }
 
-    /* 5. Continuous Arrow Key Navigation across page boundaries */
+    /* 5a. Tab / Aa+Tab: next / previous tile in order, across pages */
+    if (key == '\t' && !(modifiers & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN))) {
+        if (active_app_count > 0) {
+            int dir = (modifiers & DEVOS_MOD_SHIFT) ? -1 : 1;
+            focused_slot = (focused_slot + dir + active_app_count) % active_app_count;
+            if (focused_slot / TILES_PER_PAGE != current_page) {
+                app_launcher_set_page(focused_slot / TILES_PER_PAGE, true);
+            }
+            refresh_cards();
+        }
+        return true;
+    }
+
+    /* 5b. Continuous Arrow Key Navigation across page boundaries */
     int cur_col = (focused_slot % TILES_PER_PAGE) % GRID_COLS;
     int cur_row = (focused_slot % TILES_PER_PAGE) / GRID_COLS;
 
@@ -1305,8 +1334,7 @@ static void launcher_init(void)
     lv_obj_clear_flag(bottom_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lbl_bottom_hint = lv_label_create(bottom_bar);
-    lv_label_set_text(lbl_bottom_hint,
-        "[Enter/Tap] Launch  |  [1-8] Launch Tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page Flip  |  [Sym+E] Arrange  |  [Sym+T] Theme");
+    lv_label_set_text(lbl_bottom_hint, HINT_NORMAL);
     lv_obj_center(lbl_bottom_hint);
     lv_obj_set_style_text_font(lbl_bottom_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_bottom_hint, p->text_secondary, 0);

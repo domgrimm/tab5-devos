@@ -933,7 +933,7 @@ int ssh_port_save_bookmark(const ssh_bookmark_t *bm)
 
     ssh_bookmark_t existing[SSH_MAX_BOOKMARKS];
     int count = 0;
-    ssh_port_load_bookmarks(existing, SSH_MAX_BOOKMARKS - 1, &count);
+    ssh_port_load_bookmarks(existing, SSH_MAX_BOOKMARKS, &count);   /* all of them: editing #16 kept only 15 */
 
     /* Update existing if matching alias or (host + user + port), else append */
     int target_idx = -1;

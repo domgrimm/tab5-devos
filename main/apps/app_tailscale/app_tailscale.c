@@ -1,14 +1,25 @@
 /* Tailscale: status, enrolment and peers for the Tab5's tailnet client
  * (components/devos_tailnet, MicroLink on the device).
  *
- * Keys: C connect/disconnect, K auth key, N device name, Up/Down or 1-9
- * select a peer, Enter SSH to it, P ping it, Esc close/deselect.
+ * Keyboard first (AGENTS.md invariant 9):
+ *   Peers    Up/Down, PgUp/PgDn or 1-9 select a peer (accent border), Enter SSH
+ *            to it, P ping it, Esc deselect (then Home).
+ *   Anywhere C connect/disconnect, K auth key, N device name, F forget.
+ *   Buttons  Tab / Aa+Tab walk the header buttons (focus ring), Left/Right
+ *            move along them, Enter/Space press, Down / Esc / Tab past the
+ *            end go back to the peers.
+ *   Dialogs  open with the text field (or the default button) focused;
+ *            Enter saves / confirms, Esc cancels, Tab / Up / Down / Left /
+ *            Right move between field and buttons; the forget dialog also
+ *            takes Y / N. The on-screen keyboard only appears when no
+ *            hardware keyboard is attached.
  */
 #include "app_tailscale.h"
 #include "devos_config.h"
 #include "devos_tailnet.h"
 #include "devos_wireguard.h"
 #include "devos_theme.h"
+#include "devos_focus.h"
 #include "tab5_keyboard.h"
 #include <stdio.h>
 #include <string.h>
@@ -27,12 +38,18 @@ static lv_style_t st_bg, st_card, st_title, st_text, st_muted, st_small, st_btn,
 
 /* status card */
 static lv_obj_t *lbl_state, *lbl_line1, *lbl_line2, *lbl_msg, *btn_toggle, *lbl_toggle;
+static lv_obj_t *btn_key, *btn_name, *btn_forget;
 /* peers */
-static lv_obj_t *lbl_peers_h, *list_peers, *lbl_no_peers;
+static lv_obj_t *lbl_peers_h, *lbl_hint, *list_peers, *lbl_no_peers;
 static lv_obj_t *rows[DEVOS_TS_MAX_PEERS], *row_name[DEVOS_TS_MAX_PEERS], *row_sub[DEVOS_TS_MAX_PEERS],
                 *row_ping[DEVOS_TS_MAX_PEERS];
 /* dialogs */
-static lv_obj_t *overlay, *kb, *dlg_key, *ta_key, *dlg_name, *ta_name, *dlg_forget, *s_focused_ta;
+static lv_obj_t *overlay, *kb, *dlg_key, *ta_key, *dlg_name, *ta_name, *dlg_forget, *btn_forget_ok;
+
+/* keyboard focus: header button row, one set per dialog (devos_focus) */
+static devos_focus_t s_hdr, s_f_key, s_f_name, s_f_forget;
+static devos_focus_t *s_dlg_f;          /* the open dialog's, NULL = none */
+static bool s_via_key;                  /* inside handle_key (vs a tap) */
 
 static int s_sel = -1;
 static uint32_t s_seen_gen = UINT32_MAX;
@@ -224,8 +241,15 @@ static void peer_ssh(int idx)
     devos_core_switch_app(DEVOS_APP_TERMINAL);
 }
 
+/* The header button row has the keyboard (focus ring showing). */
+static bool hdr_active(void)
+{
+    return devos_focus_get(&s_hdr) && s_hdr.ring;
+}
+
 static void select_peer(int idx)
 {
+    if (hdr_active()) devos_focus_clear(&s_hdr);        /* keys go to the peers again */
     s_sel = idx;
     s_seen_gen = UINT32_MAX;
     refresh_ui();
@@ -251,37 +275,44 @@ static bool dialog_open(void)
 static void close_dialogs(void)
 {
     if (!overlay) return;
+    if (s_dlg_f) devos_focus_clear(s_dlg_f);
+    s_dlg_f = NULL;
     lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(dlg_key, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(dlg_name, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(dlg_forget, LV_OBJ_FLAG_HIDDEN);
     lv_textarea_set_text(ta_key, "");
-    s_focused_ta = NULL;
 }
 
-static void show_dialog(lv_obj_t *dlg, lv_obj_t *ta)
+/* Open dlg with `first` (its text field or default button) focused. The
+ * header's focus is left alone, so it is where it was once the dialog closes. */
+static void show_dialog(lv_obj_t *dlg, devos_focus_t *f, lv_obj_t *first)
 {
     close_dialogs();
     lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(dlg, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(overlay);
-    s_focused_ta = ta;
-    if (ta) {
-        lv_obj_add_state(ta, LV_STATE_FOCUSED);
-        lv_keyboard_set_textarea(kb, ta);
+    s_dlg_f = f;
+    devos_focus_set(f, first);
+    if (!s_via_key) {                                   /* opened by a tap: no ring */
+        f->ring = false;
+        lv_obj_remove_state(first, LV_STATE_FOCUS_KEY);
     }
+    bool ta = lv_obj_check_type(first, &lv_textarea_class);
+    if (ta) lv_keyboard_set_textarea(kb, first);
     if (ta && !tab5_keyboard_is_connected()) lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void open_key_dialog(void) { show_dialog(dlg_key, ta_key); }
+static void open_key_dialog(void) { show_dialog(dlg_key, &s_f_key, ta_key); }
+static void open_forget_dialog(void) { show_dialog(dlg_forget, &s_f_forget, btn_forget_ok); }
 
 static void open_name_dialog(void)
 {
     char name[DEVOS_TS_HOSTNAME_MAX];
     devos_tailnet_get_hostname(name, sizeof(name));
     lv_textarea_set_text(ta_name, name);
-    show_dialog(dlg_name, ta_name);
+    show_dialog(dlg_name, &s_f_name, ta_name);
 }
 
 static void key_submit(void)
@@ -309,7 +340,7 @@ static void name_submit(void)
 
 static void key_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_key_dialog(); }
 static void name_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_name_dialog(); }
-static void forget_btn_cb(lv_event_t *e) { LV_UNUSED(e); show_dialog(dlg_forget, NULL); }
+static void forget_btn_cb(lv_event_t *e) { LV_UNUSED(e); open_forget_dialog(); }
 static void key_ok_cb(lv_event_t *e) { LV_UNUSED(e); key_submit(); }
 static void name_ok_cb(lv_event_t *e) { LV_UNUSED(e); name_submit(); }
 static void cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_dialogs(); }
@@ -321,10 +352,11 @@ static void forget_ok_cb(lv_event_t *e)
     refresh_ui();
 }
 
+/* Tap on a text field: the on-screen keyboard, unless a real one is attached. */
 static void ta_click_cb(lv_event_t *e)
 {
-    s_focused_ta = lv_event_get_target(e);
-    lv_keyboard_set_textarea(kb, s_focused_ta);
+    if (tab5_keyboard_is_connected()) return;
+    lv_keyboard_set_textarea(kb, lv_event_get_target(e));
     lv_obj_remove_flag(kb, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -363,7 +395,8 @@ static lv_obj_t *mk_ta(lv_obj_t *parent, const char *placeholder, int w, int max
     return ta;
 }
 
-static lv_obj_t *mk_btn_row(lv_obj_t *parent)
+/* Button row with the dialog's key hint on the left. */
+static lv_obj_t *mk_btn_row(lv_obj_t *parent, const char *hint)
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_remove_style_all(row);
@@ -372,6 +405,9 @@ static lv_obj_t *mk_btn_row(lv_obj_t *parent)
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 10, 0);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);     /* don't clip the focus ring */
+    lv_obj_t *l = mk_label(row, &st_small, hint);
+    lv_obj_set_flex_grow(l, 1);
     return row;
 }
 
@@ -397,9 +433,13 @@ static void build_dialogs(void)
     lv_obj_set_width(l, 720);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     ta_key = mk_ta(dlg_key, "tskey-auth-...", 720, DEVOS_TS_KEY_MAX - 1);
-    lv_obj_t *row = mk_btn_row(dlg_key);
-    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
-    mk_btn(row, LV_SYMBOL_OK "  Save & connect", &st_btn_primary, key_ok_cb, NULL);
+    lv_obj_t *row = mk_btn_row(dlg_key, "Enter save & connect  |  Tab move  |  Esc cancel");
+    lv_obj_t *b_cancel = mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    lv_obj_t *b_ok = mk_btn(row, LV_SYMBOL_OK "  Save & connect", &st_btn_primary, key_ok_cb, NULL);
+    devos_focus_init(&s_f_key);
+    devos_focus_add(&s_f_key, ta_key);
+    devos_focus_add(&s_f_key, b_cancel);
+    devos_focus_add(&s_f_key, b_ok);
 
     dlg_name = mk_dialog(560);
     mk_label(dlg_name, &st_title, "Device name");
@@ -407,9 +447,13 @@ static void build_dialogs(void)
     lv_obj_set_width(l, 520);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     ta_name = mk_ta(dlg_name, "devos-tab5", 520, DEVOS_TS_HOSTNAME_MAX - 1);
-    row = mk_btn_row(dlg_name);
-    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
-    mk_btn(row, LV_SYMBOL_OK "  Save", &st_btn_primary, name_ok_cb, NULL);
+    row = mk_btn_row(dlg_name, "Enter save  |  Tab move  |  Esc cancel");
+    b_cancel = mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    b_ok = mk_btn(row, LV_SYMBOL_OK "  Save", &st_btn_primary, name_ok_cb, NULL);
+    devos_focus_init(&s_f_name);
+    devos_focus_add(&s_f_name, ta_name);
+    devos_focus_add(&s_f_name, b_cancel);
+    devos_focus_add(&s_f_name, b_ok);
 
     dlg_forget = mk_dialog(600);
     mk_label(dlg_forget, &st_title, "Forget this device?");
@@ -418,9 +462,12 @@ static void build_dialogs(void)
                  "again you will need a new auth key. Also remove the old machine from the admin console.");
     lv_obj_set_width(l, 560);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    row = mk_btn_row(dlg_forget);
-    mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
-    mk_btn(row, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_ok_cb, NULL);
+    row = mk_btn_row(dlg_forget, "Enter / Y forget  |  Esc / N cancel");
+    b_cancel = mk_btn(row, "Cancel", NULL, cancel_cb, NULL);
+    btn_forget_ok = mk_btn(row, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_ok_cb, NULL);
+    devos_focus_init(&s_f_forget);
+    devos_focus_add(&s_f_forget, b_cancel);
+    devos_focus_add(&s_f_forget, btn_forget_ok);
 
     kb = lv_keyboard_create(overlay);
     lv_obj_add_style(kb, &st_kb, 0);
@@ -496,7 +543,7 @@ static void refresh_ui(void)
         snprintf(buf, sizeof(buf), "Relay: %s%s  |  Peers: %d (%d direct)%s", info.derp[0] ? info.derp : "-",
                  info.derp_connected ? "" : " (not connected)", info.peer_count, info.peers_direct, key);
     } else if (info.state == DEVOS_TS_NEEDS_KEY) {
-        snprintf(buf, sizeof(buf), "Add this Tab5 to your tailnet with an auth key: tap Set up.");
+        snprintf(buf, sizeof(buf), "Add this Tab5 to your tailnet with an auth key: press C (or tap Set up).");
     } else if (info.state == DEVOS_TS_OFF) {
         snprintf(buf, sizeof(buf), "Tailscale is off. Local network connections work as normal.");
     } else {
@@ -561,11 +608,22 @@ static void refresh_ui(void)
     }
 }
 
+/* Key hint for whichever region has the keyboard. */
+static void update_hint(void)
+{
+    if (!lbl_hint) return;
+    set_text(lbl_hint, hdr_active()
+             ? "Left/Right, Tab choose  |  Enter press  |  Down or Esc back to peers  |  C / K / N / F work too"
+             : "Up/Down, 1-9 select  |  Enter SSH  |  P ping  |  C connect  |  K auth key  |  N name  |  "
+               "F forget  |  Tab buttons  |  Esc back");
+}
+
 static void poll_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
     if (devos_tailnet_generation() != s_seen_gen) refresh_ui();
+    update_hint();                                      /* a tap hides the ring */
 }
 
 /* ======================================================================== */
@@ -607,6 +665,7 @@ static void tailscale_init(void)
     lv_obj_remove_style_all(top);
     lv_obj_set_size(top, lv_pct(100), 40);
     lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(top, LV_OBJ_FLAG_OVERFLOW_VISIBLE);     /* don't clip the focus ring */
     lbl_state = mk_label(top, &st_title, "Tailscale");
     lv_obj_align(lbl_state, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_t *btns = lv_obj_create(top);
@@ -615,11 +674,17 @@ static void tailscale_init(void)
     lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(btns, 8, 0);
     lv_obj_align(btns, LV_ALIGN_RIGHT_MID, 0, 0);
-    mk_btn(btns, LV_SYMBOL_EDIT "  Auth key", NULL, key_btn_cb, NULL);
-    mk_btn(btns, LV_SYMBOL_SETTINGS "  Device name", NULL, name_btn_cb, NULL);
-    mk_btn(btns, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_btn_cb, NULL);
+    lv_obj_add_flag(btns, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    btn_key = mk_btn(btns, LV_SYMBOL_EDIT "  Auth key", NULL, key_btn_cb, NULL);
+    btn_name = mk_btn(btns, LV_SYMBOL_SETTINGS "  Device name", NULL, name_btn_cb, NULL);
+    btn_forget = mk_btn(btns, LV_SYMBOL_TRASH "  Forget", &st_btn_danger, forget_btn_cb, NULL);
     btn_toggle = mk_btn(btns, LV_SYMBOL_POWER "  Connect", &st_btn_primary, toggle_cb, NULL);
     lbl_toggle = lv_obj_get_child(btn_toggle, 0);
+    devos_focus_init(&s_hdr);
+    devos_focus_add(&s_hdr, btn_key);
+    devos_focus_add(&s_hdr, btn_name);
+    devos_focus_add(&s_hdr, btn_forget);
+    devos_focus_add(&s_hdr, btn_toggle);
 
     lbl_line1 = mk_label(card, &st_text, "");
     lbl_line2 = mk_label(card, &st_muted, "");
@@ -634,8 +699,9 @@ static void tailscale_init(void)
     lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
     lbl_peers_h = mk_label(head, &st_section, "PEERS");
     lv_obj_align(lbl_peers_h, LV_ALIGN_LEFT_MID, 2, 0);
-    lv_obj_t *hint = mk_label(head, &st_small, "Up/Down select  |  Enter SSH  |  P ping  |  C connect");
-    lv_obj_align(hint, LV_ALIGN_RIGHT_MID, 0, 0);
+    lbl_hint = mk_label(head, &st_small, "");
+    lv_obj_align(lbl_hint, LV_ALIGN_RIGHT_MID, 0, 0);
+    update_hint();
 
     list_peers = lv_obj_create(screen);
     lv_obj_remove_style_all(list_peers);
@@ -679,53 +745,99 @@ static void tailscale_show(void)
 {
     s_seen_gen = UINT32_MAX;
     refresh_ui();
+    update_hint();
 }
 
 static void tailscale_hide(void)
 {
     close_dialogs();
+    devos_focus_clear(&s_hdr);
 }
 
 /* ======================================================================== */
 /* Keyboard                                                                 */
 /* ======================================================================== */
+/* Left/Right along a dialog's button row (never onto its text field). */
+static void btn_row_step(devos_focus_t *f, int dir)
+{
+    lv_obj_t *from = devos_focus_get(f);
+    devos_focus_move(f, dir);
+    lv_obj_t *to = devos_focus_get(f);
+    if (to && lv_obj_check_type(to, &lv_textarea_class)) devos_focus_set(f, from);
+}
+
 static bool dialog_key(uint32_t key, uint8_t mods)
 {
     if (tab5_keyboard_is_connected()) lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
     if (key == LV_KEY_ESC) { close_dialogs(); return true; }
-    if (!lv_obj_has_flag(dlg_forget, LV_OBJ_FLAG_HIDDEN)) {
-        if (key == 'y' || key == 'Y') forget_ok_cb(NULL);
-        else if (key == 'n' || key == 'N') close_dialogs();
+    devos_focus_t *f = s_dlg_f;
+    if (!f) return true;
+    bool plain = !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN | DEVOS_MOD_ALT));
+    if (f == &s_f_forget && plain) {
+        if (key == 'y' || key == 'Y') { forget_ok_cb(NULL); return true; }
+        if (key == 'n' || key == 'N') { close_dialogs(); return true; }
+    }
+    lv_obj_t *ta = f == &s_f_key ? ta_key : f == &s_f_name ? ta_name : NULL;
+    lv_obj_t *cur = devos_focus_get(f);
+    if (cur && cur != ta && (key == LV_KEY_LEFT || key == LV_KEY_RIGHT)) {
+        btn_row_step(f, key == LV_KEY_RIGHT ? 1 : -1);
         return true;
     }
-    if (key == '\r' || key == '\n') {
-        if (!lv_obj_has_flag(dlg_key, LV_OBJ_FLAG_HIDDEN)) key_submit();
+    /* typing while a button has the focus goes to the text field */
+    if (ta && cur != ta && plain && ((key > ' ' && key <= 126) || key == '\b' || key == LV_KEY_DEL)) {
+        devos_focus_set(f, ta);
+        cur = ta;
+    }
+    if (cur && cur == ta && key == LV_KEY_DEL) {        /* forward delete */
+        lv_textarea_delete_char_forward(ta);
+        return true;
+    }
+    if (devos_focus_key(f, key, mods)) return true;
+    if ((key == '\r' || key == '\n') && ta && devos_focus_get(f) == ta) {     /* Enter in the field */
+        if (f == &s_f_key) key_submit();
         else name_submit();
-        return true;
     }
-    if (!s_focused_ta) return true;
-    if (key == '\b') lv_textarea_delete_char(s_focused_ta);
-    else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(s_focused_ta);
-    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(s_focused_ta);
-    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(s_focused_ta);
-    else if (key >= 32 && key <= 126 && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN))) {
-        lv_textarea_add_char(s_focused_ta, (char)key);
-    }
-    return true;
+    return true;                                        /* modal: nothing leaks through */
 }
 
-static bool tailscale_handle_key(uint32_t key, uint8_t mods)
+/* Keys while the header button row has the focus ring; false = not used. */
+static bool header_key(uint32_t key, uint8_t mods)
+{
+    lv_obj_t *cur = devos_focus_get(&s_hdr);
+    bool back = (mods & DEVOS_MOD_SHIFT) != 0;
+    if (key == LV_KEY_ESC || key == LV_KEY_DOWN ||
+        (key == '\t' && cur == (back ? btn_key : btn_toggle))) {
+        devos_focus_clear(&s_hdr);
+        if (key != LV_KEY_ESC && s_sel < 0 && devos_tailnet_peer_count() > 0) select_peer(0);
+        return true;
+    }
+    if (key == LV_KEY_UP) return true;
+    if (key == LV_KEY_LEFT || key == LV_KEY_RIGHT) {
+        devos_focus_move(&s_hdr, key == LV_KEY_RIGHT ? 1 : -1);
+        return true;
+    }
+    if (key == '\t' || key == '\r' || key == '\n' || key == ' ') return devos_focus_key(&s_hdr, key, mods);
+    return false;                                       /* letters: the shortcuts below */
+}
+
+static bool handle_key(uint32_t key, uint8_t mods)
 {
     if (dialog_open()) return dialog_key(key, mods);
     if (mods & (DEVOS_MOD_FN | DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) return false;
+    if (hdr_active() && header_key(key, mods)) return true;
 
     int n = devos_tailnet_peer_count();
     switch (key) {
     case 'c': case 'C': toggle_conn(); return true;
     case 'k': case 'K': open_key_dialog(); return true;
     case 'n': case 'N': open_name_dialog(); return true;
+    case 'f': case 'F': open_forget_dialog(); return true;
     case 'p': case 'P':
         if (s_sel >= 0) { devos_tailnet_ping(s_sel); refresh_ui(); }
+        return true;
+    case '\t':                                          /* into the header buttons */
+        devos_focus_clear(&s_hdr);
+        devos_focus_move(&s_hdr, (mods & DEVOS_MOD_SHIFT) ? -1 : 1);
         return true;
     case LV_KEY_DOWN:
         if (n > 0) select_peer(s_sel < 0 ? 0 : (s_sel + 1 < n ? s_sel + 1 : s_sel));
@@ -733,12 +845,18 @@ static bool tailscale_handle_key(uint32_t key, uint8_t mods)
     case LV_KEY_UP:
         if (n > 0) select_peer(s_sel <= 0 ? 0 : s_sel - 1);
         return true;
+    case DEVOS_KEY_PGDN:                                /* Sym+Down: a screenful */
+        if (n > 0) select_peer(s_sel < 0 ? 0 : (s_sel + 6 < n ? s_sel + 6 : n - 1));
+        return true;
+    case DEVOS_KEY_PGUP:
+        if (n > 0) select_peer(s_sel > 6 ? s_sel - 6 : 0);
+        return true;
     case '\r': case '\n':
         if (s_sel >= 0) { peer_ssh(s_sel); return true; }
         return false;
     case LV_KEY_ESC:
         if (s_sel >= 0) { select_peer(-1); return true; }
-        return false;
+        return false;                                   /* Home */
     default:
         break;
     }
@@ -747,6 +865,15 @@ static bool tailscale_handle_key(uint32_t key, uint8_t mods)
         return true;
     }
     return false;
+}
+
+static bool tailscale_handle_key(uint32_t key, uint8_t mods)
+{
+    s_via_key = true;
+    bool used = handle_key(key, mods);
+    s_via_key = false;
+    update_hint();
+    return used;
 }
 
 static int tailscale_telemetry_lines(char lines[3][64])

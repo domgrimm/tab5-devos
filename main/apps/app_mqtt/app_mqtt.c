@@ -20,6 +20,7 @@
 #include "devos_mqtt.h"
 #include "devos_json.h"
 #include "devos_codeview.h"
+#include "devos_focus.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define ROW_H       22
 #define STREAM_H    320
 #define MONO_W      8
+#define KEYS_H      22                  /* key hints footer */
 #define TPL_DIR     TAB5_SD_MOUNT_POINT "/mqtt"
 #define TPL_FILE    TPL_DIR "/templates.json"
 #define TPL_MAX     16
@@ -69,7 +71,9 @@ static lv_obj_t *pub_panel, *dd_tpl, *ta_topic, *ta_payload, *dd_qos, *cb_retain
 static lv_obj_t *overlay, *modal, *lbl_modal_title, *lbl_modal_err, *btn_modal_ok, *lbl_modal_ok,
                 *btn_modal_cancel, *lbl_modal_cancel;
 static lv_obj_t *ta_host, *ta_port, *ta_user, *ta_pass, *ta_client, *ta_subs;
-static lv_obj_t *s_focus_ta;
+static lv_obj_t *lbl_keys;                      /* key hints footer */
+static devos_focus_t s_pub_f, s_modal_f;        /* publish panel, broker dialog */
+static bool s_pub_focus;                        /* keys go to the publish panel */
 
 static bool s_side_visible = true;
 static bool s_focus_topics;
@@ -116,8 +120,6 @@ static lv_obj_t *mk_btn(lv_obj_t *parent, const char *text, int w, lv_event_cb_t
     return b;
 }
 
-static void ta_click_cb(lv_event_t *e);
-
 static lv_obj_t *mk_ta(lv_obj_t *parent, bool one_line, int w, int h)
 {
     lv_obj_t *ta = lv_textarea_create(parent);
@@ -128,7 +130,6 @@ static lv_obj_t *mk_ta(lv_obj_t *parent, bool one_line, int w, int h)
     lv_obj_set_style_pad_hor(ta, 10, 0);
     lv_obj_set_style_text_font(ta, one_line ? &lv_font_montserrat_14 : &lv_font_nimbus_mono_14, 0);
     lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_add_event_cb(ta, ta_click_cb, LV_EVENT_CLICKED, NULL);
     return ta;
 }
 
@@ -145,19 +146,18 @@ static void style_dd(lv_obj_t *dd)
     lv_obj_set_style_text_font(list, &lv_font_montserrat_14, 0);
 }
 
-static void focus_ta(lv_obj_t *ta)
+/* Tapping a publish-panel control sends the keyboard there too. */
+static void pub_touch_cb(lv_event_t *e)
 {
-    if (s_focus_ta) lv_obj_remove_state(s_focus_ta, LV_STATE_FOCUSED);
-    s_focus_ta = ta;
-    if (ta) {
-        lv_obj_add_state(ta, LV_STATE_FOCUSED);
-        s_focus_topics = false;
-    }
+    LV_UNUSED(e);
+    s_pub_focus = true;
+    s_focus_topics = false;
 }
 
-static void ta_click_cb(lv_event_t *e)
+static void pub_unfocus(void)
 {
-    focus_ta(lv_event_get_target(e));
+    s_pub_focus = false;
+    devos_focus_clear(&s_pub_f);
 }
 
 static void flash(const char *msg)
@@ -244,7 +244,7 @@ static void vl_click_cb(lv_event_t *e)
     lv_area_t a;
     lv_obj_get_coords(v->view, &a);
     int idx = (pt.y - a.y1) / ROW_H;
-    focus_ta(NULL);
+    pub_unfocus();
     if (idx >= 0 && idx < v->count && v->on_select) v->on_select(idx);
 }
 
@@ -677,11 +677,13 @@ static void open_publish(bool open)
     if (open) {
         lv_obj_remove_flag(pub_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(detail, LV_OBJ_FLAG_HIDDEN);
-        focus_ta(lv_textarea_get_text(ta_topic)[0] ? ta_payload : ta_topic);
+        s_pub_focus = true;
+        s_focus_topics = false;
+        devos_focus_set(&s_pub_f, lv_textarea_get_text(ta_topic)[0] ? ta_payload : ta_topic);
     } else {
         lv_obj_add_flag(pub_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(detail, LV_OBJ_FLAG_HIDDEN);
-        focus_ta(NULL);
+        pub_unfocus();
     }
     refresh(true);
 }
@@ -698,7 +700,7 @@ static void copy_to_publish(void)
         s_shown_seq = 0;
     }
     open_publish(true);
-    focus_ta(ta_payload);
+    devos_focus_set(&s_pub_f, ta_payload);
 }
 
 /* ------------------------------------------------------------------ broker dialog */
@@ -723,10 +725,10 @@ static void modal_show(bool show)
         set_text(lbl_modal_err, "");
         lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(overlay);
-        focus_ta(ta_host);
+        devos_focus_set(&s_modal_f, ta_host);
     } else {
         lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-        focus_ta(s_pub_open ? ta_payload : NULL);
+        devos_focus_clear(&s_modal_f);
     }
 }
 
@@ -834,9 +836,11 @@ static void apply_layout(void)
     lv_obj_set_pos(lbl_empty, x + 20, TOP_H + 20);
     lv_obj_set_width(lbl_empty, w - 40);
     lv_obj_set_pos(detail, x, TOP_H + STREAM_H);
-    lv_obj_set_size(detail, w, DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H);
+    lv_obj_set_size(detail, w, DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H - KEYS_H);
     lv_obj_set_pos(pub_panel, x, TOP_H + STREAM_H);
-    lv_obj_set_size(pub_panel, w, DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H);
+    lv_obj_set_size(pub_panel, w, DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H - KEYS_H);
+    lv_obj_set_pos(lbl_keys, x + 12, DEVOS_CONTENT_HEIGHT - KEYS_H + 3);
+    lv_obj_set_width(lbl_keys, w - 24);
     lv_obj_set_width(ta_payload, w - 32);
     lv_obj_align(lbl_new, LV_ALIGN_TOP_RIGHT, -16, TOP_H + STREAM_H - 34);
 }
@@ -935,6 +939,20 @@ static void refresh(bool force)
         lv_obj_add_flag(lbl_new, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_set_style_border_color(side, s_focus_topics ? p->accent_primary : p->surface_border, 0);
+
+    /* what the keys do right now */
+    const char *keys;
+    if (!lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN))
+        keys = "Tab / Up / Down move    Enter connects    Esc cancels";
+    else if (s_pub_open && s_pub_focus)
+        keys = "Tab / Up / Down move    Left / Right change    Enter presses    Ctrl+Enter sends    "
+               "Alt+1..9 sends a template    Esc leaves the panel";
+    else if (s_focus_topics)
+        keys = "Up / Down pick a topic    Tab or Enter back to messages    Esc back";
+    else
+        keys = "Up / Down messages    Tab topics    Enter copy to publish    P publish    B broker    "
+               "O connect    Space pause    C clear    F newest    Sym+L topics    Esc home";
+    set_text(lbl_keys, keys);
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -988,6 +1006,7 @@ static void apply_theme(const devos_palette_t *p, void *ud)
     lv_obj_set_style_bg_color(pub_panel, p->bg_alt, 0);
     lv_obj_set_style_border_color(pub_panel, p->surface_border, 0);
     lv_obj_set_style_text_color(lbl_pub_hint, p->text_secondary, 0);
+    lv_obj_set_style_text_color(lbl_keys, p->text_secondary, 0);
     lv_obj_set_style_text_color(lbl_pub_msg, p->accent_secondary, 0);
     lv_obj_set_style_text_color(cb_retain, p->text_primary, 0);
     lv_obj_t *tas[] = {ta_topic, ta_payload, ta_host, ta_port, ta_user, ta_pass, ta_client, ta_subs};
@@ -1016,32 +1035,6 @@ static void apply_theme(const devos_palette_t *p, void *ud)
 }
 
 /* ------------------------------------------------------------------ keys */
-static bool field_key(lv_obj_t *ta, uint32_t key, bool multiline)
-{
-    if (key == '\b' || key == 0x7F) lv_textarea_delete_char(ta);
-    else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(ta);
-    else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(ta);
-    else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(ta);
-    else if (multiline && key == LV_KEY_UP) lv_textarea_cursor_up(ta);
-    else if (multiline && key == LV_KEY_DOWN) lv_textarea_cursor_down(ta);
-    else if (multiline && (key == '\r' || key == '\n')) lv_textarea_add_char(ta, '\n');
-    else if (key >= 32 && key <= 126) lv_textarea_add_char(ta, (char)key);
-    else return false;
-    return true;
-}
-
-static void cycle_focus(bool back)
-{
-    lv_obj_t *modal_order[] = {ta_host, ta_port, ta_user, ta_pass, ta_client, ta_subs};
-    lv_obj_t *pub_order[] = {ta_topic, ta_payload};
-    bool in_modal = !lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t **order = in_modal ? modal_order : pub_order;
-    int n = in_modal ? 6 : 2;
-    int cur = -1;
-    for (int i = 0; i < n; i++) if (order[i] == s_focus_ta) cur = i;
-    focus_ta(order[((cur < 0 ? 0 : cur + (back ? -1 : 1)) + n) % n]);
-}
-
 static void stream_move(int delta)
 {
     if (!s_row_n) return;
@@ -1059,10 +1052,8 @@ static bool mqtt_handle_key(uint32_t key, uint8_t mods)
 
     if (modal_open) {
         if (key == LV_KEY_ESC) modal_show(false);
-        else if (key == '\r' || key == '\n') modal_ok_cb(NULL);
-        else if (key == '\t' || key == LV_KEY_DOWN) cycle_focus(false);
-        else if (key == LV_KEY_UP) cycle_focus(true);
-        else if (s_focus_ta) field_key(s_focus_ta, key, false);
+        else if (devos_focus_key(&s_modal_f, key, mods)) { /* moved, typed, pressed a button */ }
+        else if (key == '\r' || key == '\n') modal_ok_cb(NULL);   /* Enter in a field */
         return true;
     }
 
@@ -1076,14 +1067,19 @@ static bool mqtt_handle_key(uint32_t key, uint8_t mods)
         return true;
     }
 
-    if (s_focus_ta) {
-        if (key == LV_KEY_ESC) { focus_ta(NULL); return true; }
-        if (key == '\t') { cycle_focus(false); return true; }
+    if (s_pub_open && s_pub_focus) {
+        if (key == LV_KEY_ESC) {                         /* leave the panel (still open) */
+            pub_unfocus();
+            refresh(true);
+            return true;
+        }
         if ((mods & DEVOS_MOD_CTRL) && (key == '\r' || key == '\n')) { send_cb(NULL); return true; }
-        if (s_focus_ta == ta_topic && (key == '\r' || key == '\n')) { focus_ta(ta_payload); return true; }
-        if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN)) return true;
-        field_key(s_focus_ta, key, s_focus_ta == ta_payload);
-        return true;
+        if (devos_focus_key(&s_pub_f, key, mods)) return true;
+        if (key == '\r' || key == '\n') {                 /* Enter in the topic field / on Retain */
+            if (devos_focus_get(&s_pub_f) == ta_topic) devos_focus_set(&s_pub_f, ta_payload);
+            return true;
+        }
+        return (mods & DEVOS_MOD_FN) == 0;
     }
 
     if (key == LV_KEY_ESC) {
@@ -1117,7 +1113,16 @@ static bool mqtt_handle_key(uint32_t key, uint8_t mods)
         return true;
     case ' ': pause_cb(NULL); return true;
     case 'c': case 'C': clear_cb(NULL); return true;
-    case 'p': case 'P': open_publish(!s_pub_open); return true;
+    case 'p': case 'P':
+        if (!s_pub_open) open_publish(true);
+        else {                                          /* open but not focused: go there */
+            s_pub_focus = true;
+            s_focus_topics = false;
+            devos_focus_first(&s_pub_f);
+            refresh(true);
+        }
+        return true;
+    case 'o': case 'O': conn_cb(NULL); return true;
     case 'b': case 'B': modal_show(true); return true;
     case 'f': case 'F':
         s_follow = true;
@@ -1241,7 +1246,7 @@ static void mqtt_init(void)
     lv_obj_set_style_border_width(detail_scroll, 0, 0);
     lv_obj_set_style_radius(detail_scroll, 0, 0);
     lv_obj_set_pos(detail_scroll, 4, 30);
-    lv_obj_set_size(detail_scroll, lv_pct(99), DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H - 34);
+    lv_obj_set_size(detail_scroll, lv_pct(99), DEVOS_CONTENT_HEIGHT - TOP_H - STREAM_H - KEYS_H - 34);
     devos_codeview_create(&s_cv, detail_scroll);
     s_cv.plain = true;
 
@@ -1282,8 +1287,7 @@ static void mqtt_init(void)
     lv_textarea_set_placeholder_text(ta_payload, "Payload");
     lv_obj_set_pos(ta_payload, 16, 98);
     lbl_pub_hint = lv_label_create(pub_panel);
-    lv_label_set_text(lbl_pub_hint, "Ctrl+Enter sends   Alt+1..9 sends a template   "
-                                    "{{ts}} {{time}} {{battery}} {{uptime}} are filled in when sent");
+    lv_label_set_text(lbl_pub_hint, "{{ts}} {{time}} {{battery}} {{uptime}} in the topic or payload are filled in when sent");
     lv_obj_set_style_text_font(lbl_pub_hint, &lv_font_montserrat_12, 0);
     lv_obj_set_pos(lbl_pub_hint, 16, 256);
     lbl_pub_msg = lv_label_create(pub_panel);
@@ -1291,6 +1295,18 @@ static void mqtt_init(void)
     lv_obj_set_style_text_font(lbl_pub_msg, &lv_font_montserrat_12, 0);
     lv_obj_align(lbl_pub_msg, LV_ALIGN_TOP_RIGHT, -16, 20);
     tpl_fill_dropdown();
+    devos_focus_init(&s_pub_f);
+    lv_obj_t *pub_order[] = {dd_tpl, btn_tpl_save, btn_tpl_del, ta_topic, dd_qos, cb_retain, btn_send, ta_payload};
+    for (unsigned i = 0; i < sizeof(pub_order) / sizeof(pub_order[0]); i++) {
+        devos_focus_add(&s_pub_f, pub_order[i]);
+        lv_obj_add_event_cb(pub_order[i], pub_touch_cb, LV_EVENT_PRESSED, NULL);
+    }
+
+    /* ---- key hints ---- */
+    lbl_keys = lv_label_create(screen);
+    lv_label_set_long_mode(lbl_keys, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(lbl_keys, &lv_font_montserrat_12, 0);
+    lv_label_set_text(lbl_keys, "");
 
     /* ---- broker dialog ---- */
     overlay = lv_obj_create(screen);
@@ -1335,6 +1351,9 @@ static void mqtt_init(void)
     btn_modal_cancel = mk_btn(modal, "Cancel", 120, modal_cancel_cb, &lbl_modal_cancel);
     lv_obj_set_size(btn_modal_cancel, 120, 36);
     lv_obj_align(btn_modal_cancel, LV_ALIGN_TOP_RIGHT, 0, 236);
+    devos_focus_init(&s_modal_f);
+    lv_obj_t *modal_order[] = {ta_host, ta_port, ta_user, ta_pass, ta_client, ta_subs, btn_modal_ok, btn_modal_cancel};
+    for (unsigned i = 0; i < sizeof(modal_order) / sizeof(modal_order[0]); i++) devos_focus_add(&s_modal_f, modal_order[i]);
 
     apply_layout();
     apply_theme(p, NULL);
@@ -1353,7 +1372,7 @@ static void mqtt_show(void)
 
 static void mqtt_hide(void)
 {
-    focus_ta(NULL);
+    pub_unfocus();
 }
 
 static int mqtt_telemetry_lines(char lines[3][64])
