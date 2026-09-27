@@ -114,6 +114,66 @@ const char *devos_json_span(const char *p, const char *end)
     return NULL;
 }
 
+/* End of the value starting at p (string, object, array or scalar). */
+static const char *value_end(const char *p, const char *end)
+{
+    if (p >= end) return NULL;
+    if (*p == '{' || *p == '[') return devos_json_span(p, end);
+    if (*p == '"') {
+        p++;
+        while (p < end && *p != '"') {
+            if (*p == '\\' && p + 1 < end) p++;
+            p++;
+        }
+        return p < end ? p + 1 : NULL;
+    }
+    while (p < end && *p != ',' && *p != '}' && *p != ']') p++;
+    return p;
+}
+
+const char *devos_json_member(const char *p, const char *end, const char *key)
+{
+    if (!p || p >= end || *p != '{') return NULL;
+    size_t klen = strlen(key);
+    p++;
+    for (;;) {
+        p = js_ws(p, end);
+        if (p >= end || *p != '"') return NULL;          /* '}' or malformed */
+        const char *k = p + 1;
+        const char *kend = value_end(p, end);
+        if (!kend) return NULL;
+        bool match = (size_t)(kend - 1 - k) == klen && memcmp(k, key, klen) == 0;
+        p = js_ws(kend, end);
+        if (p >= end || *p != ':') return NULL;
+        p = js_ws(p + 1, end);
+        if (match) return p;
+        p = value_end(p, end);
+        if (!p) return NULL;
+        p = js_ws(p, end);
+        if (p >= end || *p != ',') return NULL;
+        p++;
+    }
+}
+
+int devos_json_member_str(const char *obj, const char *end, const char *key, char *out, size_t cap)
+{
+    const char *v = devos_json_member(obj, end, key);
+    if (!v || *v != '"') return -1;
+    return devos_json_parse_str(v, end, out, cap) ? 0 : -1;
+}
+
+bool devos_json_member_num(const char *obj, const char *end, const char *key, double *out)
+{
+    const char *v = devos_json_member(obj, end, key);
+    if (!v) return false;
+    if (*v == '"') v++;
+    char *stop = NULL;
+    double d = strtod(v, &stop);
+    if (stop == v || stop > end) return false;
+    if (out) *out = d;
+    return true;
+}
+
 int devos_json_get_str(const char *js, size_t len, const char *key, char *out,
                        size_t cap)
 {

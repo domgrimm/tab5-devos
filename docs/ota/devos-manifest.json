@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1",
-  "url": "tab5-devos-0.1.1.bin",
-  "size": 2504064,
-  "sha256": "91a1faf0eab1e318c295f6bdea991f66d2320b39f0a0638248ecfb3429e94dbe",
-  "notes": "ADS-B: OpenStreetMap map under the radar (M toggles it)"
+  "version": "0.2.0",
+  "url": "tab5-devos-0.2.0.bin",
+  "size": 2525984,
+  "sha256": "938ea7733f77e47825c262cc10720fdc92de2ce223afc80c47a04c591d3d2e0f",
+  "notes": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards"
 }

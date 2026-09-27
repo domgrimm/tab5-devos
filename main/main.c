@@ -24,6 +24,7 @@
 #include "apps/app_rest/app_rest.h"
 #include "apps/app_docker/app_docker.h"
 #include "apps/app_adsb/app_adsb.h"
+#include "apps/app_cricket/app_cricket.h"
 #include "apps/app_totp/app_totp.h"
 #include "apps/app_wireguard/app_wireguard.h"
 #include "apps/app_settings/app_settings.h"
@@ -399,6 +400,11 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering ADS-B...\n");
     devos_core_register_app(app_adsb_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Cricket...\n");
+    devos_core_register_app(app_cricket_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
