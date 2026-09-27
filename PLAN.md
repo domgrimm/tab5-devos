@@ -375,6 +375,17 @@ services in the REST client).
     until you scroll up.
 *   The worker (Core 0, started on first use) only polls while the app is shown.
 
+### 3.14 ADS-B Radar (`app_adsb`, `devos_adsb`)
+
+*   Polls a local receiver's `aircraft.json` (dump1090-fa, readsb, tar1090, PiAware SkyAware,
+    ultrafeeder) once a second while shown; receiver position from the settings or its
+    `receiver.json`. Aircraft not heard for 60 s drop off; 48-point trails.
+*   Radar: range rings (5..400 nm, +/-), aircraft as triangles along their track coloured by
+    altitude, trails, callsign + FL labels (L), emergency squawks 7500/7600/7700 blinking red;
+    tap to pick. Side: aircraft by distance and the selected one's ICAO, category, squawk, baro /
+    GPS altitude, vertical rate, speed, track, position, range / bearing, signal, MLAT flag.
+*   Config in `/.devos/adsb.json`.
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
@@ -596,6 +607,7 @@ tab5-devos/
 │   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
+│   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
@@ -621,6 +633,7 @@ tab5-devos/
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_docker/            # Docker / Portainer console
+│   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json)
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
