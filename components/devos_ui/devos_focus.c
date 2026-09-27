@@ -4,7 +4,7 @@
 #include "devos_config.h"
 #include "devos_core.h"
 
-static lv_style_t s_ring;
+static lv_style_t s_ring, s_ring_out;
 static bool s_ring_ready;
 
 static void ring_theme_cb(const devos_palette_t *p, void *ud)
@@ -12,7 +12,9 @@ static void ring_theme_cb(const devos_palette_t *p, void *ud)
     (void)ud;
     lv_style_set_outline_color(&s_ring, p->accent_primary);
     lv_style_set_border_color(&s_ring, p->accent_primary);
+    lv_style_set_outline_color(&s_ring_out, p->accent_primary);
     lv_obj_report_style_change(&s_ring);
+    lv_obj_report_style_change(&s_ring_out);
 }
 
 static void ring_init(void)
@@ -26,7 +28,20 @@ static void ring_init(void)
     lv_style_set_outline_color(&s_ring, devos_theme_get()->accent_primary);
     /* controls with a border (text fields) draw it over the inset ring: tint it too */
     lv_style_set_border_color(&s_ring, devos_theme_get()->accent_primary);
+    /* switches and sliders fill with the accent, which paints over an inset
+     * ring (and matches its colour): theirs sits just outside, clear of the
+     * fill. They always have room for it inside their card or row. */
+    lv_style_init(&s_ring_out);
+    lv_style_set_outline_width(&s_ring_out, 2);
+    lv_style_set_outline_pad(&s_ring_out, 2);
+    lv_style_set_outline_opa(&s_ring_out, LV_OPA_COVER);
+    lv_style_set_outline_color(&s_ring_out, devos_theme_get()->accent_primary);
     devos_theme_add_listener(ring_theme_cb, NULL);
+}
+
+static bool ring_outside(lv_obj_t *o)
+{
+    return lv_obj_check_type(o, &lv_switch_class) || lv_obj_check_type(o, &lv_slider_class);
 }
 
 static bool usable(lv_obj_t *o)
@@ -102,7 +117,7 @@ void devos_focus_add(devos_focus_t *f, lv_obj_t *obj)
 {
     if (!obj || f->n >= DEVOS_FOCUS_MAX) return;
     f->items[f->n++] = obj;
-    lv_obj_add_style(obj, &s_ring, LV_STATE_FOCUS_KEY);
+    lv_obj_add_style(obj, ring_outside(obj) ? &s_ring_out : &s_ring, LV_STATE_FOCUS_KEY);
     lv_obj_add_event_cb(obj, pressed_cb, LV_EVENT_PRESSED, f);
 }
 
