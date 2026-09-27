@@ -28,8 +28,12 @@
 #define QUIRC_PIXEL_BLACK	1
 #define QUIRC_PIXEL_REGION	2
 
+/* devOS: real camera frames produce far more finder-pattern candidates than
+ * 254 (textured backgrounds, sensor noise) and quirc silently stops finding
+ * capstones once the region table is full, so use 16-bit pixels. Costs
+ * ~1 MB of PSRAM per decoder, only while a scan runs. */
 #ifndef QUIRC_MAX_REGIONS
-#define QUIRC_MAX_REGIONS	254
+#define QUIRC_MAX_REGIONS	65534
 #endif
 #define QUIRC_MAX_CAPSTONES	32
 #define QUIRC_MAX_GRIDS		(QUIRC_MAX_CAPSTONES * 2)
@@ -44,6 +48,11 @@ typedef uint8_t quirc_pixel_t;
 typedef uint16_t quirc_pixel_t;
 #else
 #error "QUIRC_MAX_REGIONS > 65534 is not supported"
+#endif
+
+/* devOS: the ESP32-P4 FPU is single precision only (double is emulated) */
+#ifndef QUIRC_FLOAT_TYPE
+#define QUIRC_FLOAT_TYPE	float
 #endif
 
 #ifdef QUIRC_FLOAT_TYPE
@@ -84,6 +93,8 @@ struct quirc_grid {
 	/* Alignment pattern region and corner */
 	int			align_region;
 	struct quirc_point	align;
+	struct quirc_point	align_est;	/* devOS: from the capstone edges */
+	struct quirc_point	align_aff;	/* devOS: parallelogram of corners */
 
 	/* Timing pattern endpoints */
 	struct quirc_point	tpep[3];

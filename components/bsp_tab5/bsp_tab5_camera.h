@@ -16,7 +16,8 @@
 extern "C" {
 #endif
 
-/* Detect / set up on first use and start streaming. */
+/* Detect the sensor on first use; (re)build the receiver + ISP and start
+ * streaming. stop() tears them down again. */
 bool bsp_tab5_camera_start(void);
 void bsp_tab5_camera_stop(void);
 bool bsp_tab5_camera_streaming(void);
@@ -25,8 +26,8 @@ bool bsp_tab5_camera_streaming(void);
 void bsp_tab5_camera_size(int *w, int *h);
 
 /* Wait for the next frame and write a w x h greyscale window from its centre,
- * sampling every `step` pixels (1 = full resolution). False on timeout or if
- * the camera isn't streaming. */
+ * each pixel the average of a step x step block (1 = full resolution). False
+ * on timeout or if the camera isn't streaming. */
 bool bsp_tab5_camera_grab_gray(uint8_t *out, int w, int h, int step, int timeout_ms);
 
 /* Why the last start / grab failed ("" if it didn't). */

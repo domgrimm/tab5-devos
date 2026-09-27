@@ -304,6 +304,16 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     codes too) while the app shows a live preview. A decoded wg-quick config is validated, named
     (default: the endpoint's first label) and stored like an SD import. The simulator serves
     `/.devos/camera.pgm` as the camera frame.
+*   **Decoding real frames:** frames rotate through full / half (2x2-averaged) resolution and
+    quirc's global threshold / a local-mean one. The vendored quirc is patched (marked `devOS:`):
+    16-bit region table (254 regions ran out on textured frames), single-precision floats,
+    alignment-pattern candidates ranked by grid fit (upstream grabbed the first module-sized blob
+    near an extrapolated estimate), an affine capstone-grouping test, a second perspective
+    refinement round, and `quirc_refit()` for off-by-one-version grid sizes. On a synthetic
+    blurred / noisy / moire / glare / tilted set this took decoding from 17 to 46 of 60 frames.
+    The camera is torn down and rebuilt on every start (restarting a stopped CSI controller gave
+    no frames). The scanner logs stats (`qr` tag) every 2 s and saves the last frame of a scan
+    that found nothing to `/.devos/qr_last.pgm`, which the simulator can replay.
 *   **Limits:** one tunnel at a time and never together with Tailscale (UDP 51820, routes and
     internal RAM).
 
@@ -449,7 +459,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 6. Missing: command palette, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
 > 7. Camera (2026-09-27): driver + WireGuard QR import built on the new `i2c_master` driver (the
 >    whole BSP moved off the legacy I2C driver); `esp_cam_sensor` is pinned to 0.9.0 because 1.x
->    needs esp-idf-kconfig >= 2.5. Not yet verified on hardware.
+>    needs esp-idf-kconfig >= 2.5. Preview verified on hardware; QR decoding reworked after the
+>    first hardware test found nothing and a second launch got no frames.
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
