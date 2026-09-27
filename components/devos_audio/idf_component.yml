@@ -1,0 +1,4 @@
+## ES7210 (mics) and ES8388 (speaker) drivers, as M5Stack's Tab5 BSP uses them.
+dependencies:
+  idf: ">=5.4"
+  espressif/esp_codec_dev: "~1.5"

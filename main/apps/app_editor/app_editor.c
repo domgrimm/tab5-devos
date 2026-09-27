@@ -12,6 +12,11 @@
  * Edit/Split/Preview, Ctrl+B bold, Ctrl+Enter tick a task, Sym+Left/Right
  * line start/end, Sym+Up/Down page, Alt+Left/Right word, Tab indent,
  * Sym+L / Sym+F hide the file list, Esc -> file list.
+ * Scratchpad / voice memos (any note): Ctrl+T appends a timestamped log line
+ * (a date heading when the day changes), Ctrl+R records a voice memo into
+ * memos/ next to the note and links it, Ctrl+L plays the memo on the cursor's
+ * line, Ctrl+M lists the memos (play, transcribe, delete, settings), Ctrl+J
+ * opens /notes/scratchpad.md. Sym+F is the distraction-free view.
  * Keys (file list): arrows, Enter open, Backspace up a folder, N new file,
  * F new folder, R rename, D/Del delete, H hidden files, Esc -> editor.
  */
@@ -21,7 +26,9 @@
 #include "devos_core.h"
 #include "devos_mdview.h"
 #include "devos_codeview.h"
+#include "ed_voice.h"
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -41,9 +48,10 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define ED_UNDO_MAX 24
 #define ED_CLIP_MAX (32 * 1024)
 #define ED_AUTOSAVE_MS 30000
-#define ED_STATUS_H 24
+#define ED_STATUS_H 40                   /* status line + key hints below it */
 #define ED_FIND_H 40
 #define ED_CONFIG_FILE TAB5_SD_MOUNT_POINT "/.devos/editor.json"
+#define ED_SCRATCHPAD  "notes/scratchpad.md"
 
 typedef enum { VIEW_EDIT = 0, VIEW_SPLIT, VIEW_PREVIEW } ed_view_t;
 typedef enum { MODAL_NONE = 0, MODAL_NEW_FILE, MODAL_NEW_DIR, MODAL_RENAME, MODAL_DELETE } ed_modal_t;
@@ -381,8 +389,20 @@ static void activate_row(int r)
     }
     char rel[ED_PATH_MAX];
     join(s_dir, s_ents[ei].name, rel, sizeof(rel));
+    static const char *const wav[] = {"wav", NULL};
     if (s_ents[ei].dir) {
         enter_dir(rel, NULL);
+    } else if (has_ext(rel, wav)) {                 /* voice memos play */
+        s_sel = r;
+        char path[ED_PATH_MAX + 32], msg[160];
+        abs_path(rel, path, sizeof(path));
+        if (ed_voice_playing()) {
+            ed_voice_stop();
+            flash("Stopped");
+        } else {
+            ed_voice_play(path, msg, sizeof(msg));
+            flash(msg);
+        }
     } else {
         s_sel = r;
         open_path(rel);
@@ -782,6 +802,161 @@ static void newline_indent(void)
 }
 
 /* ------------------------------------------------------------------ find */
+/* ------------------------------------------------------- scratchpad + voice */
+/* the note's own folder, absolute, + "/memos" */
+static void memo_dir(char *out, size_t n)
+{
+    char dir[ED_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", s_file[0] ? s_file : ED_SCRATCHPAD);
+    parent_of(dir);
+    char a[ED_PATH_MAX + 32];
+    abs_path(dir, a, sizeof(a));
+    snprintf(out, n, "%s/memos", a);
+}
+
+/* ed_voice's callback: a memo link at the cursor, or a transcript on its own
+ * line under the line that mentions `after` */
+static void voice_insert(const char *after, const char *line)
+{
+    if (!s_file[0] || s_readonly) {
+        flash("Open a note to put the memo link in");
+        return;
+    }
+    const char *t = lv_textarea_get_text(ta_editor);
+    size_t ll = strlen(line);
+    char *ins = malloc(ll + 4);
+    if (!ins) return;
+    uint32_t at;
+    const char *hit = after ? strstr(t, after) : NULL;
+    if (hit) {
+        at = (uint32_t)(hit - t);
+        while (t[at] && t[at] != '\n') at++;
+        snprintf(ins, ll + 4, "\n%s", line);
+    } else {
+        at = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
+        bool gap = at > 0 && t[at - 1] != '\n' && t[at - 1] != ' ';
+        snprintf(ins, ll + 4, "%s%s", gap ? " " : "", line);
+    }
+    uint32_t keep = lv_textarea_get_cursor_pos(ta_editor);
+    before_edit(true);
+    replace_range(at, at, ins);
+    if (hit) lv_textarea_set_cursor_pos(ta_editor, (int32_t)keep);     /* transcripts don't move you */
+    free(ins);
+    after_edit();
+}
+
+/* Ctrl+T: a log line at the end, under today's heading */
+static void insert_timestamp(void)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char day[64], hm[16];
+    const char *t = lv_textarea_get_text(ta_editor);
+    before_edit(true);
+    if (!s_markdown) {
+        strftime(hm, sizeof(hm), "[%Y-%m-%d %H:%M] ", &tm);
+        lv_textarea_add_text(ta_editor, hm);
+        after_edit();
+        return;
+    }
+    strftime(day, sizeof(day), "## %A %d %B %Y", &tm);
+    strftime(hm, sizeof(hm), "- %H:%M ", &tm);
+    const char *last = NULL;
+    for (const char *p = t; (p = strstr(p, "## ")) != NULL; p += 3) {
+        if (p == t || p[-1] == '\n') last = p;
+    }
+    bool today = last && !strncmp(last, day, strlen(day)) && (last[strlen(day)] == '\n' || !last[strlen(day)]);
+    size_t len = strlen(t);
+    char ins[128];
+    snprintf(ins, sizeof(ins), "%s%s%s%s%s", len && t[len - 1] != '\n' ? "\n" : "", today || !len ? "" : "\n",
+             today ? "" : day, today ? "" : "\n\n", hm);
+    replace_range((uint32_t)len, (uint32_t)len, ins);
+    after_edit();
+}
+
+/* Ctrl+J: the scratchpad, cursor at the end */
+static void open_scratchpad(void)
+{
+    char path[ED_PATH_MAX + 32];
+    abs_path(ED_SCRATCHPAD, path, sizeof(path));
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        char d[ED_PATH_MAX + 32];
+        abs_path("notes", d, sizeof(d));
+        mkdir(d, 0755);
+        if (!write_file(ED_SCRATCHPAD, "# Scratchpad\n\n"
+                                       "Ctrl+T adds a timestamped line, Ctrl+R records a voice memo, "
+                                       "Ctrl+L plays the one on the line, Ctrl+M lists them.\n")) {
+            flash("Couldn't create notes/scratchpad.md (SD card?)");
+            return;
+        }
+    }
+    if (strcmp(s_file, ED_SCRATCHPAD) != 0) {
+        enter_dir("notes", "scratchpad.md");
+        open_path(ED_SCRATCHPAD);
+    }
+    if (!s_file[0] || s_readonly) return;
+    s_focus_list = false;
+    if (s_view == VIEW_PREVIEW) {
+        s_view = VIEW_EDIT;
+        apply_layout();
+    }
+    lv_textarea_set_cursor_pos(ta_editor, LV_TEXTAREA_CURSOR_LAST);
+    list_paint();
+    refresh_status();
+}
+
+/* Ctrl+R */
+static void toggle_record(void)
+{
+    if (ed_voice_recording()) {
+        ed_voice_record_stop();
+        refresh_status();
+        return;
+    }
+    if (!s_file[0] || s_readonly || !s_markdown) open_scratchpad();
+    if (!s_file[0] || s_readonly) return;
+    char dir[ED_PATH_MAX + 48], msg[160];
+    memo_dir(dir, sizeof(dir));
+    ed_voice_record_start(dir, msg, sizeof(msg));
+    flash(msg);
+}
+
+/* Ctrl+L: the memo linked on the cursor's line */
+static void play_line_memo(void)
+{
+    if (ed_voice_playing()) {
+        ed_voice_stop();
+        flash("Stopped");
+        return;
+    }
+    if (!s_file[0] || s_readonly) return;
+    uint32_t ls, le;
+    line_range(&ls, &le);
+    const char *t = lv_textarea_get_text(ta_editor);
+    char line[512];
+    size_t n = le - ls < sizeof(line) - 1 ? le - ls : sizeof(line) - 1;
+    memcpy(line, t + ls, n);
+    line[n] = '\0';
+    char *w = strstr(line, ".wav)");
+    char *o = w ? w : NULL;
+    while (o && o > line && o[-1] != '(') o--;
+    if (!w || o == line) {
+        flash("No voice memo on this line");
+        return;
+    }
+    w[4] = '\0';                                        /* keep ".wav" */
+    char dir[ED_PATH_MAX], rel[ED_PATH_MAX * 2], path[ED_PATH_MAX * 2 + 32], msg[160];
+    snprintf(dir, sizeof(dir), "%s", s_file);
+    parent_of(dir);
+    if (o[0] == '/') snprintf(rel, sizeof(rel), "%s", o + 1);
+    else join(dir, o, rel, sizeof(rel));
+    abs_path(rel, path, sizeof(path));
+    ed_voice_play(path, msg, sizeof(msg));
+    flash(msg);
+}
+
 static int count_matches(void)
 {
     if (!s_find[0]) return 0;
@@ -1075,6 +1250,8 @@ static void apply_layout(void)
     }
     lv_obj_set_size(status_bar, main_w, ED_STATUS_H);
     lv_obj_set_pos(status_bar, 0, DEVOS_CONTENT_HEIGHT - ED_STATUS_H);
+    lv_obj_set_width(lbl_status, main_w - 20);
+    lv_obj_set_width(lbl_keys, main_w - 20);
 
     bool none = !s_file[0];
     if (none) {
@@ -1135,13 +1312,15 @@ static void refresh_keys(void)
 {
     /* what the keys do right now (the file list has its own hint) */
     const char *keys;
-    if (s_modal != MODAL_NONE) keys = "Enter confirms   Esc cancels";
+    if (ed_voice_list_open()) keys = ed_voice_keys();
+    else if (s_modal != MODAL_NONE) keys = "Enter confirms   Esc cancels";
     else if (s_focus_list) keys = s_file[0] ? "Esc  back to the editor" : "";
     else if (s_find_open) keys = "Type to find   Enter next   Esc close";
     else if (!s_file[0]) keys = "Esc  file list   Ctrl+N  new file";
     else if (s_readonly) keys = "Arrows  scroll   Esc  file list";
     else if (s_view == VIEW_PREVIEW) keys = "Up / Down  scroll   Ctrl+P  edit   Esc  file list";
-    else keys = "Esc  files   Ctrl+S  save   Ctrl+F  find   Ctrl+P  preview   Ctrl+Z  undo   Ctrl+N  new";
+    else keys = "Esc  files   Ctrl+S  save   Ctrl+F  find   Ctrl+P  preview   Ctrl+Z  undo   Ctrl+T  time   "
+                "Ctrl+R  record   Ctrl+L  play   Ctrl+M  memos   Ctrl+J  scratchpad";
     if (lbl_keys && strcmp(lv_label_get_text(lbl_keys), keys) != 0) lv_label_set_text(lbl_keys, keys);
 }
 
@@ -1185,6 +1364,13 @@ static void refresh_status(void)
                      s_markdown ? "Markdown" : "Text", s_dirty ? "modified" : "saved");
         }
     }
+    char vs[64];
+    ed_voice_status(vs, sizeof(vs));
+    if (vs[0]) {
+        char tmp[200];
+        snprintf(tmp, sizeof(tmp), "%s     %s", vs, buf);
+        snprintf(buf, sizeof(buf), "%s", tmp);
+    }
     if (s_flash[0] && lv_tick_get() < s_flash_until) {
         size_t l = strlen(buf);
         snprintf(buf + l, sizeof(buf) - l, "     %s", s_flash);
@@ -1225,7 +1411,15 @@ static void cycle_view(void)
 static void tick_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
+    ed_voice_tick();                    /* even hidden: a stopped recording still gets its link */
+    const char *vm = ed_voice_take_message();
+    if (vm[0]) flash(vm);
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
+    static bool was_busy;
+    char vs[64];
+    ed_voice_status(vs, sizeof(vs));
+    if (vs[0] || was_busy) refresh_status();          /* the recording clock / level meter */
+    was_busy = vs[0] != '\0';
     if (s_preview_stale && s_view != VIEW_EDIT && lv_tick_elaps(s_last_edit) > 350) {
         s_preview_stale = false;
         render_preview(true);
@@ -1405,6 +1599,8 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
         return true;
     }
 
+    if (ed_voice_list_open()) return ed_voice_key(key, mods);
+
     if (mods & DEVOS_MOD_FN) {
         if (key == 'l' || key == 'L') {                 /* Sym+L: file list */
             tree_cb(NULL);
@@ -1438,6 +1634,16 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
             list_paint();
             cycle_view();
             return true;
+        case 'j': open_scratchpad(); return true;
+        case 'r': toggle_record(); return true;
+        case 'l': play_line_memo(); return true;
+        case 'm': {
+            char dir[ED_PATH_MAX + 48];
+            memo_dir(dir, sizeof(dir));
+            ed_voice_open_list(dir);
+            refresh_keys();
+            return true;
+        }
         default: break;
         }
     }
@@ -1496,6 +1702,7 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
 
     if (mods & DEVOS_MOD_CTRL) {
         switch (key) {
+        case 't': insert_timestamp(); return true;
         case 'z': undo(); return true;
         case '\r':
         case '\n':
@@ -1816,11 +2023,13 @@ static void editor_init(void)
     lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
     lbl_status = lv_label_create(status_bar);
     lv_label_set_text(lbl_status, "");
-    lv_obj_align(lbl_status, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_pos(lbl_status, 0, 3);
+    lv_label_set_long_mode(lbl_status, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_12, 0);
     lbl_keys = lv_label_create(status_bar);
     lv_label_set_text(lbl_keys, "");
-    lv_obj_align(lbl_keys, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_set_pos(lbl_keys, 0, 21);
+    lv_label_set_long_mode(lbl_keys, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(lbl_keys, &lv_font_montserrat_12, 0);
 
     /* ---- name / confirm dialog ---- */
@@ -1860,6 +2069,7 @@ static void editor_init(void)
     lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
     devos_theme_add_listener(apply_theme, NULL);
+    ed_voice_init(screen, voice_insert);
     lv_timer_create(tick_cb, 250, NULL);
 
     /* last folder + file, else /notes when it exists */
@@ -1921,11 +2131,21 @@ static void editor_show(void)
 
 static void editor_hide(void)
 {
+    if (ed_voice_recording()) ed_voice_record_stop();   /* its link goes in when the file closes */
+    if (ed_voice_playing()) ed_voice_stop();
     if (s_dirty) save_file();
 }
 
 static int editor_telemetry_lines(char lines[3][64])
 {
+    char vs[64];
+    ed_voice_status(vs, sizeof(vs));
+    if (vs[0]) {
+        snprintf(lines[0], sizeof(lines[0]), "* %s", vs);
+        snprintf(lines[1], sizeof(lines[1]), "* %s", s_file[0] ? base_name(s_file) : "(no file open)");
+        snprintf(lines[2], sizeof(lines[2]), "* Ctrl+R stops");
+        return 3;
+    }
     snprintf(lines[0], sizeof(lines[0]), "* %s", s_file[0] ? base_name(s_file) : "(no file open)");
     snprintf(lines[1], sizeof(lines[1]), "* /%.58s", s_dir);
     snprintf(lines[2], sizeof(lines[2]), "* %s", s_dirty ? "unsaved changes" : "SD card files");

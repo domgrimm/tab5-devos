@@ -65,6 +65,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_adsb
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_audio
     )
 
     # Sources
@@ -73,6 +74,7 @@ else()
         main/apps/app_launcher/app_launcher.c
         main/apps/app_terminal/app_terminal.c
         main/apps/app_editor/app_editor.c
+        main/apps/app_editor/ed_voice.c
         main/apps/app_tailscale/app_tailscale.c
         main/apps/app_mqtt/app_mqtt.c
         main/apps/app_wireguard/app_wireguard.c
@@ -125,6 +127,7 @@ else()
         components/devos_adsb/devos_adsb.c
         components/devos_crypto/devos_crypto.c
         components/devos_totp/devos_totp.c
+        components/devos_audio/devos_audio.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
