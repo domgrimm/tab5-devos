@@ -17,6 +17,7 @@ set(APP_SRCS
     "apps/app_docker/app_docker.c"
     "apps/app_adsb/app_adsb.c"
     "apps/app_adsb/adsb_map.c"
+    "apps/app_cricket/app_cricket.c"
     "apps/app_totp/app_totp.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
@@ -59,6 +60,7 @@ idf_component_register(
         devos_docker
         devos_adsb
         devos_maptiles
+        devos_cricket
         devos_totp
         devos_crypto
         devos_audio

@@ -229,6 +229,16 @@ void devos_icon_totp(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
     line(&p, 100, 132, 100, 160, 13);
 }
 
+/* Cricket: a bat and a ball. */
+void devos_icon_cricket(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
+{
+    pen_t p = pen(layer, area, color);
+    line(&p, 150, 22, 124, 48, 16);                     /* handle */
+    line(&p, 118, 54, 44, 128, 44);                     /* blade */
+    line(&p, 44, 128, 28, 144, 36);                     /* toe */
+    dot(&p, 150, 150, 26, LV_OPA_COVER);                /* ball */
+}
+
 /* ------------------------------------------------------------------ widget */
 static void icon_draw_cb(lv_event_t *e)
 {
