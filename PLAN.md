@@ -6,11 +6,11 @@
 
 ```
   +-----------------------------------------------------------------------------+
-  | [devOS]          [WiFi: DevNet -58dBm]        [IP: 10.2.132.54]         94% |
+  | [devOS]          [WiFi: HomeWiFi -58dBm]        [IP: 192.168.1.50]         94% |
   +-----------------------------------------------------------------------------+
   |                                                                             |
   |   14:28  Wednesday, Sep 20                                                  |
-  |   Tailscale: 100.77.11.92 (if connected) | Battery: 7.8V (3.2W, ~4.8h left) |
+  |   Tailscale: 100.64.0.10 (if connected) | Battery: 7.8V (3.2W, ~4.8h left) |
   |   Memory: 28.4 MB Free PSRAM             | CPU: Core 0: 4% | Core 1: 18%    |
   |                                                                             |
   |  +----------------+  +----------------+  +----------------+  +------------+ |
@@ -539,14 +539,14 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
        │                                                   ▲
        ▼                                                   │ (Mouse = Touch)
   Xvfb (Virtual Screen) ──► noVNC Web Stream (Port 6080) ──┘ (Keys = A164)
-                   [ LAN IP: 10.2.132.54:6080 | Tailscale: 100.77.11.92:6080 ]
+                   [ http://dev-server:6080/vnc.html (LAN or Tailscale) ]
 ```
 
 *   **Headless Simulator Architecture (`tools/sim/`):**
     *   **Virtual Screen (`Xvfb`):** Spawns a 1280×720×24 virtual X11 framebuffer (`:99`) matching the Tab5's native pixel geometry.
     *   **VNC Engine (`x11vnc`):** Captures the virtual display buffer at 60 FPS without graphical degradation.
     *   **WebSocket Bridge (`noVNC` / `websockify`):** Streams the display buffer as an interactive HTML5 canvas over port `6080`.
-    *   **Direct Developer URLs:** `http://10.2.132.54:6080/vnc.html` (direct LAN) or `http://100.77.11.92:6080/vnc.html` (Tailscale).
+    *   **Direct Developer URLs:** `http://dev-server:6080/vnc.html` (LAN or Tailscale address).
 *   **Emulated Inputs:**
     *   *Mouse clicks & drags* map directly to GT911 capacitive touch events (tap, swipe, scroll).
     *   *PC/Mac keyboard inputs* map directly to Tab5 A164 physical keyboard scan codes, allowing real-time testing of hotkeys (`Sym + T` for Theme, `Sym + L` for side panels, `Sym + 1`..`6` and `1`..`8` for apps).
@@ -597,7 +597,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Build **Home Screen / App Launcher Dashboard** (`app_launcher`) with live app cards and telemetry.
 - [x] Implement **Home Screen Tile/Widget Re-arrangement Mode** (interactive click-to-swap, [1..8] keyboard hotkeys, [↺ Defaults] reset, and JSON persistence to MicroSD storage).
 - [x] Implement Window Manager & App Switcher with hotkey navigation (`Sym + 1..6`, `Sym + H`).
-- [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
+- [x] Verify complete Phase 1 UI/UX in remote web simulator (`http://dev-server:6080/vnc.html`).
 - [x] Build Settings & Wi-Fi Provisioning App (Captive Portal + On-screen network scanner).
 
 ### Phase 2: Optional Tailscale Mesh Networking
@@ -635,7 +635,7 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Add page navigation controls: active-page direct key launch (`1`..`8`), continuous arrow key navigation across page boundaries, and `Page Up` / `Page Down` (and `Sym + ←/→`) page flipping.
 - [x] Generalize tile arrangement mode (`Sym + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
 - [x] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
-- [x] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://10.2.132.54:6080/vnc.html` or `http://100.77.11.92:6080/vnc.html`).
+- [x] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://dev-server:6080/vnc.html`).
 
 ---
 

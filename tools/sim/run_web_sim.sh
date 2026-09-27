@@ -65,6 +65,8 @@ echo "======================================================="
 echo "  devOS Web Simulator is LIVE!"
 echo "  PID: $SIM_PID"
 echo "  Developer Verification URLs:"
-echo "  >>> http://10.2.132.54:6080/vnc.html (Direct LAN) <<<"
-echo "  >>> http://100.77.11.92:6080/vnc.html (Tailscale) <<<"
+for ip in $(hostname -I 2>/dev/null); do
+    case "$ip" in 172.*|*:*) continue ;; esac     # skip container bridges and IPv6
+    echo "  >>> http://$ip:6080/vnc.html <<<"
+done
 echo "======================================================="

@@ -4,14 +4,14 @@
  *
  * Compile and run from an isolated directory:
  *   mkdir -p /tmp/devos_phase7_test && cd /tmp/devos_phase7_test && \
- *   gcc -o launcher_test /home/dom/dev/tab5-devos/tools/modular_launcher_test.c \
- *     /home/dom/dev/tab5-devos/components/devos_core/devos_core.c \
- *     /home/dom/dev/tab5-devos/components/devos_core/devos_apps.c \
- *     -I/home/dom/dev/tab5-devos/main/include \
- *     -I/home/dom/dev/tab5-devos/components/devos_core \
- *     -I/home/dom/dev/tab5-devos/components/devos_ui \
- *     -I/home/dom/dev/tab5-devos/components/devos_power \
- *     -I/home/dom/dev/tab5-devos/components/lvgl \
+ *   gcc -o launcher_test tools/modular_launcher_test.c \
+ *     components/devos_core/devos_core.c \
+ *     components/devos_core/devos_apps.c \
+ *     -Imain/include \
+ *     -Icomponents/devos_core \
+ *     -Icomponents/devos_ui \
+ *     -Icomponents/devos_power \
+ *     -Icomponents/lvgl \
  *     && ./launcher_test
  */
 

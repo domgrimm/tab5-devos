@@ -863,15 +863,15 @@ static void sim_tick(void)
     uint64_t now = sim_ms();
     if (s_scan_busy && now - s_scan_t0 >= 1500) {
         static const devos_wifi_ap_t canned[] = {
-            {"DevNet", -58, 3}, {"Workplace-5G", -64, 4}, {"M5_Hotspot", -72, 3},
+            {"HomeWiFi", -58, 3}, {"Office-5G", -64, 4}, {"Phone_Hotspot", -72, 3},
             {"Guest-IoT", -80, 0}, {"Neighbour", -88, 3},
         };
         s_scan_count = scan_normalize((devos_wifi_ap_t *)canned, (int)(sizeof(canned) / sizeof(canned[0])),
                                       s_scan, DEVOS_WIFI_MAX_SCAN);
         /* a made-up neighbourhood for the site survey: signals drift, one AP comes and goes */
         static const struct { const char *ssid; uint8_t mac5; uint8_t ch; int8_t sec; int8_t rssi; uint8_t auth, phy; } nb[] = {
-            {"DevNet", 0x11, 6, 0, -58, 3, 0x0f}, {"DevNet", 0x12, 1, 0, -71, 3, 0x0f},
-            {"Workplace-5G", 0x21, 11, -1, -64, 4, 0x0e}, {"M5_Hotspot", 0x31, 6, 0, -72, 3, 0x07},
+            {"HomeWiFi", 0x11, 6, 0, -58, 3, 0x0f}, {"HomeWiFi", 0x12, 1, 0, -71, 3, 0x0f},
+            {"Office-5G", 0x21, 11, -1, -64, 4, 0x0e}, {"Phone_Hotspot", 0x31, 6, 0, -72, 3, 0x07},
             {"Guest-IoT", 0x41, 1, 0, -80, 0, 0x07}, {"Neighbour", 0x51, 3, 1, -88, 3, 0x06},
             {"", 0x61, 11, 0, -83, 3, 0x07}, {"TELSTRA4F2A", 0x71, 9, 0, -77, 4, 0x0f},
             {"ESP_7F21C3", 0x81, 1, 0, -66, 0, 0x07}, {"Printer-Setup", 0x91, 13, 0, -85, 0, 0x03},
@@ -926,13 +926,13 @@ int devos_net_init(void)
     memset(&s_st, 0, sizeof(s_st));
     s_st.state = DEVOS_WIFI_STATE_CONNECTED;
     s_st.connected = true;
-    snprintf(s_st.ssid, sizeof(s_st.ssid), "DevNet");
+    snprintf(s_st.ssid, sizeof(s_st.ssid), "HomeWiFi");
     s_st.rssi = -58;
     snprintf(s_st.ip, sizeof(s_st.ip), "192.168.1.150");
     snprintf(s_st.gateway, sizeof(s_st.gateway), "192.168.1.1");
     snprintf(s_st.netmask, sizeof(s_st.netmask), "255.255.255.0");
     snprintf(s_st.dns, sizeof(s_st.dns), "192.168.1.1");
-    snprintf(s_saved[0].ssid, sizeof(s_saved[0].ssid), "DevNet");
+    snprintf(s_saved[0].ssid, sizeof(s_saved[0].ssid), "HomeWiFi");
     s_saved_count = 1;
     return 0;
 }
