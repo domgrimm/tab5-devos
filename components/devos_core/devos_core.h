@@ -112,6 +112,13 @@ devos_app_descriptor_t *devos_core_get_app_at(int index);
 devos_app_descriptor_t *devos_core_find_app(const char *uid);
 void devos_core_switch_app_by_uid(const char *uid);
 
+/* Intents: one app asking another to do something - "ssh" a host in the
+ * terminal, "get" a URL in the REST client, "ping" a host in Network.
+ * open_with() stores the request and switches to the app (false if it isn't
+ * registered); the app's show() collects it with take_intent(). */
+bool devos_core_open_with(const char *uid, const char *action, const char *arg);
+bool devos_core_take_intent(const char *uid, char *action, size_t action_cap, char *arg, size_t arg_cap);
+
 /* Telemetry API */
 const devos_telemetry_t *devos_telemetry_get(void);
 void devos_telemetry_update(const devos_telemetry_t *new_telemetry);

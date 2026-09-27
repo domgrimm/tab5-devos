@@ -330,6 +330,37 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     `{{ts}}` `{{time}}` `{{battery}}` `{{uptime}}` placeholders; Alt+1..9 sends a template.
 *   **Settings:** broker in `/.devos/mqtt.json`, password in NVS.
 
+### 3.10 Network Diagnostics (`app_netdiag`, `devos_netdiag`)
+
+One app, five tools (Alt+1..5): **Ping** (count / interval / size, loss, min/avg/max, jitter,
+RTT graph, reply log), **DNS** (any record type from DHCP's server or one you name, reverse lookup
+for an IP, TCP retry for truncated replies; Enter on an answer looks up what it points at),
+**Port scan** (hosts as IP, name, `a.b.c.1-50` or a subnet up to /22, ports as lists / ranges /
+`common`; optional ping sweep first; TCP connect probes, 6 at a time on the device; reverse DNS
+names; P ping, S SSH, D DNS on a result), **Wi-Fi survey** (every BSS the C6 hears on 2.4 GHz:
+BSSID, channel +/-, RSSI, SNR estimated against a -95 dBm floor since the radio reports no noise
+figure, security, PHY; overlapping-channel graph, per-channel waterfall, least crowded of 1/6/11;
+rescans every 3 s while shown) and **mDNS** (DNS-SD browse: service enumeration plus ~35 common
+types, resolved to host / IP / port / TXT; Enter opens SSH services in the terminal and web
+services in the REST client).
+
+*   Engines are LVGL-free and run on their own Core 0 tasks; every socket goes through
+    `devos_net_socket_route()` so a VPN that claims the destination carries it.
+*   `devos_net_wifi_bss_results()` exposes the raw BSS list of each scan (scans now include hidden
+    networks; the join list still drops them). The simulator invents a drifting neighbourhood.
+*   Simulator: ping uses Linux ping sockets; `DEVOS_SIM_MDNS_IF=<ip>` picks the mDNS interface.
+
+### 3.11 Shared building blocks
+
+*   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
+    bundle; `insecure` still verifies but only reports), chunked / length / until-close bodies,
+    redirects, Basic auth from the URL, per-phase timings. Blocking call for worker tasks, or a
+    queued Core 0 worker the UI polls. The simulator does HTTPS when built against mbedTLS headers.
+*   `devos_widgets` (devos_ui): pre-styled buttons, fields, dropdowns, panels, dialogs, key
+    footer and a virtual list, all restyled on theme change - new apps need no apply_theme().
+*   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something
+    ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network).
+
 ---
 
 ## 4. Hardware Integration: Keyboard, Display, & Power
@@ -535,6 +566,8 @@ tab5-devos/
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
+│   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
+│   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
@@ -557,6 +590,7 @@ tab5-devos/
 │   │   ├── app_tailscale/         # Tailnet status & peer manager UI
 │   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
+│   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

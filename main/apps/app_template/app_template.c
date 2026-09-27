@@ -419,7 +419,7 @@ typedef struct {
     const char *line3;
 } demo_app_ctx_t;
 
-static demo_app_ctx_t s_demo_apps[5] = {
+static demo_app_ctx_t s_demo_apps[4] = {
     {
         .uid = "sysmon",
         .icon = LV_SYMBOL_CHARGE,
@@ -463,17 +463,6 @@ static demo_app_ctx_t s_demo_apps[5] = {
         .line1 = "* 14 Tasks running",
         .line2 = "* Core 0: Net/Crypto",
         .line3 = "* Core 1: LVGL/UI",
-    },
-    {
-        .uid = "netdiag",
-        .icon = LV_SYMBOL_WIFI,
-        .name = "NetDiag",
-        .title = "Net Diagnostics",
-        .subtitle = "Ping & Packet Stats",
-        .category = "network",
-        .line1 = "* Wi-Fi 6 (C6 SDIO)",
-        .line2 = "* Mesh tunnel active",
-        .line3 = "* DERP ping: 18ms",
     },
 };
 
@@ -526,7 +515,7 @@ static int demo_app_telemetry(demo_app_ctx_t *ctx, char lines[3][64])
     return 3;
 }
 
-/* Dispatchers for demo apps 0..4 (the descriptor callbacks take no context) */
+/* Dispatchers for demo apps 0..3 (the descriptor callbacks take no context) */
 #define DEF_DEMO_HANDLERS(idx) \
 static void demo_init_##idx(void) { demo_app_init(&s_demo_apps[idx]); } \
 static void demo_show_##idx(void) { demo_app_show(&s_demo_apps[idx]); } \
@@ -538,7 +527,6 @@ DEF_DEMO_HANDLERS(0)
 DEF_DEMO_HANDLERS(1)
 DEF_DEMO_HANDLERS(2)
 DEF_DEMO_HANDLERS(3)
-DEF_DEMO_HANDLERS(4)
 
 void app_template_register_demo_apps(void)
 {
@@ -546,13 +534,13 @@ void app_template_register_demo_apps(void)
     devos_core_register_app(app_template_get_descriptor());
 
     /* Register demo apps to reach 12+ registered apps */
-    void (*inits[5])(void) = {demo_init_0, demo_init_1, demo_init_2, demo_init_3, demo_init_4};
-    void (*shows[5])(void) = {demo_show_0, demo_show_1, demo_show_2, demo_show_3, demo_show_4};
-    void (*hides[5])(void) = {demo_hide_0, demo_hide_1, demo_hide_2, demo_hide_3, demo_hide_4};
-    bool (*keys[5])(uint32_t, uint8_t) = {demo_key_0, demo_key_1, demo_key_2, demo_key_3, demo_key_4};
-    int (*teles[5])(char lines[3][64]) = {demo_telemetry_0, demo_telemetry_1, demo_telemetry_2, demo_telemetry_3, demo_telemetry_4};
+    void (*inits[4])(void) = {demo_init_0, demo_init_1, demo_init_2, demo_init_3};
+    void (*shows[4])(void) = {demo_show_0, demo_show_1, demo_show_2, demo_show_3};
+    void (*hides[4])(void) = {demo_hide_0, demo_hide_1, demo_hide_2, demo_hide_3};
+    bool (*keys[4])(uint32_t, uint8_t) = {demo_key_0, demo_key_1, demo_key_2, demo_key_3};
+    int (*teles[4])(char lines[3][64]) = {demo_telemetry_0, demo_telemetry_1, demo_telemetry_2, demo_telemetry_3};
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         s_demo_apps[i].desc.id = (devos_app_id_t)(20 + i);
         s_demo_apps[i].desc.uid = s_demo_apps[i].uid;
         s_demo_apps[i].desc.icon = s_demo_apps[i].icon;

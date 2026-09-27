@@ -35,7 +35,9 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 7. **Shared Engines, Never Forked Renderers or Parsers:**
    * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview and any future rich-text view. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
    * One JSON reader (`components/devos_json/`), used today by `devos_ota`. Same rule: extend, don't duplicate.
-   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel.
+   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send.
+   * One HTTP(S) client (`components/devos_http/`): REST calls, APIs and webhooks go through it (never `esp_http_client`, which bypasses the socket layer).
+   * One set of screen building blocks (`devos_widgets.h` in `devos_ui`): new apps build buttons, fields, dialogs and lists with it so theming and focus behave the same everywhere.
 
 8. **Modular Self-Registering Apps:**
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
@@ -89,12 +91,14 @@ tab5-devos/
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher
-│   ├── devos_ui/                  # LVGL v9 theme engine, widgets, top bar, code viewer (devos_codeview)
+│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
+│   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
+│   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
@@ -114,6 +118,7 @@ tab5-devos/
 │   │   ├── app_tailscale/         # Tailnet status & peer list
 │   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
+│   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

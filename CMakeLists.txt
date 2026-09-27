@@ -34,6 +34,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_tailscale
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_mqtt
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_wireguard
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
@@ -54,6 +55,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_power
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ota
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mdview
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_http
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_netdiag
     )
 
     # Sources
@@ -65,6 +68,12 @@ else()
         main/apps/app_tailscale/app_tailscale.c
         main/apps/app_mqtt/app_mqtt.c
         main/apps/app_wireguard/app_wireguard.c
+        main/apps/app_netdiag/app_netdiag.c
+        main/apps/app_netdiag/nd_ui_ping.c
+        main/apps/app_netdiag/nd_ui_dns.c
+        main/apps/app_netdiag/nd_ui_scan.c
+        main/apps/app_netdiag/nd_ui_wifi.c
+        main/apps/app_netdiag/nd_ui_mdns.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
@@ -72,6 +81,7 @@ else()
         components/devos_ui/devos_top_bar.c
         components/devos_ui/devos_codeview.c
         components/devos_ui/devos_focus.c
+        components/devos_ui/devos_widgets.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/bsp_tab5/bsp_tab5.c
@@ -93,10 +103,31 @@ else()
         components/devos_power/devos_power.c
         components/devos_ota/devos_ota.c
         components/devos_mdview/devos_mdview.c
+        components/devos_http/devos_http.c
+        components/devos_netdiag/nd_common.c
+        components/devos_netdiag/nd_ping.c
+        components/devos_netdiag/nd_dns.c
+        components/devos_netdiag/nd_scan.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
     target_link_libraries(devos_sim PRIVATE lvgl ${SDL2_LIBRARIES} m pthread)
+
+    # HTTPS in the simulator needs the mbedTLS headers (mbedtls-devel, or
+    # -DDEVOS_MBEDTLS_ROOT=<prefix with include/ and lib64/>). Without them
+    # devos_http does plain http:// only.
+    find_path(MBEDTLS_INCLUDE_DIR mbedtls/ssl.h HINTS ${DEVOS_MBEDTLS_ROOT}/include)
+    find_library(MBEDTLS_LIB NAMES mbedtls libmbedtls.so.21 HINTS ${DEVOS_MBEDTLS_ROOT}/lib64 ${DEVOS_MBEDTLS_ROOT}/lib)
+    find_library(MBEDX509_LIB NAMES mbedx509 libmbedx509.so.7 HINTS ${DEVOS_MBEDTLS_ROOT}/lib64 ${DEVOS_MBEDTLS_ROOT}/lib)
+    find_library(MBEDCRYPTO_LIB NAMES mbedcrypto libmbedcrypto.so.16 HINTS ${DEVOS_MBEDTLS_ROOT}/lib64 ${DEVOS_MBEDTLS_ROOT}/lib)
+    if(MBEDTLS_INCLUDE_DIR AND MBEDTLS_LIB AND MBEDX509_LIB AND MBEDCRYPTO_LIB)
+        message(STATUS "devOS sim: HTTPS via mbedTLS (${MBEDTLS_INCLUDE_DIR})")
+        set_source_files_properties(components/devos_http/devos_http.c PROPERTIES
+            COMPILE_DEFINITIONS DEVOS_HTTP_TLS=1 INCLUDE_DIRECTORIES ${MBEDTLS_INCLUDE_DIR})
+        target_link_libraries(devos_sim PRIVATE ${MBEDTLS_LIB} ${MBEDX509_LIB} ${MBEDCRYPTO_LIB})
+    else()
+        message(STATUS "devOS sim: no mbedTLS headers - http:// only")
+    endif()
 
     # Output directory convenience
     set_target_properties(devos_sim PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
