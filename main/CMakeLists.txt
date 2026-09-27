@@ -1,0 +1,67 @@
+set(APP_SRCS
+    "main.c"
+    "apps/app_launcher/app_launcher.c"
+    "apps/app_terminal/app_terminal.c"
+    "apps/app_editor/app_editor.c"
+    "apps/app_editor/ed_voice.c"
+    "apps/app_tailscale/app_tailscale.c"
+    "apps/app_mqtt/app_mqtt.c"
+    "apps/app_wireguard/app_wireguard.c"
+    "apps/app_netdiag/app_netdiag.c"
+    "apps/app_netdiag/nd_ui_ping.c"
+    "apps/app_netdiag/nd_ui_dns.c"
+    "apps/app_netdiag/nd_ui_scan.c"
+    "apps/app_netdiag/nd_ui_wifi.c"
+    "apps/app_netdiag/nd_ui_mdns.c"
+    "apps/app_rest/app_rest.c"
+    "apps/app_docker/app_docker.c"
+    "apps/app_adsb/app_adsb.c"
+    "apps/app_totp/app_totp.c"
+    "apps/app_settings/app_settings.c"
+    "apps/app_template/app_template.c"
+)
+
+idf_component_register(
+    SRCS ${APP_SRCS}
+    INCLUDE_DIRS
+        "."
+        "include"
+        "apps/app_launcher"
+        "apps/app_terminal"
+        "apps/app_editor"
+        "apps/app_tailscale"
+        "apps/app_mqtt"
+        "apps/app_wireguard"
+        "apps/app_settings"
+        "apps/app_template"
+    REQUIRES
+        devos_core
+        devos_ui
+        devos_config
+        devos_storage
+        devos_power
+        devos_ota
+        bsp_tab5
+        tab5_keyboard
+        devos_net
+        devos_sysmon
+        devos_tailnet
+        libssh2_port
+        devos_vterm
+        devos_mdview
+        devos_mqtt
+        devos_wireguard
+        devos_qr
+        devos_json
+        devos_http
+        devos_netdiag
+        devos_docker
+        devos_adsb
+        devos_totp
+        devos_crypto
+        devos_audio
+        lvgl
+        nvs_flash
+)
+
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-format-truncation)

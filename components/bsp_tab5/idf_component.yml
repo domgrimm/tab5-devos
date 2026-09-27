@@ -1,0 +1,17 @@
+## Touch controllers for the Tab5 display revisions. The component manager
+## adds these (and their esp_lcd_touch dependency) to bsp_tab5's REQUIRES
+## automatically, so bsp_tab5.c can include the touch headers directly.
+##   - GT911:  ILI9881C revision (separate capacitive touch)
+##   - ST7123: ST7123 / ST7121 revisions (integrated TDDI touch)
+## The panel/LCD drivers (ILI9881C, ST7123) are vendored locally, so they are
+## intentionally not listed here.
+dependencies:
+  idf: ">=5.4"
+  espressif/esp_lcd_touch_gt911: "*"
+  espressif/esp_lcd_touch_st7123: "*"
+  ## Camera sensor drivers (SC2356 = "SC202CS"). Pinned below 1.0: 1.x adds an
+  ## sdkconfig.rename that esp-idf-kconfig <= 2.4 (the IDF 5.4 tools) can't
+  ## parse. Used with IDF's own CSI + ISP drivers (no esp_video).
+  espressif/esp_cam_sensor: "0.9.0"
+  ## bsp_tab5_camera.c creates the SCCB I/O itself; pin the version tested.
+  espressif/esp_sccb_intf: "0.0.9"

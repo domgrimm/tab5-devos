@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+build_sim/
+sim_sdcard/
+*.log
+.cache/
+compile_commands.json
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+ota_out/
+
+# LVGL (tools/fetch_lvgl.sh)
+components/lvgl/
