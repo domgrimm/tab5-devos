@@ -12,6 +12,12 @@ extern "C" {
 /* Initialize Tab5 Board Support Package (MIPI-DSI, touch, INA226, RTC) */
 bool bsp_tab5_init(void);
 
+/* The shared I2C buses (i2c_master_bus_handle_t on the device, NULL in the
+ * simulator), for drivers outside the BSP. Internal = GPIO 31/32 (touch,
+ * expanders, INA226, RTC, camera); external = Ext.Port1 GPIO 0/1 (keyboard). */
+void *bsp_tab5_i2c_bus_internal(void);
+void *bsp_tab5_i2c_bus_external(void);
+
 /* Battery / power telemetry (INA226 @ 0x41 on the internal I2C bus, 5 mOhm
  * shunt, plus the charger CHG_STAT line on the 0x44 IO expander). */
 typedef struct {
