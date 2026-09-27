@@ -46,6 +46,9 @@ void devos_totp_init(void);
 devos_totp_state_t devos_totp_state(void);
 const char *devos_totp_error(void);         /* why the last create / unlock / save failed */
 int devos_totp_lockout_s(void);             /* seconds to wait before the next try */
+/* While BUSY: what is being done ("Creating the vault") and how far, 0..100. */
+const char *devos_totp_busy_text(void);
+int devos_totp_progress(void);
 
 int devos_totp_create(const char *passphrase);     /* async; min 6 characters */
 int devos_totp_unlock(const char *passphrase);     /* async */

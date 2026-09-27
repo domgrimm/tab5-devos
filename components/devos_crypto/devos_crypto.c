@@ -270,6 +270,12 @@ void devos_hmac(devos_hash_t h, const void *key, size_t key_len, const void *msg
 void devos_pbkdf2_sha256(const void *pw, size_t pw_len, const uint8_t *salt, size_t salt_len, uint32_t iterations,
                          uint8_t *out, size_t out_len)
 {
+    devos_pbkdf2_sha256_progress(pw, pw_len, salt, salt_len, iterations, out, out_len, NULL);
+}
+
+void devos_pbkdf2_sha256_progress(const void *pw, size_t pw_len, const uint8_t *salt, size_t salt_len,
+                                  uint32_t iterations, uint8_t *out, size_t out_len, volatile uint32_t *done)
+{
     hmac_t m;
     hmac_setup(&m, DEVOS_HASH_SHA256, pw, pw_len);
     uint8_t u[32], t[32], blk[128];
@@ -282,7 +288,9 @@ void devos_pbkdf2_sha256(const void *pw, size_t pw_len, const uint8_t *salt, siz
         for (uint32_t i = 1; i < iterations; i++) {
             hmac_run(&m, u, 32, u);
             for (int k = 0; k < 32; k++) t[k] ^= u[k];
+            if (done && (i & 1023) == 0) *done = i;
         }
+        if (done) *done = iterations;
         size_t n = out_len < 32 ? out_len : 32;
         memcpy(out, t, n);
         out += n;
