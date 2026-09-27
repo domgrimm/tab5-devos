@@ -1,6 +1,7 @@
 #include "app_launcher.h"
 #include "devos_config.h"
 #include "devos_theme.h"
+#include "devos_icons.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,7 +44,7 @@ static lv_obj_t *page_objs[4] = {NULL};
 /* Compact Card Widgets */
 typedef struct {
     lv_obj_t *card_btn;
-    lv_obj_t *lbl_icon;
+    lv_obj_t *icon;             /* devos_icons: the app's vector icon or symbol */
     lv_obj_t *lbl_title;
     lv_obj_t *lbl_subtitle;
     lv_obj_t *divider;
@@ -614,9 +615,9 @@ static void refresh_cards(void)
         if (!app) continue;
 
         /* Icon */
-        if (c->lbl_icon) {
-            lv_label_set_text(c->lbl_icon, app->icon ? app->icon : LV_SYMBOL_FILE);
-            lv_obj_set_style_text_color(c->lbl_icon, p->accent_primary, 0);
+        if (c->icon) {
+            devos_icon_set_app(c->icon, app);
+            lv_obj_set_style_text_color(c->icon, p->accent_primary, 0);
         }
 
         /* Title with active-page slot index (1..8) or global slot in arrange mode */
@@ -1023,14 +1024,14 @@ static void rebuild_card_widgets(void)
             lv_obj_add_event_cb(c->card_btn, card_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
 
             /* Icon */
-            c->lbl_icon = lv_label_create(c->card_btn);
-            lv_obj_set_pos(c->lbl_icon, 0, 0);
-            lv_obj_set_style_text_font(c->lbl_icon, &lv_font_montserrat_18, 0);
-            lv_obj_set_style_text_color(c->lbl_icon, p->accent_primary, 0);
+            c->icon = devos_icon_create(c->card_btn, 22);
+            lv_obj_set_pos(c->icon, -1, -2);
+            lv_obj_set_style_text_font(c->icon, &lv_font_montserrat_18, 0);
+            lv_obj_set_style_text_color(c->icon, p->accent_primary, 0);
 
             /* Title */
             c->lbl_title = lv_label_create(c->card_btn);
-            lv_obj_set_pos(c->lbl_title, 26, 0);
+            lv_obj_set_pos(c->lbl_title, 30, 0);
             lv_obj_set_width(c->lbl_title, 220);
             lv_label_set_long_mode(c->lbl_title, LV_LABEL_LONG_DOT);
             lv_obj_set_style_text_font(c->lbl_title, &lv_font_montserrat_16, 0);

@@ -11,6 +11,7 @@
  */
 #include "app_wireguard.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_wireguard.h"
@@ -949,6 +950,7 @@ devos_app_descriptor_t *app_wireguard_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_WIREGUARD;
     app_descriptor.uid = "wireguard";
     app_descriptor.icon = LV_SYMBOL_EYE_CLOSE;
+    app_descriptor.draw_icon = devos_icon_wireguard;
     app_descriptor.category = "network";
     app_descriptor.name = "WireGuard";
     app_descriptor.title = "WireGuard";

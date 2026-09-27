@@ -12,6 +12,7 @@
 #include "app_netdiag.h"
 #include "app_netdiag_int.h"
 #include "devos_net.h"
+#include "devos_icons.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -220,6 +221,7 @@ devos_app_descriptor_t *app_netdiag_get_descriptor(void)
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
     s_desc.uid = "netdiag";
     s_desc.icon = LV_SYMBOL_WIFI;
+    s_desc.draw_icon = devos_icon_network;
     s_desc.category = "network";
     s_desc.name = "Network";
     s_desc.title = "Network";

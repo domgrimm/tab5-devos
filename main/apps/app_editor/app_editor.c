@@ -22,6 +22,7 @@
  */
 #include "app_editor.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_mdview.h"
@@ -2157,6 +2158,7 @@ devos_app_descriptor_t *app_editor_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_EDITOR;
     app_descriptor.uid = "editor";
     app_descriptor.icon = LV_SYMBOL_DIRECTORY;
+    app_descriptor.draw_icon = devos_icon_editor;
     app_descriptor.category = "notes";
     app_descriptor.name = "Editor";
     app_descriptor.title = "Markdown Editor";

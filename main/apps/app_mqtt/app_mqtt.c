@@ -15,6 +15,7 @@
  */
 #include "app_mqtt.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_mqtt.h"
@@ -1396,6 +1397,7 @@ devos_app_descriptor_t *app_mqtt_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_MQTT;
     app_descriptor.uid = "mqtt";
     app_descriptor.icon = LV_SYMBOL_SHUFFLE;
+    app_descriptor.draw_icon = devos_icon_mqtt;
     app_descriptor.category = "network";
     app_descriptor.name = "MQTT";
     app_descriptor.title = "MQTT";

@@ -385,6 +385,8 @@ devos_app_descriptor_t *app_template_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_COUNT; /* Auto-assigned if collision */
     app_descriptor.uid = "template";
     app_descriptor.icon = LV_SYMBOL_FILE;
+    /* optional: app_descriptor.draw_icon = a vector icon (devos_icons.h),
+     * drawn instead of the symbol on the launcher tile and in Settings */
     app_descriptor.category = "tools";
     app_descriptor.name = "Template";
     app_descriptor.title = "App Template";

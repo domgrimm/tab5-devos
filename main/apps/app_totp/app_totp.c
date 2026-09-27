@@ -11,6 +11,7 @@
  */
 #include "app_totp.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_core.h"
 #include "devos_focus.h"
 #include "devos_theme.h"
@@ -977,6 +978,7 @@ devos_app_descriptor_t *app_totp_get_descriptor(void)
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
     s_desc.uid = "totp";
     s_desc.icon = LV_SYMBOL_EYE_CLOSE;
+    s_desc.draw_icon = devos_icon_totp;
     s_desc.category = "security";
     s_desc.name = "2FA";
     s_desc.title = "Authenticator";
