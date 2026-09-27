@@ -32,8 +32,10 @@
 #include "wireguardif.h"
 static const char *TAG = "devos_wg";
 static SemaphoreHandle_t s_mx;
-#define LOCK()   xSemaphoreTake(s_mx, portMAX_DELAY)
-#define UNLOCK() xSemaphoreGive(s_mx)
+/* Safe before *_init(): other tasks (sysmon, launcher tiles) may ask for
+ * status first, and a NULL semaphore asserts. */
+#define LOCK()   do { if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY); } while (0)
+#define UNLOCK() do { if (s_mx) xSemaphoreGive(s_mx); } while (0)
 #else
 #include <pthread.h>
 #include <time.h>

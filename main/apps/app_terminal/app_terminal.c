@@ -128,7 +128,7 @@ static struct {
     ssh_bookmark_t bm;
 } s_pending;
 
-static ssh_bookmark_t s_hosts[SSH_MAX_BOOKMARKS];
+static EXT_RAM_BSS_ATTR ssh_bookmark_t s_hosts[SSH_MAX_BOOKMARKS];
 static int s_host_count = 0;
 
 static void refresh_sidebar(bool force);
@@ -929,7 +929,7 @@ static void refresh_sidebar(bool force)
 
     /* Saved hosts: read the SD file only when asked (show, save, delete) -
      * this runs on every 20 ms poll while the terminal is visible */
-    static ssh_bookmark_t tmp[SSH_MAX_BOOKMARKS];
+    static EXT_RAM_BSS_ATTR ssh_bookmark_t tmp[SSH_MAX_BOOKMARKS];
     int n = 0;
     if (force) ssh_port_load_bookmarks(tmp, SSH_MAX_BOOKMARKS, &n);
     char hk[64];

@@ -11,6 +11,7 @@
 #include "devos_net.h"
 #include "devos_sysmon.h"
 #include "devos_tailnet.h"
+#include "devos_wireguard.h"
 #include "libssh2_port.h"
 
 /* Apps */
@@ -309,6 +310,7 @@ static void devos_system_bringup(void)
     /* 6a. Tailscale (MicroLink): connects in the background once Wi-Fi is up
      * if this device is enrolled and auto-connect is on. */
     devos_tailnet_init();
+    devos_wg_init();                /* before sysmon, which polls its state */
 
     /* 6b. System monitor: live battery/Wi-Fi/SD/memory/CPU telemetry and the
      * wall clock (RTC at boot, NTP once online). */
