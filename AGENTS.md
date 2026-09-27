@@ -42,6 +42,7 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 8. **Modular Self-Registering Apps:**
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
    * Adding a new application must never require modifying the Home Screen (`app_launcher.c`) or hardcoding app IDs into closed enums. Use `main/apps/app_template/` as the canonical reference.
+   * Apps can be switched off in Settings > Apps (a boot mask in devos_core, applied on restart). Always call `devos_core_register_app()`: it skips a switched-off app. Start an app's engine in `main.c` with `START_ENGINE(uid, init())`, and make the engine's status getters return "off" when its init never ran, so other code can call them without checks. Never look up another app by id; use its uid, and handle `devos_core_open_with()` returning false.
 
 9. **Keyboard First, Touch Second:**
    * **Every screen, panel, dialog and control must be fully usable from the physical keyboard alone.** Touch is a secondary input: everything also works by touch, but nothing may be touch-only. A feature isn't done until it has been walked through keyboard-only in the simulator.
@@ -90,7 +91,7 @@ tab5-devos/
 │   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, touch, INA226, RTC, camera) on the i2c_master driver
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
-│   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher
+│   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher, app on/off boot mask
 │   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
@@ -133,7 +134,7 @@ tab5-devos/
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, ota, vterm, crypto).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, ota, vterm, crypto).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.

@@ -91,6 +91,7 @@ else()
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
+        components/devos_core/devos_apps.c
         components/devos_ui/devos_theme.c
         components/devos_ui/devos_top_bar.c
         components/devos_ui/devos_codeview.c

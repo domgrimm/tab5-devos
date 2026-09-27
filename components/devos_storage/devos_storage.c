@@ -53,6 +53,10 @@ static const char *WELCOME_MD_CONTENT =
 "- **`Sym + -` / `Sym + +`**: Screen brightness\n"
 "- **`Sym + Up` / `Sym + Down`**: Page Up / Page Down\n"
 "- **`Alt + Tab`**: Switch to previous application\n\n"
+"## Apps You Don't Use\n\n"
+"**Settings > Apps** switches apps off, freeing the memory they take (it shows how much). "
+"Changes apply after a restart (**Enter** there restarts). Hold a finger on the screen while the "
+"Tab5 powers on to start with every app switched back on.\n\n"
 "## Hardware Quick Reference\n\n"
 "| Peripheral | Controller | Bus / Pins | Notes |\n"
 "| :--- | :--- | :--- | :--- |\n"
@@ -65,7 +69,9 @@ static const char *WELCOME_MD_CONTENT =
 "- [x] Multi-session SSH terminal\n"
 "- [x] Markdown editor and SD card file browser\n"
 "- [x] Tailscale and WireGuard (put wg-quick .conf files in /wireguard, or press Q to scan a QR code)\n"
-"- [x] MQTT monitor & publisher\n";
+"- [x] MQTT monitor & publisher\n"
+"- [x] Network tools (ping, DNS, port scan, Wi-Fi survey, mDNS) and a REST / webhook client\n"
+"- [x] Docker / Portainer console, ADS-B radar and an offline 2FA authenticator\n";
 
 /* Saved SSH hosts start empty: add them from the Terminal app. */
 static const char *BOOKMARKS_JSON_CONTENT = "[\n]\n";

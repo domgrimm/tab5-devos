@@ -135,11 +135,23 @@ static void set_hidden(const char *uid, bool hide)
     }
 }
 
+/* Apps in the order that are switched on (Settings > Apps), and how many of
+ * those are hidden. */
+static int count_on(bool hidden_only)
+{
+    int n = 0;
+    for (int i = 0; i < order_count; i++) {
+        if (devos_core_find_app(order_uids[i]) && (!hidden_only || is_hidden(order_uids[i]))) n++;
+    }
+    return n;
+}
+
 /* What the carousel shows (see slot_uids). */
 static void rebuild_view(void)
 {
     active_app_count = 0;
     for (int i = 0; i < order_count; i++) {
+        if (!devos_core_find_app(order_uids[i])) continue;   /* switched off: keeps its place */
         if (arrange_mode || !is_hidden(order_uids[i])) {
             snprintf(slot_uids[active_app_count++], DEVOS_MAX_UID, "%s", order_uids[i]);
         }
@@ -212,15 +224,16 @@ static void parse_uid_array(const char *p, char out[][DEVOS_MAX_UID], int *n,
 
 static void load_layout(void)
 {
-    /* 1. Registered apps (excluding the launcher itself) */
+    /* 1. Known apps (excluding the launcher itself). Switched-off ones stay
+     * in the order so they come back to the same place. */
     char registered_uids[DEVOS_MAX_APPS][DEVOS_MAX_UID];
     int reg_count = 0;
-    int core_count = devos_core_app_count();
+    int core_count = devos_core_known_app_count();
     for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
-        devos_app_descriptor_t *app = devos_core_get_app_at(i);
-        if (!app || app->id == DEVOS_APP_LAUNCHER) continue;
-        if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
-        if (app->uid && *app->uid) snprintf(registered_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
+        devos_app_descriptor_t *app = devos_core_known_app_at(i);
+        /* by uid: a switched-off app was never given its id */
+        if (!app || !app->uid || strcmp(app->uid, "launcher") == 0) continue;
+        if (*app->uid) snprintf(registered_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
     }
 
     /* 2. Saved order + hidden set */
@@ -249,7 +262,7 @@ static void load_layout(void)
         }
     }
     /* never hide everything */
-    if (hidden_count >= order_count) hidden_count = 0;
+    if (count_on(true) >= count_on(false)) hidden_count = 0;
     rebuild_view();
 }
 
@@ -344,11 +357,10 @@ void app_launcher_reset_layout(void)
 {
     /* Reset to core registration order, every card visible */
     int reg_count = 0;
-    int core_count = devos_core_app_count();
+    int core_count = devos_core_known_app_count();
     for (int i = 0; i < core_count && reg_count < DEVOS_MAX_APPS; i++) {
-        devos_app_descriptor_t *app = devos_core_get_app_at(i);
-        if (!app || app->id == DEVOS_APP_LAUNCHER) continue;
-        if (app->uid && strcmp(app->uid, "launcher") == 0) continue;
+        devos_app_descriptor_t *app = devos_core_known_app_at(i);
+        if (!app || !app->uid || strcmp(app->uid, "launcher") == 0) continue;
         snprintf(order_uids[reg_count++], DEVOS_MAX_UID, "%s", app->uid);
     }
     order_count = reg_count;
@@ -407,7 +419,7 @@ static void toggle_hidden(int slot)
     if (slot < 0 || slot >= active_app_count) return;
     const char *uid = slot_uids[slot];
     bool hide = !is_hidden(uid);
-    if (hide && hidden_count + 1 >= order_count) {
+    if (hide && count_on(true) + 1 >= count_on(false)) {
         snprintf(s_hide_notice, sizeof(s_hide_notice), "Keep at least one app visible.");
         refresh_cards();
         return;
@@ -482,8 +494,9 @@ static void update_pagination_ui(void)
     /* 1. Apps Count badge */
     if (lbl_apps_count) {
         char ac_buf[32];
-        if (hidden_count) snprintf(ac_buf, sizeof(ac_buf), "%d apps, %d hidden", order_count, hidden_count);
-        else snprintf(ac_buf, sizeof(ac_buf), "%d Apps Installed", order_count);
+        int on = count_on(false), hid = count_on(true);
+        if (hid) snprintf(ac_buf, sizeof(ac_buf), "%d apps, %d hidden", on, hid);
+        else snprintf(ac_buf, sizeof(ac_buf), "%d Apps Installed", on);
         lv_label_set_text(lbl_apps_count, ac_buf);
         lv_obj_set_style_text_color(lbl_apps_count, p->text_secondary, 0);
     }

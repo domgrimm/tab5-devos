@@ -30,6 +30,7 @@
 #include "apps/app_template/app_template.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #ifdef ESP_PLATFORM
@@ -86,7 +87,10 @@ static void gui_task(void *arg)
             devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
             /* A new OTA image that has run the UI for 15 s is good: cancel
              * the bootloader's pending rollback. */
-            if (sim_seconds == 15) devos_ota_mark_boot_ok();
+            if (sim_seconds == 15) {
+                devos_ota_mark_boot_ok();
+                devos_core_apps_boot_ok();      /* these app switches boot fine */
+            }
             if (sim_seconds % 3 == 0) {
                 printf("[devOS] GUI loop running, uptime: %lu s, free heap: %lu B\n",
                        (unsigned long)sim_seconds, (unsigned long)esp_get_free_heap_size());
@@ -268,6 +272,20 @@ static void forget_removed_apps(void)
 #endif
 }
 
+/* Start an app's engine only if the app is switched on, and count the
+ * memory it takes towards the app (Settings > Apps). */
+#define START_ENGINE(uid, call)                                         \
+    do {                                                                \
+        if (devos_core_app_enabled(uid)) {                              \
+            devos_mem_mark_t m_;                                        \
+            devos_core_mem_mark(&m_);                                   \
+            call;                                                       \
+            devos_core_app_add_cost(uid, &m_);                          \
+        } else {                                                        \
+            printf("[devOS]   %s engine not started (switched off)\n", uid); \
+        }                                                               \
+    } while (0)
+
 static void devos_system_bringup(void)
 {
     printf("\n==================================================\n");
@@ -283,6 +301,11 @@ static void devos_system_bringup(void)
     printf("[devOS] 2/8 Initializing Storage...\n");
     devos_storage_init();
     forget_removed_apps();
+
+    /* 2b. App switches (Settings > Apps): read once, before any engine
+     * starts. A finger held on the screen at power-on switches every app
+     * back on (safe start). */
+    devos_core_apps_load(bsp_tab5_touch_held());
 
     /* 3. A164 Keyboard bring-up */
     printf("[devOS] 3/8 Initializing A164 Keyboard...\n");
@@ -315,8 +338,8 @@ static void devos_system_bringup(void)
 
     /* 6a. Tailscale (MicroLink): connects in the background once Wi-Fi is up
      * if this device is enrolled and auto-connect is on. */
-    devos_tailnet_init();
-    devos_wg_init();                /* before sysmon, which polls its state */
+    START_ENGINE("tailscale", devos_tailnet_init());
+    START_ENGINE("wireguard", devos_wg_init());   /* before sysmon, which polls its state */
 
     /* 6b. System monitor: live battery/Wi-Fi/SD/memory/CPU telemetry and the
      * wall clock (RTC at boot, NTP once online). */
@@ -324,7 +347,7 @@ static void devos_system_bringup(void)
 
     /* 7. SSH & PTY Engine bring-up */
     printf("[devOS] 7/8 Initializing SSH Subsystem...\n");
-    ssh_port_init();
+    START_ENGINE("terminal", ssh_port_init());
 
     /* 8. Register all applications */
     printf("[devOS] 8/8 Registering Applications...\n");
@@ -480,10 +503,23 @@ void app_main(void)
     xTaskCreatePinnedToCore(devos_boot_task, "devos_boot", 20480, NULL, 1, NULL, DEVOS_CORE_NET_CRYPTO);
 }
 #else
+/* Settings > Apps restarts: close the window and run this binary again. */
+static char **s_argv;
+
+static void sim_restart(void)
+{
+    SDL_Quit();
+    unsetenv("DEVOS_SAFE_START");       /* a power-on thing, not every restart */
+    execv("/proc/self/exe", s_argv);
+    perror("[devOS] restart");
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
     LV_UNUSED(argc);
-    LV_UNUSED(argv);
+    s_argv = argv;
+    devos_core_set_restart_cb(sim_restart);
 
     /* Initialize LVGL v9 */
     lv_init();
@@ -516,6 +552,7 @@ int main(int argc, char **argv)
             devos_top_bar_update();
             app_launcher_update_telemetry();
             devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
+            if (sim_seconds == 15) devos_core_apps_boot_ok();
             last_telemetry_tick = now;
         }
 

@@ -2,6 +2,7 @@
 #include "devos_config.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
@@ -1062,6 +1063,28 @@ void bsp_tab5_set_touch_activity_cb(void (*cb)(void))
     s_touch_activity_cb = cb;
 #else
     (void)cb;
+#endif
+}
+
+bool bsp_tab5_touch_held(void)
+{
+#ifdef ESP_PLATFORM
+    if (!s_tp) return false;
+    /* a finger resting on the glass: seen in most of a few reads */
+    int hits = 0;
+    for (int i = 0; i < 4; i++) {
+        uint16_t x, y, strength;
+        uint8_t cnt = 0;
+        if (esp_lcd_touch_read_data(s_tp) == ESP_OK &&
+            esp_lcd_touch_get_coordinates(s_tp, &x, &y, &strength, &cnt, 1) && cnt > 0) {
+            hits++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+    return hits >= 3;
+#else
+    const char *e = getenv("DEVOS_SAFE_START");      /* simulator stand-in */
+    return e && *e == '1';
 #endif
 }
 

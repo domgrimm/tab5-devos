@@ -51,7 +51,7 @@ static void open_svc(const devos_mdns_svc_t *s)
     const char *host = s->ip[0] ? s->ip : s->host;
     char url[160];
     if (is_ssh(s->type)) {
-        if (!devos_core_open_with("terminal", "ssh", host)) nd_flash("No terminal app");
+        if (!devos_core_open_with("terminal", "ssh", host)) nd_flash("The Terminal is switched off (Settings > Apps)");
     } else if (is_web(s->type)) {
         /* ESPHome's native API port isn't HTTP: its web server is on 80 */
         int port = !strcmp(s->type, "_esphomelib._tcp") ? 80 : s->port;

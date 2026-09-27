@@ -412,6 +412,27 @@ services in the REST client).
     checked against the RFC vectors in `tools/crypto_test.c`.
 *   `devos_qrscan` (devos_ui): the camera QR scanner as a reusable dialog.
 
+### 3.16 App switches (Settings > Apps, `devos_core` `devos_apps.c`)
+
+*   One boot mask in NVS (`apps`/`off`: the uids switched off), read once early in boot before
+    any engine starts. `devos_core_register_app()` records a switched-off app but never init()s,
+    lists or switches to it (launcher, `Sym + n`, intents all go by the registry), and main.c
+    starts an app's engine through `START_ENGINE(uid, ...)` (Tailscale, WireGuard, SSH). Engine
+    getters report "off" when their init never ran, so sysmon, the top bar and devos_net's
+    tunnel routing need no checks. The Launcher and Settings can't be switched off; a
+    switched-off app keeps its place in the launcher order.
+*   Settings > Apps: a switch per app with the memory it took at start (internal RAM and PSRAM,
+    heap + LVGL pool, measured around its init and engine; kept across boots so switched-off
+    apps show their last figure) and the totals. "Restart required" while the switches differ
+    from what runs; Up / Down move, Space switches, Enter restarts, Esc leaves (the change still
+    applies next start). Switching off only takes effect on restart; switching on live may come
+    later.
+*   Recovery: a changed mask gets two boots to keep the Home Screen up for 15 s
+    (`devos_core_apps_boot_ok()`); the third puts back the last mask that did. Safe start: a
+    finger held on the screen at power-on switches every app back on (the keyboard can't report
+    a key held before it attaches). The choices are in NVS, so they survive OTA updates.
+    `tools/apps_mask_test.c` covers the mask, rollback and safe start.
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
