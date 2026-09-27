@@ -7,8 +7,10 @@
  * 7600 radio failure, 7700 emergency) blink red. Right: the aircraft by
  * distance and the selected one's details.
  *
+ * Under it, optionally, an OpenStreetMap underlay (adsb_map.c).
+ *
  * Keys: Up / Down pick an aircraft, + / - zoom, 0 back to the set range,
- * L labels, T trails, Space freezes the picture, C settings, Esc home.
+ * L labels, T trails, M map, Space freezes the picture, C settings, Esc home.
  * Tap the radar to pick the aircraft nearest your finger.
  */
 #include "app_adsb.h"
@@ -19,6 +21,8 @@
 #include "devos_theme.h"
 #include "devos_widgets.h"
 #include "devos_adsb.h"
+#include "devos_maptiles.h"
+#include "adsb_map.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -39,7 +43,7 @@ static devos_app_descriptor_t s_desc;
 static lv_obj_t *s_screen, *lbl_status, *s_keys, *radar, *lbl_detail_title, *lbl_detail, *lbl_empty;
 static devos_vlist_t s_list;
 static devos_w_dialog_t s_dlg;
-static lv_obj_t *ta_url, *ta_lat, *ta_lon, *dd_range;
+static lv_obj_t *ta_url, *ta_lat, *ta_lon, *dd_range, *cb_map;
 static devos_focus_t s_fdlg;
 
 static devos_adsb_ac_t *s_ac;               /* DEVOS_ADSB_MAX, PSRAM */
@@ -49,7 +53,8 @@ static devos_adsb_status_t s_st;
 static uint32_t s_gen = 0xffffffff;
 static char s_sel_hex[8];
 static int s_range = 100;
-static bool s_labels = true, s_trails = true, s_frozen, s_blink, s_inited;
+static bool s_labels = true, s_trails = true, s_map = true, s_frozen, s_blink, s_inited;
+static char s_map_status[112];
 
 static const int RANGES[] = { 5, 10, 25, 50, 100, 150, 200, 300, 400 };
 #define NRANGES ((int)(sizeof(RANGES) / sizeof(RANGES[0])))
@@ -201,6 +206,13 @@ static void draw_aircraft(lv_layer_t *layer, const proj_t *pj, const lv_area_t *
     }
 }
 
+/* The radar's drawing area inside its (right-hand) border. */
+static void map_area(const lv_area_t *a, lv_area_t *out)
+{
+    *out = *a;
+    out->x2 -= lv_obj_get_style_border_width(radar, LV_PART_MAIN);
+}
+
 static void radar_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -210,17 +222,27 @@ static void radar_draw_cb(lv_event_t *e)
     if (!s_st.have_pos) return;
     proj_t pj;
     proj_make(&pj, &a);
+    if (s_map) {
+        adsb_map_draw(layer);
+        lv_area_t ma;
+        map_area(&a, &ma);
+        devos_w_draw_text(layer, &lv_font_montserrat_10, ma.x2 - 232, ma.y2 - 16, 0, DEVOS_MAPTILES_ATTRIBUTION,
+                          p->text_muted);
+        if (s_map_status[0])
+            devos_w_draw_text(layer, &lv_font_montserrat_12, a.x1 + 12, a.y1 + 8, 400, s_map_status, p->text_muted);
+    }
     int r = (int)(pj.scale * s_range);
     char buf[24];
+    lv_color_t ring = s_map ? p->text_muted : p->surface_border;     /* stays visible over the map */
     for (int i = 1; i <= 4; i++) {
         int rr = r * i / 4;
-        draw_ring(layer, pj.cx, pj.cy, rr, p->surface_border, LV_OPA_COVER, 1);
+        draw_ring(layer, pj.cx, pj.cy, rr, ring, s_map ? LV_OPA_70 : LV_OPA_COVER, 1);
         int v = s_range * i / 4;
         snprintf(buf, sizeof(buf), "%d nm", v);
         devos_w_draw_text(layer, &lv_font_montserrat_12, pj.cx + rr + 3, pj.cy + 2, 0, buf, p->text_muted);
     }
-    draw_line(layer, pj.cx - r, pj.cy, pj.cx + r, pj.cy, p->surface_border, LV_OPA_50, 1);
-    draw_line(layer, pj.cx, pj.cy - r, pj.cx, pj.cy + r, p->surface_border, LV_OPA_50, 1);
+    draw_line(layer, pj.cx - r, pj.cy, pj.cx + r, pj.cy, ring, LV_OPA_50, 1);
+    draw_line(layer, pj.cx, pj.cy - r, pj.cx, pj.cy + r, ring, LV_OPA_50, 1);
     devos_w_draw_text(layer, &lv_font_montserrat_14, pj.cx - 5, a.y1 + 2, 0, "N", p->text_secondary);
     devos_w_draw_rect(layer, pj.cx - 3, pj.cy - 3, pj.cx + 3, pj.cy + 3, p->accent_primary, LV_OPA_COVER, 3);
     const devos_adsb_ac_t *sel = selected();
@@ -382,6 +404,8 @@ static void dlg_open(void)
     int sel = 4;
     for (int i = 0; i < NRANGES; i++) if (RANGES[i] == c.range_nm) sel = i;
     lv_dropdown_set_selected(dd_range, (uint32_t)sel);
+    if (c.map) lv_obj_add_state(cb_map, LV_STATE_CHECKED);
+    else lv_obj_remove_state(cb_map, LV_STATE_CHECKED);
     devos_w_set_text(s_dlg.msg, "");
     devos_w_dialog_show(&s_dlg, true);
     devos_focus_set(&s_fdlg, ta_url);
@@ -409,7 +433,9 @@ static void dlg_ok(void)
         }
     }
     c.range_nm = RANGES[lv_dropdown_get_selected(dd_range)];
+    c.map = lv_obj_has_state(cb_map, LV_STATE_CHECKED);
     s_range = c.range_nm;
+    s_map = c.map;
     devos_adsb_set_config(&c);
     devos_w_dialog_show(&s_dlg, false);
     devos_focus_clear(&s_fdlg);
@@ -437,7 +463,39 @@ static void zout_cb(lv_event_t *e) { LV_UNUSED(e); zoom(1); }
 static const char *keys_text(void)
 {
     if (devos_w_dialog_open(&s_dlg)) return "Tab / arrows move    Enter saves    Esc cancels";
-    return "Up / Down pick    + / - zoom    0 set range    L labels    T trails    Space freeze    C settings    Esc home";
+    return "Up / Down pick    + / - zoom    0 set range    L labels    T trails    M map    Space freeze    C settings    Esc home";
+}
+
+/* Keep the map underlay in step with the radar's view. */
+static void map_tick(void)
+{
+    if (!s_map || !s_st.have_pos) {
+        adsb_map_stop();
+        s_map_status[0] = '\0';
+        return;
+    }
+    lv_area_t a, ma;
+    lv_obj_get_coords(radar, &a);
+    if (lv_area_get_width(&a) <= 1) return;         /* not laid out yet */
+    proj_t pj;
+    proj_make(&pj, &a);
+    map_area(&a, &ma);
+    adsb_map_view_t v = { pj.cx, pj.cy, pj.scale, pj.lat0, pj.lon0 };
+    bool changed = adsb_map_update(&ma, &v);
+    if (strcmp(s_map_status, adsb_map_status())) {
+        snprintf(s_map_status, sizeof(s_map_status), "%s", adsb_map_status());
+        changed = true;
+    }
+    if (changed) lv_obj_invalidate(radar);
+}
+
+static void set_map(bool on)
+{
+    s_map = on;
+    devos_adsb_set_map(on);
+    if (!on) adsb_map_stop();
+    s_map_status[0] = '\0';
+    lv_obj_invalidate(radar);
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -455,6 +513,7 @@ static void tick_cb(lv_timer_t *t)
         s_blink = (lv_tick_get() / 500) % 2;
         lv_obj_invalidate(radar);
     }
+    map_tick();
     status_line();
     devos_w_set_text(s_keys, keys_text());
 }
@@ -481,6 +540,7 @@ static bool adsb_key(uint32_t key, uint8_t mods)
     }
     case 'l': case 'L': s_labels = !s_labels; lv_obj_invalidate(radar); return true;
     case 't': case 'T': s_trails = !s_trails; lv_obj_invalidate(radar); return true;
+    case 'm': case 'M': set_map(!s_map); return true;
     case ' ':
         s_frozen = !s_frozen;
         if (!s_frozen) s_gen = 0xffffffff;
@@ -510,6 +570,7 @@ static void adsb_init(void)
     devos_adsb_config_t c;
     devos_adsb_get_config(&c);
     s_range = c.range_nm;
+    s_map = c.map;
     s_ac = calloc(DEVOS_ADSB_MAX, sizeof(*s_ac));
 
     s_screen = devos_w_screen(&s_desc);
@@ -570,6 +631,8 @@ static void adsb_init(void)
                                    "tar1090 / readsb:           http://<host>/tar1090/data/aircraft.json\n"
                                    "ultrafeeder / adsb.im:      http://<host>:8080/data/aircraft.json");
     lv_obj_set_pos(hint, 0, 166);
+    cb_map = devos_w_cb(s_dlg.box, "Map underlay (OpenStreetMap; tiles are cached on the SD card)");
+    lv_obj_set_pos(cb_map, 0, 246);
     lv_obj_t *bok = devos_w_btn_kind(s_dlg.box, DEVOS_W_BTN_PRIMARY, LV_SYMBOL_OK "  Save", 120, dlg_ok_cb, NULL, NULL);
     lv_obj_set_size(bok, 120, 36);
     lv_obj_align(bok, LV_ALIGN_BOTTOM_RIGHT, -132, 0);
@@ -577,7 +640,7 @@ static void adsb_init(void)
     lv_obj_set_size(bc, 120, 36);
     lv_obj_align(bc, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     devos_focus_init(&s_fdlg);
-    lv_obj_t *order[] = { ta_url, ta_lat, ta_lon, dd_range, bok, bc };
+    lv_obj_t *order[] = { ta_url, ta_lat, ta_lon, dd_range, cb_map, bok, bc };
     for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) devos_focus_add(&s_fdlg, order[i]);
 
     lv_timer_create(tick_cb, 250, NULL);
@@ -590,7 +653,11 @@ static void adsb_show(void)
     if (!devos_adsb_configured()) dlg_open();
 }
 
-static void adsb_hide(void) { devos_adsb_set_active(false); }
+static void adsb_hide(void)
+{
+    devos_adsb_set_active(false);
+    adsb_map_stop();
+}
 
 static int adsb_telemetry(char lines[3][64])
 {

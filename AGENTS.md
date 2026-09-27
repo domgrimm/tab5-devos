@@ -103,6 +103,7 @@ tab5-devos/
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
+│   ├── devos_maptiles/            # OpenStreetMap tile fetch + SD/RAM cache for map underlays (no LVGL)
 │   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
 │   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
 │   ├── devos_audio/               # ES7210 / ES8388 voice memos (record + play WAV)
@@ -128,7 +129,7 @@ tab5-devos/
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_docker/            # Docker / Portainer console
-│   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json)
+│   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json) + OSM underlay (adsb_map.c)
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
