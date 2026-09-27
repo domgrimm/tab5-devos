@@ -82,13 +82,13 @@ static bool s_pub_open;
 static bool s_prog_scroll;
 static bool s_autostarted;
 static char s_filter[DEVOS_MQTT_TOPIC_MAX];      /* "" = all topics */
-static uint32_t s_rows[DEVOS_MQTT_RING];
+static EXT_RAM_BSS_ATTR uint32_t s_rows[DEVOS_MQTT_RING];
 static int s_row_n;
 static uint32_t s_sel_seq, s_shown_seq;
 static uint32_t s_last_gen = 0xFFFFFFFFu;
 static uint32_t s_unseen;
 static uint32_t s_flash_until;
-static tpl_t s_tpl[TPL_MAX];
+static EXT_RAM_BSS_ATTR tpl_t s_tpl[TPL_MAX];     /* ~20 KB: PSRAM */
 static int s_tpl_n;
 static EXT_RAM_BSS_ATTR char s_detail[DEVOS_MQTT_PAYLOAD_MAX + 1];
 static EXT_RAM_BSS_ATTR char s_pretty[24576];

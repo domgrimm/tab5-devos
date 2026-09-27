@@ -20,8 +20,10 @@
 #include "freertos/task.h"
 #include "nvs.h"
 static SemaphoreHandle_t s_mx;
-#define LOCK()   xSemaphoreTake(s_mx, portMAX_DELAY)
-#define UNLOCK() xSemaphoreGive(s_mx)
+/* Safe before *_init(): other tasks (sysmon, launcher tiles) may ask for
+ * status first, and a NULL semaphore asserts. */
+#define LOCK()   do { if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY); } while (0)
+#define UNLOCK() do { if (s_mx) xSemaphoreGive(s_mx); } while (0)
 static void *big_alloc(size_t n)
 {
     void *p = heap_caps_calloc(1, n, MALLOC_CAP_SPIRAM);
@@ -783,6 +785,9 @@ void devos_mqtt_init(void)
 
 int devos_mqtt_start(void)
 {
+#ifdef ESP_PLATFORM
+    if (!s_mx) devos_mqtt_init();               /* the worker needs the lock */
+#endif
     LOCK();
     if (!s_ring) {
         s_ring = big_alloc(sizeof(slot_t) * DEVOS_MQTT_RING);
