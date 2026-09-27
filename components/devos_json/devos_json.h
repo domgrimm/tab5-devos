@@ -23,6 +23,16 @@ const char *devos_json_parse_str(const char *p, const char *end, char *out,
 const char *devos_json_find_key(const char *p, const char *end,
                                 const char *key);
 
+/* Value of the direct member `key` of the object at p (which points at '{'),
+ * or NULL. Unlike find_key, nested objects and arrays are skipped:
+ * {"class":{"name":"T20"},"name":"Final"} gives "Final" for "name". */
+const char *devos_json_member(const char *p, const char *end, const char *key);
+
+/* A direct member as a string (0 ok, -1 missing / not a string) or a number
+ * (a JSON number, or a string holding one, as some APIs send; false if not). */
+int devos_json_member_str(const char *obj, const char *end, const char *key, char *out, size_t cap);
+bool devos_json_member_num(const char *obj, const char *end, const char *key, double *out);
+
 /* Balanced span of the {...} or [...] starting at p, or NULL. */
 const char *devos_json_span(const char *p, const char *end);
 

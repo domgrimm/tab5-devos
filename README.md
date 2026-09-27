@@ -30,6 +30,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **REST** | REST and webhook client with saved requests and `{{variables}}` |
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
+| **Cricket** | Live scores, results and full scorecards from ESPNcricinfo, for today or any day back to the first Test in 1877 |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
 | **Settings** | Wi-Fi, display, power, time zone, updates, and switching apps on and off |
 
@@ -96,7 +97,7 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 | `devos_crypto` | SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32 |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 
-The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_netdiag`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
+The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
 
 ### Keyboard first
 
@@ -298,7 +299,7 @@ Your keyboard stands in for the Tab5's. `tools/sim/run_web_sim.sh` runs it headl
 
 ### Tests
 
-Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, OTA, terminal emulator, crypto). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
+Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, OTA, terminal emulator, crypto, cricket parsers). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
 
 ---
 
@@ -337,6 +338,7 @@ components/
   devos_json/  devos_mdview/  devos_crypto/  devos_vterm/          shared engines
   devos_mqtt/  devos_docker/  devos_adsb/  devos_netdiag/          feature engines
   devos_maptiles/    OpenStreetMap tiles: fetch one at a time, cache on SD
+  devos_cricket/     ESPNcricinfo match lists and scorecards
   devos_totp/  devos_wireguard/  devos_tailnet/  devos_audio/  devos_qr/
   libssh2_port/      SSH client glue (libssh2 from the component registry)
   microlink/         Tailscale client (third party, MIT)
