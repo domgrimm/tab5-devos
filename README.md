@@ -354,3 +354,7 @@ docs/                GitHub Pages: browser installer and OTA feed (generated)
 ```
 
 `PLAN.md` is the design document and roadmap.
+
+## Licence
+
+devOS is released under the [MIT licence](LICENSE). Third-party components keep their own licences: `components/microlink` (MIT), `components/wireguard_lwip` (BSD-3-Clause), `components/quirc` (ISC), and LVGL (MIT, fetched by `tools/fetch_lvgl.sh`).
