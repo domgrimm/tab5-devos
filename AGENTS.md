@@ -99,6 +99,7 @@ tab5-devos/
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
 │   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
+│   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
@@ -120,6 +121,7 @@ tab5-devos/
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_rest/              # REST & webhook client
+│   │   ├── app_docker/            # Docker / Portainer console
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

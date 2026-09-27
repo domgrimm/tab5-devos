@@ -13,6 +13,7 @@ set(APP_SRCS
     "apps/app_netdiag/nd_ui_wifi.c"
     "apps/app_netdiag/nd_ui_mdns.c"
     "apps/app_rest/app_rest.c"
+    "apps/app_docker/app_docker.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
 )
@@ -51,6 +52,7 @@ idf_component_register(
         devos_json
         devos_http
         devos_netdiag
+        devos_docker
         lvgl
         nvs_flash
 )
