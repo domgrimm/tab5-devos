@@ -121,9 +121,8 @@ static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, 
  * complete only after every app has registered) ---- */
 typedef struct {
     devos_app_descriptor_t *app;
-    lv_obj_t *row, *sw, *lbl_cost, *lbl_state;
+    lv_obj_t *sw, *lbl_cost, *lbl_state;
     lv_style_t *state_style;
-    bool sel;                   /* drawn with the selection border */
 } app_row_t;
 static app_row_t s_app_rows[DEVOS_MAX_APPS];
 static int s_app_rows_n = -1;
@@ -1714,8 +1713,6 @@ static void build_app_rows(void)
         app_row_t *r = &s_app_rows[s_app_rows_n];
         r->app = app;
         lv_obj_t *row = lv_obj_create(list_apps);
-        r->row = row;
-        r->sel = false;
         lv_obj_remove_style_all(row);
         lv_obj_add_style(row, &st_row, 0);
         lv_obj_set_size(row, lv_pct(100), 54);
@@ -1757,17 +1754,9 @@ static void refresh_apps(void)
     int64_t sum_sram = 0, sum_psram = 0;
     int on_now = 0;
     char buf[160], a[24], b[24];
-    /* the focus ring hides on a switch that is on: mark the whole row */
-    lv_obj_t *focused = s_in_panel && s_section == SEC_APPS ? devos_focus_get(&s_pf[SEC_APPS]) : NULL;
     for (int i = 0; i < s_app_rows_n; i++) {
         app_row_t *r = &s_app_rows[i];
         const char *uid = r->app->uid;
-        bool sel = focused && focused == r->sw;
-        if (sel != r->sel) {
-            if (sel) lv_obj_add_style(r->row, &st_row_sel, 0);
-            else lv_obj_remove_style(r->row, &st_row_sel, 0);
-            r->sel = sel;
-        }
         bool req = devos_core_app_required(uid), now = devos_core_app_enabled(uid),
              next = devos_core_app_enabled_next(uid);
         if (!req && lv_obj_has_state(r->sw, LV_STATE_CHECKED) != next) {
