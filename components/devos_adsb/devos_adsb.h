@@ -25,6 +25,7 @@ typedef struct {
     char url[200];                  /* .../data/aircraft.json */
     double lat, lon;                /* receiver; 0,0 = ask receiver.json */
     int range_nm;                   /* initial radar range */
+    bool map;                       /* OpenStreetMap underlay on the radar */
 } devos_adsb_config_t;
 
 typedef struct {
@@ -64,6 +65,8 @@ void devos_adsb_init(void);
 void devos_adsb_get_config(devos_adsb_config_t *out);
 void devos_adsb_set_config(const devos_adsb_config_t *c);
 bool devos_adsb_configured(void);
+/* Map underlay on / off (saved; nothing else is reset). */
+void devos_adsb_set_map(bool on);
 void devos_adsb_set_active(bool active);
 void devos_adsb_status(devos_adsb_status_t *out);
 /* Copies the aircraft (unsorted); returns the count. */
