@@ -20,7 +20,9 @@ strings in ~/.config/devos/publish-deny.txt or --deny); a hit aborts the publish
 
 The Tab5's default OTA feed (components/devos_ota/devos_ota.c) must point at
 <pages url>/ota/devos-manifest.json. Bump DEVOS_VERSION_* in devos_config.h
-before each release: the Tab5 only offers newer versions.
+before each release. The OTA manifest also carries the image's build id, so a
+Tab5 knows whether it runs exactly this image (and a rebuilt image of the same
+version is still offered).
 """
 import argparse
 import hashlib
@@ -33,7 +35,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-from make_ota_manifest import read_version  # noqa: E402
+from make_ota_manifest import image_info, read_version  # noqa: E402
 
 ESP_WEB_TOOLS = "https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"
 
@@ -158,11 +160,13 @@ def main():
         f.write("\n")
 
     data = open(app, "rb").read()
+    build, built = image_info(data)
     ota_name = "tab5-devos-%s.bin" % version
     shutil.copyfile(app, os.path.join(out, "ota", ota_name))
     with open(os.path.join(out, "ota", "devos-manifest.json"), "w") as f:
         json.dump({"version": version, "url": ota_name, "size": len(data),
-                   "sha256": hashlib.sha256(data).hexdigest(), "notes": args.notes[:190]}, f, indent=2)
+                   "sha256": hashlib.sha256(data).hexdigest(), "build": build, "notes": args.notes[:190]},
+                  f, indent=2)
         f.write("\n")
 
     with open(os.path.join(out, "index.html"), "w") as f:
@@ -176,7 +180,7 @@ def main():
             hits += scan(os.path.join(dirpath, fn), args.deny)
     if hits:
         sys.exit("identifying strings in %s:\n  %s" % (out, "\n  ".join(sorted(set(hits)))))
-    print("published devOS %s (%d KB app) -> %s" % (version, len(data) // 1024, out))
+    print("published devOS %s, build %s (%s), %d KB app -> %s" % (version, build[:8], built, len(data) // 1024, out))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,14 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
 
+# Keep the display scanning out while flash is written (OTA, NVS saves). The
+# DPI driver restarts its framebuffer DMA from an interrupt at the end of
+# every frame; while the cache is off for a flash write, non-IRAM interrupts
+# wait, the DMA stops and the panel shows a blank light-blue screen until the
+# write ends (flashing during OTA). IRAM-safe, the ISR keeps running. Our
+# on_refresh_done callback is IRAM_ATTR for it (bsp_tab5.c).
+CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
+
 # FAT long filenames. Without these only 8.3 names work on the SD card, so
 # bookmarks.json, known_hosts, untitled-N.md, *.diff etc. fail with
 # FR_INVALID_NAME and directory listings come back as upper-case short names.
