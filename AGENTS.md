@@ -119,6 +119,7 @@ tab5-devos/
 │   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
+│   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

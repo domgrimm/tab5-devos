@@ -350,6 +350,19 @@ services in the REST client).
     networks; the join list still drops them). The simulator invents a drifting neighbourhood.
 *   Simulator: ping uses Linux ping sockets; `DEVOS_SIM_MDNS_IF=<ip>` picks the mDNS interface.
 
+### 3.12 REST & Webhook Client (`app_rest`)
+
+*   Method, URL, headers (`Name: value` per line), body with a type (JSON / Text / Form / Raw -
+    sets Content-Type unless a header does), follow redirects, skip the certificate check.
+*   Response: status, timings (DNS, connect, TLS, wait), size, TLS verification, and the body
+    pretty-printed with JSON highlighting (plain text, or a hex dump for binary) or the headers.
+*   Saved requests in `/rest/requests.json` (Sym+L panel; seeded with httpbin, Home Assistant
+    service call + webhook, GitHub workflow_dispatch, GitLab pipeline trigger, ntfy). `{{NAME}}`
+    is filled in from Variables kept in NVS (tokens stay off the SD card) or the built-ins
+    `{{ts}}` `{{time}}` `{{uuid}}` `{{battery}}`.
+*   Keys: Ctrl+Enter sends from anywhere, Ctrl+S / Ctrl+N / Ctrl+K save / new / variables, Alt+H
+    body or headers, Esc cancels a request in flight. Other apps open URLs in it (intent "get").
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
@@ -358,6 +371,8 @@ services in the REST client).
     queued Core 0 worker the UI polls. The simulator does HTTPS when built against mbedTLS headers.
 *   `devos_widgets` (devos_ui): pre-styled buttons, fields, dropdowns, panels, dialogs, key
     footer and a virtual list, all restyled on theme change - new apps need no apply_theme().
+*   `devos_net_resolve()` answers `name.local` with a one-shot mDNS query (lwIP's resolver
+    can't), so homeassistant.local / piaware.local / raspberrypi.local work in every app.
 *   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something
     ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network).
 
@@ -591,6 +606,7 @@ tab5-devos/
 │   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
+│   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

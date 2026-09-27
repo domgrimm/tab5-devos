@@ -12,6 +12,7 @@ set(APP_SRCS
     "apps/app_netdiag/nd_ui_scan.c"
     "apps/app_netdiag/nd_ui_wifi.c"
     "apps/app_netdiag/nd_ui_mdns.c"
+    "apps/app_rest/app_rest.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
 )

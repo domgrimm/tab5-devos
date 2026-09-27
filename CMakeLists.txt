@@ -35,6 +35,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_mqtt
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_wireguard
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_netdiag
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_rest
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
@@ -74,6 +75,7 @@ else()
         main/apps/app_netdiag/nd_ui_scan.c
         main/apps/app_netdiag/nd_ui_wifi.c
         main/apps/app_netdiag/nd_ui_mdns.c
+        main/apps/app_rest/app_rest.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
