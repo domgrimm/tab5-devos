@@ -101,6 +101,8 @@ tab5-devos/
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
+│   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
+│   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
@@ -124,12 +126,13 @@ tab5-devos/
 │   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_docker/            # Docker / Portainer console
 │   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json)
+│   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, ota, vterm).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, ota, vterm, crypto).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.

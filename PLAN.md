@@ -386,6 +386,21 @@ services in the REST client).
     GPS altitude, vertical rate, speed, track, position, range / bearing, signal, MLAT flag.
 *   Config in `/.devos/adsb.json`.
 
+### 3.15 Authenticator (`app_totp`, `devos_totp`, `devos_crypto`)
+
+*   Offline TOTP (RFC 6238; SHA-1/256/512, 6-8 digits, 30/60 s) from an encrypted vault in NVS:
+    otpauth URIs sealed with ChaCha20-Poly1305 under PBKDF2-HMAC-SHA256 (100 000 rounds, random
+    salt) of a passphrase. Unlock / re-key runs on a Core 0 task; after 5 wrong tries each try
+    waits longer (30 s doubling, kept across restarts). Locking wipes key and accounts from RAM;
+    it locks after 3 min idle or 1 min away from the app. Secrets stay in internal RAM.
+*   Add by camera QR (otpauth://, and Google Authenticator's otpauth-migration export, batch by
+    batch), typed setup key, or `/totp/import.txt` (then offered to be wiped). Codes with a
+    countdown ring and the next code near the end; Enter shows it big (48 px). Encrypted backup
+    to / restore from `/totp/vault-backup.bin`; change passphrase; erase if forgotten.
+*   Warns when the clock was never set (RTC + NTP keep it). `devos_crypto` is dependency-free and
+    checked against the RFC vectors in `tools/crypto_test.c`.
+*   `devos_qrscan` (devos_ui): the camera QR scanner as a reusable dialog.
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
@@ -608,6 +623,8 @@ tab5-devos/
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
+│   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
+│   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
@@ -634,6 +651,7 @@ tab5-devos/
 │   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_docker/            # Docker / Portainer console
 │   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json)
+│   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

@@ -38,6 +38,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_rest
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_docker
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_adsb
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
@@ -62,6 +63,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_docker
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_adsb
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
     )
 
     # Sources
@@ -82,6 +85,7 @@ else()
         main/apps/app_rest/app_rest.c
         main/apps/app_docker/app_docker.c
         main/apps/app_adsb/app_adsb.c
+        main/apps/app_totp/app_totp.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
@@ -90,6 +94,7 @@ else()
         components/devos_ui/devos_codeview.c
         components/devos_ui/devos_focus.c
         components/devos_ui/devos_widgets.c
+        components/devos_ui/devos_qrscan.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/bsp_tab5/bsp_tab5.c
@@ -118,6 +123,8 @@ else()
         components/devos_netdiag/nd_scan.c
         components/devos_docker/devos_docker.c
         components/devos_adsb/devos_adsb.c
+        components/devos_crypto/devos_crypto.c
+        components/devos_totp/devos_totp.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})
