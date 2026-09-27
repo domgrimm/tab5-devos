@@ -6,11 +6,11 @@
  *
  * Compile and run from an isolated directory:
  *   mkdir -p /tmp/devos_apps_test && cd /tmp/devos_apps_test && \
- *   gcc -o apps_test /home/dom/dev/tab5-devos/tools/apps_mask_test.c \
- *     /home/dom/dev/tab5-devos/components/devos_core/devos_apps.c \
- *     -I/home/dom/dev/tab5-devos/main/include \
- *     -I/home/dom/dev/tab5-devos/components/devos_core \
- *     -I/home/dom/dev/tab5-devos/components/lvgl \
+ *   gcc -o apps_test tools/apps_mask_test.c \
+ *     components/devos_core/devos_apps.c \
+ *     -Imain/include \
+ *     -Icomponents/devos_core \
+ *     -Icomponents/lvgl \
  *     && ./apps_test
  */
 #include <assert.h>

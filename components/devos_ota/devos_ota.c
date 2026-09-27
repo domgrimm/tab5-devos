@@ -8,7 +8,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define DEVOS_OTA_DEFAULT_FEED "http://10.2.132.54:8090/devos-manifest.json"
+#define DEVOS_OTA_DEFAULT_FEED "https://domgrimm.github.io/tab5-devos/ota/devos-manifest.json"
 #define MANIFEST_MAX 4096
 
 static char s_feed[DEVOS_OTA_FEED_MAX] = DEVOS_OTA_DEFAULT_FEED;

@@ -174,7 +174,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
   ./tools/sim/run_web_sim.sh
   ```
 * **Developer Verification URL:**
-  * Accessible over Tailscale at: **`http://100.77.11.92:6080/vnc.html`** (or `http://dev-server:6080/vnc.html`).
+  * Accessible at **`http://dev-server:6080/vnc.html`** (the dev server's LAN or Tailscale address; `run_web_sim.sh` prints both).
 * **Native Desktop Simulator (Local macOS / Linux with Display):**
   ```bash
   # Run directly if display server is present
@@ -224,5 +224,5 @@ When implementing tasks from [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md):
 4. **Test in simulation first:**
    * After creating or modifying any UI/UX component, compile the simulator (`ninja -C build_sim`).
    * Verify the UI via `./tools/sim/run_web_sim.sh`, **keyboard-only first** (invariant 9): reach every control and dialog without the mouse, then check touch.
-   * Notify the developer with the direct verification URL (**`http://100.77.11.92:6080/vnc.html`**) so they can interactively test the UI from their Mac browser without flashing.
+   * Notify the developer with the direct verification URL (**`http://dev-server:6080/vnc.html`**) so they can interactively test the UI from their Mac browser without flashing.
 5. **Update PLAN.md** milestone checkboxes as features are completed and verified.

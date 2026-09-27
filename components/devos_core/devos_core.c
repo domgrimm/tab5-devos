@@ -26,13 +26,13 @@ static devos_telemetry_t telemetry_data = {
 
     .wifi_connected         = true,
     .wifi_state             = 3,
-    .wifi_ssid              = "DevNet",
+    .wifi_ssid              = "HomeWiFi",
     .wifi_rssi              = -58,
-    .local_ip               = "10.2.132.54",
+    .local_ip               = "192.168.1.50",
     .tailscale_online       = true,
-    .tailscale_ip           = "100.77.11.92",
+    .tailscale_ip           = "100.64.0.10",
     .tailscale_peers_online = 6,
-    .tailscale_derp         = "Sydney (18ms)",
+    .tailscale_derp         = "Nearest (18ms)",
 
     .sd_mounted             = true,
     .sd_total_mb            = 31200,
