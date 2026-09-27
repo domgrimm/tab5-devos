@@ -40,6 +40,7 @@ idf_component_register(
         devos_mdview
         devos_mqtt
         devos_wireguard
+        devos_qr
         devos_json
         lvgl
         nvs_flash

@@ -14,7 +14,10 @@
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_wireguard.h"
+#include "devos_qr.h"
+#include "devos_focus.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -44,6 +47,17 @@ static lv_obj_t *card_imp, *lbl_imp_hdr, *file_rows[MAX_FILES], *file_lbl[MAX_FI
                 *lbl_rescan;
 static lv_obj_t *overlay, *modal, *lbl_modal, *btn_m_ok, *lbl_m_ok, *btn_m_cancel, *lbl_m_cancel;
 static lv_obj_t *lbl_keys;
+static lv_obj_t *btn_scan, *lbl_scan;
+
+/* QR scan: camera preview, then name the tunnel */
+static lv_obj_t *scan_overlay, *scan_panel, *lbl_scan_title, *scan_img, *lbl_scan_status, *lbl_scan_keys;
+static lv_obj_t *name_box, *ta_name, *btn_name_save, *lbl_name_save, *btn_name_cancel, *lbl_name_cancel, *lbl_name_err;
+static enum { SCAN_OFF, SCAN_RUNNING, SCAN_NAMING } s_scan;
+static EXT_RAM_BSS_ATTR uint8_t s_prev_buf[DEVOS_QR_PREVIEW * DEVOS_QR_PREVIEW];
+static lv_image_dsc_t s_prev_dsc;
+static uint32_t s_prev_gen, s_scan_retry_at;
+static EXT_RAM_BSS_ATTR char s_scanned[DEVOS_QR_TEXT_MAX];
+static devos_focus_t s_name_f;
 
 static conf_file_t s_files[MAX_FILES];
 static int s_file_n;
@@ -454,9 +468,9 @@ static void refresh(bool force)
     const char *keys;
     if (s_modal == M_DELETE_FILE) keys = "Enter or Y  delete the file        Esc or N  keep it";
     else if (s_modal == M_DELETE_TUNNEL) keys = "Enter or Y  delete the tunnel        Esc or N  cancel";
-    else if (s_focus_files) keys = "Up / Down  pick a file    Enter  import    Tab  tunnels    R  rescan    Esc  home";
+    else if (s_focus_files) keys = "Up / Down  pick a file    Enter  import    Tab  tunnels    Q  scan QR    R  rescan    Esc  home";
     else keys = "Up / Down  pick a tunnel    Enter  connect / disconnect    D  delete    Tab  SD files    "
-                "R  rescan    Esc  home";
+                "Q  scan QR    R  rescan    Esc  home";
     set_text(lbl_keys, keys);
 }
 
@@ -499,6 +513,17 @@ static void apply_theme(const devos_palette_t *p, void *ud)
     style_btn(btn_conn, lbl_conn, p, true);
     style_btn(btn_del, lbl_del, p, false);
     style_btn(btn_rescan, lbl_rescan, p, false);
+    style_btn(btn_scan, lbl_scan, p, false);
+    style_btn(btn_name_save, lbl_name_save, p, true);
+    style_btn(btn_name_cancel, lbl_name_cancel, p, false);
+    lv_obj_set_style_bg_color(scan_panel, p->surface, 0);
+    lv_obj_set_style_border_color(scan_panel, p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_scan_title, p->accent_primary, 0);
+    lv_obj_set_style_text_color(lbl_scan_keys, p->text_secondary, 0);
+    lv_obj_set_style_text_color(lbl_name_err, p->accent_danger, 0);
+    lv_obj_set_style_bg_color(ta_name, p->code_bg, 0);
+    lv_obj_set_style_text_color(ta_name, p->text_primary, 0);
+    lv_obj_set_style_border_color(ta_name, p->surface_border, 0);
     style_btn(btn_m_ok, lbl_m_ok, p, false);
     style_btn(btn_m_cancel, lbl_m_cancel, p, false);
     lv_obj_set_style_text_color(lbl_m_ok, p->accent_danger, 0);
@@ -516,9 +541,149 @@ static void apply_theme(const devos_palette_t *p, void *ud)
     refresh(true);
 }
 
+/* ------------------------------------------------------------------ QR scan */
+static void scan_status(const char *msg, bool err)
+{
+    const devos_palette_t *p = devos_theme_get();
+    set_text(lbl_scan_status, msg);
+    lv_obj_set_style_text_color(lbl_scan_status, err ? p->accent_danger : p->text_secondary, 0);
+}
+
+static void scan_open(void)
+{
+    s_scan = SCAN_RUNNING;
+    s_prev_gen = 0;
+    s_scan_retry_at = 0;
+    memset(s_prev_buf, 0x20, sizeof(s_prev_buf));
+    lv_image_cache_drop(&s_prev_dsc);
+    lv_obj_invalidate(scan_img);
+    lv_obj_add_flag(name_box, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(scan_img, LV_OBJ_FLAG_HIDDEN);
+    set_text(lbl_scan_keys, "Esc  cancel");
+    lv_obj_remove_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(scan_overlay);
+    if (devos_qr_start() == 0) scan_status("Hold the WireGuard QR code (e.g. from wg-quick or your VPN provider) up to the camera.", false);
+    else scan_status(devos_qr_error(), true);
+}
+
+static void scan_close(void)
+{
+    devos_qr_stop();
+    s_scan = SCAN_OFF;
+    memset(s_scanned, 0, sizeof(s_scanned));
+    devos_focus_clear(&s_name_f);
+    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
+    refresh(true);
+}
+
+/* A name for a scanned tunnel: the endpoint's first label, made unique. */
+static void default_name(const devos_wg_config_t *c, char *out, size_t cap)
+{
+    char base[DEVOS_WG_NAME_MAX] = "tunnel";
+    const char *h = c->peer_n ? c->peers[0].endpoint_host : "";
+    size_t l = strcspn(h, ".");
+    if (l && !isdigit((unsigned char)h[0])) {
+        if (l > sizeof(base) - 4) l = sizeof(base) - 4;
+        memcpy(base, h, l);
+        base[l] = '\0';
+    }
+    snprintf(out, cap, "%s", base);
+    for (int k = 2; k < 100; k++) {
+        bool taken = false;
+        for (int i = 0; i < devos_wg_count(); i++) if (!strcmp(devos_wg_name(i), out)) taken = true;
+        if (!taken) return;
+        snprintf(out, cap, "%.26s-%d", base, k);
+    }
+}
+
+static void scan_found(void)
+{
+    devos_wg_config_t c;
+    char err[160];
+    if (devos_wg_parse(s_scanned, &c, err, sizeof(err)) != 0) {
+        char msg[220];
+        snprintf(msg, sizeof(msg), "That QR code isn't a WireGuard config (%s). Still looking...", err);
+        scan_status(msg, true);
+        memset(s_scanned, 0, sizeof(s_scanned));
+        s_scan_retry_at = lv_tick_get() + 1500;         /* keep scanning after a pause */
+        return;
+    }
+    char name[DEVOS_WG_NAME_MAX];
+    default_name(&c, name, sizeof(name));
+    memset(&c, 0, sizeof(c));
+    s_scan = SCAN_NAMING;
+    lv_obj_add_flag(scan_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(name_box, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_text(ta_name, name);
+    set_text(lbl_name_err, "");
+    set_text(lbl_scan_keys, "Type a name    Enter  save    Tab  buttons    Esc  cancel");
+    scan_status("Got it - a valid WireGuard config. Give the tunnel a name:", false);
+    devos_focus_set(&s_name_f, ta_name);
+}
+
+static void name_save(void)
+{
+    char err[160] = "";
+    const char *name = lv_textarea_get_text(ta_name);
+    int idx = devos_wg_add(name, s_scanned, err, sizeof(err));
+    if (idx < 0) {
+        set_text(lbl_name_err, err);
+        return;
+    }
+    s_sel_tun = idx;
+    s_focus_files = false;
+    snprintf(s_note, sizeof(s_note), "Imported \"%s\" from a QR code", name);
+    s_note_err = false;
+    s_last_gen = 0xFFFFFFFFu;
+    scan_close();
+}
+
+static void name_save_cb(lv_event_t *e) { LV_UNUSED(e); name_save(); }
+static void name_cancel_cb(lv_event_t *e) { LV_UNUSED(e); scan_close(); }
+static void scan_btn_cb(lv_event_t *e) { LV_UNUSED(e); scan_open(); }
+static void scan_overlay_cb(lv_event_t *e) { LV_UNUSED(e); }
+
+static void scan_tick_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (s_scan == SCAN_OFF) return;
+    if (s_scan == SCAN_RUNNING) {
+        uint32_t g = devos_qr_preview(s_prev_buf);
+        if (g && g != s_prev_gen) {
+            s_prev_gen = g;
+            lv_image_cache_drop(&s_prev_dsc);
+            lv_obj_invalidate(scan_img);
+        }
+        devos_qr_state_t st = devos_qr_state();
+        if (st == DEVOS_QR_FOUND && devos_qr_take_result(s_scanned, sizeof(s_scanned))) scan_found();
+        else if (st == DEVOS_QR_ERROR) scan_status(devos_qr_error(), true);
+        if (s_scan_retry_at && (int32_t)(lv_tick_get() - s_scan_retry_at) >= 0) {
+            s_scan_retry_at = 0;
+            if (devos_qr_start() != 0) scan_status(devos_qr_error(), true);
+        }
+    }
+}
+
+static bool scan_key(uint32_t key, uint8_t mods)
+{
+    if (s_scan == SCAN_RUNNING) {
+        if (key == LV_KEY_ESC) scan_close();
+        return true;
+    }
+    /* naming */
+    if (key == LV_KEY_ESC) {
+        scan_close();
+        return true;
+    }
+    if (devos_focus_key(&s_name_f, key, mods)) return true;
+    if (key == '\r' || key == '\n') name_save();         /* Enter in the name field */
+    return true;
+}
+
 /* ------------------------------------------------------------------ keys */
 static bool wg_handle_key(uint32_t key, uint8_t mods)
 {
+    if (s_scan != SCAN_OFF) return scan_key(key, mods);
     if (s_modal != M_NONE) {
         if (key == LV_KEY_ESC || key == 'n' || key == 'N') { modal_close(); refresh(true); }
         else if (key == '\r' || key == '\n' || key == 'y' || key == 'Y') modal_ok();
@@ -552,6 +717,9 @@ static bool wg_handle_key(uint32_t key, uint8_t mods)
     case 'r': case 'R':
         scan_files();
         break;
+    case 'q': case 'Q':
+        scan_open();
+        return true;
     default:
         return key >= 32 && key <= 126;
     }
@@ -633,6 +801,9 @@ static void wg_init(void)
     btn_rescan = mk_btn(card_imp, LV_SYMBOL_REFRESH "  Rescan", 110, rescan_cb, &lbl_rescan);
     lv_obj_set_height(btn_rescan, 28);
     lv_obj_align(btn_rescan, LV_ALIGN_TOP_RIGHT, 0, -6);
+    btn_scan = mk_btn(card_imp, LV_SYMBOL_IMAGE "  Scan QR", 120, scan_btn_cb, &lbl_scan);
+    lv_obj_set_height(btn_scan, 28);
+    lv_obj_align_to(btn_scan, btn_rescan, LV_ALIGN_OUT_LEFT_MID, -8, 0);
     lbl_imp_hint = mk_label(card_imp, &lv_font_montserrat_12, "");
     lv_obj_set_pos(lbl_imp_hint, 0, 22);
     for (int i = 0; i < MAX_FILES; i++) {
@@ -679,10 +850,78 @@ static void wg_init(void)
     lv_obj_align(mk, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_text_color(mk, p->text_secondary, 0);
 
+    /* QR scan screen */
+    scan_overlay = lv_obj_create(screen);
+    lv_obj_remove_style_all(scan_overlay);
+    lv_obj_set_size(scan_overlay, DEVOS_SCREEN_WIDTH, DEVOS_CONTENT_HEIGHT);
+    lv_obj_set_style_bg_color(scan_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scan_overlay, LV_OPA_70, 0);
+    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(scan_overlay, scan_overlay_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
+    scan_panel = lv_obj_create(scan_overlay);
+    lv_obj_set_size(scan_panel, 640, 560);
+    lv_obj_center(scan_panel);
+    lv_obj_set_style_radius(scan_panel, 8, 0);
+    lv_obj_set_style_border_width(scan_panel, 2, 0);
+    lv_obj_set_style_pad_all(scan_panel, 16, 0);
+    lv_obj_remove_flag(scan_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lbl_scan_title = mk_label(scan_panel, &lv_font_montserrat_16, LV_SYMBOL_IMAGE "  Scan a WireGuard QR code");
+    s_prev_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_prev_dsc.header.cf = LV_COLOR_FORMAT_L8;
+    s_prev_dsc.header.w = DEVOS_QR_PREVIEW;
+    s_prev_dsc.header.h = DEVOS_QR_PREVIEW;
+    s_prev_dsc.header.stride = DEVOS_QR_PREVIEW;
+    s_prev_dsc.data_size = sizeof(s_prev_buf);
+    s_prev_dsc.data = s_prev_buf;
+    scan_img = lv_image_create(scan_panel);
+    lv_image_set_src(scan_img, &s_prev_dsc);
+    lv_obj_align(scan_img, LV_ALIGN_TOP_MID, 0, 34);
+    lbl_scan_status = mk_label(scan_panel, &lv_font_montserrat_14, "");
+    lv_obj_set_width(lbl_scan_status, 600);
+    lv_label_set_long_mode(lbl_scan_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(lbl_scan_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(lbl_scan_status, LV_ALIGN_TOP_MID, 0, 404);
+    lbl_scan_keys = mk_label(scan_panel, &lv_font_montserrat_12, "Esc  cancel");
+    lv_obj_align(lbl_scan_keys, LV_ALIGN_BOTTOM_MID, 0, 0);
+    name_box = lv_obj_create(scan_panel);
+    lv_obj_remove_style_all(name_box);
+    lv_obj_set_size(name_box, 600, 330);
+    lv_obj_align(name_box, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_add_flag(name_box, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *nl = mk_label(name_box, &lv_font_montserrat_14, "Tunnel name");
+    lv_obj_set_pos(nl, 0, 90);
+    ta_name = lv_textarea_create(name_box);
+    lv_textarea_set_one_line(ta_name, true);
+    lv_textarea_set_max_length(ta_name, DEVOS_WG_NAME_MAX - 1);
+    lv_obj_set_size(ta_name, 600, 40);
+    lv_obj_set_pos(ta_name, 0, 114);
+    lv_obj_set_style_radius(ta_name, 6, 0);
+    lv_obj_set_style_pad_ver(ta_name, 9, 0);
+    lv_obj_set_style_pad_hor(ta_name, 12, 0);
+    lv_obj_set_style_text_font(ta_name, &lv_font_montserrat_16, 0);
+    lv_obj_set_scrollbar_mode(ta_name, LV_SCROLLBAR_MODE_OFF);
+    lbl_name_err = mk_label(name_box, &lv_font_montserrat_12, "");
+    lv_obj_set_pos(lbl_name_err, 0, 162);
+    btn_name_save = mk_btn(name_box, LV_SYMBOL_SAVE "  Save tunnel", 170, name_save_cb, &lbl_name_save);
+    lv_obj_set_pos(btn_name_save, 250, 200);
+    btn_name_cancel = mk_btn(name_box, "Cancel", 150, name_cancel_cb, &lbl_name_cancel);
+    lv_obj_set_pos(btn_name_cancel, 440, 200);
+    devos_focus_init(&s_name_f);
+    devos_focus_add(&s_name_f, ta_name);
+    devos_focus_add(&s_name_f, btn_name_save);
+    devos_focus_add(&s_name_f, btn_name_cancel);
+
     scan_files();
     apply_theme(p, NULL);
     devos_theme_add_listener(apply_theme, NULL);
     lv_timer_create(tick_cb, 500, NULL);
+    lv_timer_create(scan_tick_cb, 100, NULL);
+}
+
+static void wg_hide(void)
+{
+    if (s_scan != SCAN_OFF) scan_close();       /* camera off when leaving */
 }
 
 static void wg_show(void)
@@ -717,6 +956,7 @@ devos_app_descriptor_t *app_wireguard_get_descriptor(void)
     app_descriptor.screen = screen;
     app_descriptor.init = wg_init;
     app_descriptor.show = wg_show;
+    app_descriptor.hide = wg_hide;
     app_descriptor.handle_key = wg_handle_key;
     app_descriptor.get_telemetry_lines = wg_telemetry_lines;
     return &app_descriptor;
