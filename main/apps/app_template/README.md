@@ -158,8 +158,10 @@ In `devos_system_bringup()`:
 devos_core_register_app(app_myapp_get_descriptor());
 ```
 
-### Step 4: Add to `CMakeLists.txt`
-Add include directory and source file:
+### Step 4: Add to both CMake files
+Firmware, `main/CMakeLists.txt`: add `"apps/app_myapp/app_myapp.c"` to `APP_SRCS` and `"apps/app_myapp"` to `INCLUDE_DIRS`.
+
+Simulator, the root `CMakeLists.txt`: add the include directory and the source file:
 ```cmake
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_myapp)
 set(DEVOS_SOURCES
@@ -168,4 +170,4 @@ set(DEVOS_SOURCES
 )
 ```
 
-The launcher will automatically discover the app, allocate a compact 280×210 tile, display its icon and telemetry, and support arrangement, hotkeys, and pagination!
+The launcher discovers the app on its own: it gets a tile with its icon and live lines, a row in Settings > Apps, and a place in the saved layout.

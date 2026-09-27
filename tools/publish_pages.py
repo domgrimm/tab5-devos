@@ -15,8 +15,8 @@ scanned for identifying strings (home paths, e-mail addresses, and the
 strings in ~/.config/devos/publish-deny.txt or --deny); a hit aborts the publish.
 
     idf.py build
-    tools/publish_pages.py --out ../devos-pages --notes "ADS-B fixes"
-    # then commit + push ../devos-pages (a separate repo with its own history)
+    tools/publish_pages.py --build build --out docs --notes "ADS-B fixes"
+    # then commit + push; GitHub Pages serves docs/
 
 The Tab5's default OTA feed (components/devos_ota/devos_ota.c) must point at
 <pages url>/ota/devos-manifest.json. Bump DEVOS_VERSION_* in devos_config.h
@@ -113,7 +113,7 @@ The feed is <code>ota/devos-manifest.json</code> on this site.</p>
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", default=os.path.join(ROOT, "build"), help="IDF build folder (default: build/)")
-    ap.add_argument("--out", required=True, help="Pages folder (a checkout of the public repo)")
+    ap.add_argument("--out", required=True, help="Pages folder (docs/ in the public repo)")
     ap.add_argument("--notes", default="", help="short release notes (page + OTA)")
     ap.add_argument("--deny", action="append", default=[],
                     help="extra string that must not appear (repeatable; e.g. your name)")
