@@ -36,6 +36,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_wireguard
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_rest
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_docker
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
@@ -58,6 +59,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mdview
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_http
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_netdiag
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_docker
     )
 
     # Sources
@@ -76,6 +78,7 @@ else()
         main/apps/app_netdiag/nd_ui_wifi.c
         main/apps/app_netdiag/nd_ui_mdns.c
         main/apps/app_rest/app_rest.c
+        main/apps/app_docker/app_docker.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
@@ -110,6 +113,7 @@ else()
         components/devos_netdiag/nd_ping.c
         components/devos_netdiag/nd_dns.c
         components/devos_netdiag/nd_scan.c
+        components/devos_docker/devos_docker.c
     )
 
     add_executable(devos_sim ${DEVOS_SOURCES})

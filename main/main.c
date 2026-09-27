@@ -22,6 +22,7 @@
 #include "apps/app_mqtt/app_mqtt.h"
 #include "apps/app_netdiag/app_netdiag.h"
 #include "apps/app_rest/app_rest.h"
+#include "apps/app_docker/app_docker.h"
 #include "apps/app_wireguard/app_wireguard.h"
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
@@ -349,6 +350,12 @@ static void devos_system_bringup(void)
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
+    printf("[devOS]   - Registering Settings...\n");
+    devos_core_register_app(app_settings_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    /* the newer apps after Settings: the first page keeps its familiar tiles */
     printf("[devOS]   - Registering Network...\n");
     devos_core_register_app(app_netdiag_get_descriptor());
 #ifdef ESP_PLATFORM
@@ -359,8 +366,8 @@ static void devos_system_bringup(void)
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
-    printf("[devOS]   - Registering Settings...\n");
-    devos_core_register_app(app_settings_get_descriptor());
+    printf("[devOS]   - Registering Docker...\n");
+    devos_core_register_app(app_docker_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif

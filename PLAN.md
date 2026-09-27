@@ -363,6 +363,18 @@ services in the REST client).
 *   Keys: Ctrl+Enter sends from anywhere, Ctrl+S / Ctrl+N / Ctrl+K save / new / variables, Alt+H
     body or headers, Esc cancels a request in flight. Other apps open URLs in it (intent "get").
 
+### 3.13 Docker / Portainer Console (`app_docker`, `devos_docker`)
+
+*   Talks to the Docker Engine API directly (daemon on tcp:2375 or a socket proxy) or through
+    Portainer (access token as `X-API-Key`, first environment unless one is set). Config in
+    `/.devos/docker.json`, token in NVS.
+*   Containers (running first) with a health dot, compose project, image and ports; the
+    selected one's details and live stats (CPU %, memory without page cache, network, PIDs);
+    Restart / Stop (asks first) / Start. Logs full width: the last 300 lines, then only what's new
+    every 2 s (Docker's multiplexed frames decoded, stderr marked `!`, local times), following
+    until you scroll up.
+*   The worker (Core 0, started on first use) only polls while the app is shown.
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
@@ -583,6 +595,7 @@ tab5-devos/
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
 │   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
+│   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
@@ -607,6 +620,7 @@ tab5-devos/
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_rest/              # REST & webhook client
+│   │   ├── app_docker/            # Docker / Portainer console
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
