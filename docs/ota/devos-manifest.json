@@ -1,7 +1,7 @@
 {
-  "version": "0.1.0",
-  "url": "tab5-devos-0.1.0.bin",
-  "size": 2440128,
-  "sha256": "473100998df3dc7347b761c01847a6637b7a778af67fa4ca9db39d1b1065f1ab",
-  "notes": ""
+  "version": "0.1.1",
+  "url": "tab5-devos-0.1.1.bin",
+  "size": 2504064,
+  "sha256": "91a1faf0eab1e318c295f6bdea991f66d2320b39f0a0638248ecfb3429e94dbe",
+  "notes": "ADS-B: OpenStreetMap map under the radar (M toggles it)"
 }

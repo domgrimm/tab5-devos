@@ -63,6 +63,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_docker
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_adsb
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_maptiles
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_audio
@@ -87,6 +88,7 @@ else()
         main/apps/app_rest/app_rest.c
         main/apps/app_docker/app_docker.c
         main/apps/app_adsb/app_adsb.c
+        main/apps/app_adsb/adsb_map.c
         main/apps/app_totp/app_totp.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
@@ -127,6 +129,7 @@ else()
         components/devos_netdiag/nd_scan.c
         components/devos_docker/devos_docker.c
         components/devos_adsb/devos_adsb.c
+        components/devos_maptiles/devos_maptiles.c
         components/devos_crypto/devos_crypto.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c

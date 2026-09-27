@@ -105,6 +105,7 @@ static void load_config(void)
 {
     memset(&s_cfg, 0, sizeof(s_cfg));
     s_cfg.range_nm = 100;
+    s_cfg.map = true;
     FILE *f = fopen(CFG_FILE, "rb");
     if (!f) return;
     char buf[1024];
@@ -116,6 +117,11 @@ static void load_config(void)
     if (get_num(buf, n, "lat", &d)) s_cfg.lat = d;
     if (get_num(buf, n, "lon", &d)) s_cfg.lon = d;
     if (get_num(buf, n, "range_nm", &d) && d >= 5 && d <= 500) s_cfg.range_nm = (int)d;
+    const char *m = devos_json_find_key(buf, buf + n, "map");
+    if (m) {
+        while (*m == ' ') m++;
+        s_cfg.map = strncmp(m, "false", 5) != 0;
+    }
 }
 
 static void save_config(void)
@@ -125,7 +131,8 @@ static void save_config(void)
     if (!f) return;
     char url[500];
     devos_json_escape(s_cfg.url, url, sizeof(url));
-    fprintf(f, "{\"url\": \"%s\", \"lat\": %.6f, \"lon\": %.6f, \"range_nm\": %d}\n", url, s_cfg.lat, s_cfg.lon, s_cfg.range_nm);
+    fprintf(f, "{\"url\": \"%s\", \"lat\": %.6f, \"lon\": %.6f, \"range_nm\": %d, \"map\": %s}\n", url, s_cfg.lat, s_cfg.lon,
+            s_cfg.range_nm, s_cfg.map ? "true" : "false");
     fclose(f);
 }
 
@@ -137,6 +144,14 @@ void devos_adsb_get_config(devos_adsb_config_t *out)
 }
 
 bool devos_adsb_configured(void) { return s_cfg.url[0] != '\0'; }
+
+void devos_adsb_set_map(bool on)
+{
+    LOCK();
+    s_cfg.map = on;
+    UNLOCK();
+    save_config();
+}
 
 void devos_adsb_set_config(const devos_adsb_config_t *c)
 {

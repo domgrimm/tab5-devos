@@ -152,4 +152,7 @@
     #endif
 #endif
 
+/* PNG decoding for the ADS-B map underlay (OpenStreetMap tiles) */
+#define LV_USE_LODEPNG 1
+
 #endif /* LV_CONF_H */
