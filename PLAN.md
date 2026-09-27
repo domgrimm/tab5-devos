@@ -44,7 +44,7 @@
 | **Touchscreen** | Goodix GT911 | 5-point capacitive multi-touch via dedicated I2C bus |
 | **Physical Keyboard** | M5Stack Tab5 Keyboard (A164) | 70-key 14×5 matrix, STM32F030C8T6 coprocessor, I2C address `0x6D` on `Ext.Port1` (SDA: GPIO 0, SCL: GPIO 1, INT: GPIO 50), dual WS2812 status RGBs |
 | **Secondary Input** | USB-A 2.0 Host | Supports standard external USB HID keyboards and mice |
-| **Camera** | SC2356 (2 Megapixel) | MIPI-CSI 2-lane receiver with hardware ISP, SCCB I2C control, MCLK on GPIO 36 |
+| **Camera** | SC2356 (2 Megapixel) | esp_cam_sensor "SC202CS": 1-lane MIPI-CSI (RAW8 1280x720 @ 30 fps), SCCB 0x36 on the internal I2C bus, 24 MHz on-board oscillator, reset on IO expander 0x43 P6 |
 | **Local Storage** | MicroSD Slot | 4-bit SDMMC / SPI mode, supporting FAT32 / exFAT cards up to 2TB |
 | **Power System** | NP-F550 Mount + INA226 | Removable standard NP-F550 Li-ion battery pack, INA226 I2C power/current monitor, USB-C PD charging |
 | **Real-Time Clock** | Epson RX8130CE | I2C RTC with coin-cell battery backup for accurate offline timestamps |
@@ -298,8 +298,14 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     `0.0.0.0/0`) `devos_net` binds app sockets to the tunnel address via
     `devos_net_set_route_hook()`, so SSH / MQTT connections go through it. Full tunnels also use
     the config's DNS server while up.
+*   **QR import (`Q` / Scan QR):** the camera streams RAW8 1280x720 through IDF's CSI receiver and
+    ISP (RGB565), `bsp_tab5_camera` converts the centre 720x720 to greyscale with a simple
+    software auto-exposure, and `devos_qr` decodes it with quirc on the network core (mirrored
+    codes too) while the app shows a live preview. A decoded wg-quick config is validated, named
+    (default: the endpoint's first label) and stored like an SD import. The simulator serves
+    `/.devos/camera.pgm` as the camera frame.
 *   **Limits:** one tunnel at a time and never together with Tailscale (UDP 51820, routes and
-    internal RAM); QR import waits on a camera driver (see Reality check).
+    internal RAM).
 
 ### 3.9 MQTT Monitor & Publisher (`app_mqtt`, `devos_mqtt`)
 
@@ -440,9 +446,10 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
 >    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
-> 6. Missing: command palette, audio, camera (needed for WireGuard QR import; the camera stack needs
->    the new `i2c_master` driver, so the whole BSP I2C layer must move off the legacy driver first),
->    IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+> 6. Missing: command palette, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+> 7. Camera (2026-09-27): driver + WireGuard QR import built on the new `i2c_master` driver (the
+>    whole BSP moved off the legacy I2C driver); `esp_cam_sensor` is pinned to 0.9.0 because 1.x
+>    needs esp-idf-kconfig >= 2.5. Not yet verified on hardware.
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
@@ -517,13 +524,15 @@ tab5-devos/
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
+│   ├── devos_qr/                  # QR scanning: camera frames -> quirc
+│   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
 │   ├── devos_ota/                 # OTA manifest check + target flash path
 │   ├── devos_sysmon/              # 1 Hz system telemetry
 │   ├── devos_tailnet/             # Tailscale client on top of MicroLink
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator
-│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
+│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, touch, INA226, RTC, camera; i2c_master)
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver & HID mapper
 │   ├── microlink/                 # Tailscale client
 │   ├── wireguard_lwip/            # WireGuard for lwIP (used by MicroLink and devos_wireguard)

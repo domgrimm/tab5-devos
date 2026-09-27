@@ -11,6 +11,7 @@ static void ring_theme_cb(const devos_palette_t *p, void *ud)
 {
     (void)ud;
     lv_style_set_outline_color(&s_ring, p->accent_primary);
+    lv_style_set_border_color(&s_ring, p->accent_primary);
     lv_obj_report_style_change(&s_ring);
 }
 
@@ -23,6 +24,8 @@ static void ring_init(void)
     lv_style_set_outline_pad(&s_ring, -2);      /* on the control's own edge: never clipped */
     lv_style_set_outline_opa(&s_ring, LV_OPA_COVER);
     lv_style_set_outline_color(&s_ring, devos_theme_get()->accent_primary);
+    /* controls with a border (text fields) draw it over the inset ring: tint it too */
+    lv_style_set_border_color(&s_ring, devos_theme_get()->accent_primary);
     devos_theme_add_listener(ring_theme_cb, NULL);
 }
 

@@ -61,7 +61,7 @@ static const char *WELCOME_MD_CONTENT =
 "### Features\n\n"
 "- [x] Multi-session SSH terminal\n"
 "- [x] Markdown editor and SD card file browser\n"
-"- [x] Tailscale and WireGuard (put wg-quick .conf files in /wireguard)\n"
+"- [x] Tailscale and WireGuard (put wg-quick .conf files in /wireguard, or press Q to scan a QR code)\n"
 "- [x] MQTT monitor & publisher\n";
 
 /* Saved SSH hosts start empty: add them from the Terminal app. */

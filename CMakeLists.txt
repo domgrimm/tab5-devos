@@ -49,6 +49,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_json
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mqtt
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_wireguard
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_qr
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/quirc
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_power
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ota
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_mdview
@@ -82,6 +84,12 @@ else()
         components/devos_json/devos_json.c
         components/devos_mqtt/devos_mqtt.c
         components/devos_wireguard/devos_wireguard.c
+        components/devos_qr/devos_qr.c
+        components/bsp_tab5/bsp_tab5_camera.c
+        components/quirc/quirc.c
+        components/quirc/decode.c
+        components/quirc/identify.c
+        components/quirc/version_db.c
         components/devos_power/devos_power.c
         components/devos_ota/devos_ota.c
         components/devos_mdview/devos_mdview.c

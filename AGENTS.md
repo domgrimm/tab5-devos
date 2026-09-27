@@ -67,7 +67,9 @@ Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for de
 | **Main SoC** | ESP32-P4 | RISC-V Dual-core @ 400 MHz | Target `esp32p4` in ESP-IDF v5.4+ |
 | **Co-SoC (Wi-Fi 6)**| ESP32-C6 | SDIO (ESP-Hosted) | P4 acts as host, C6 as slave |
 | **Display** | 5.0" 1280×720 IPS | MIPI-DSI (ST7123/EK79007) | 2 partial line buffers in PSRAM, PPA 2D enabled |
-| **Touch** | Goodix GT911 | I2C | 5-point multi-touch input driver for LVGL |
+| **Touch** | Goodix GT911 / ST7123 TDDI | I2C (internal bus) | Multi-touch input driver for LVGL |
+| **Camera** | SC2356 ("SC202CS") | 1-lane MIPI-CSI, SCCB 0x36 (internal I2C) | `esp_cam_sensor` 0.9.0 (pinned: 1.x needs esp-idf-kconfig >= 2.5) + IDF CSI + ISP; `bsp_tab5_camera.h` |
+| **I2C** | ESP32-P4 | Internal bus GPIO 31/32, Ext.Port1 GPIO 0/1 | **New `i2c_master` driver only** (the camera stack needs it; IDF aborts if the legacy `driver/i2c.h` is linked too). Use `bsp_tab5_i2c_bus_internal/external()` |
 | **Keyboard** | A164 (70 Keys) | Ext.Port1 I2C (`0x6D`) | SDA: GPIO 0, SCL: GPIO 1, INT: GPIO 50 (STM32F030). Modifiers are **Sym / Aa / Ctrl / Alt, no Fn key**: run in Normal (matrix) mode, Sym = system modifier (`DEVOS_MOD_FN`), Aa = Shift (tap = caps lock) |
 | **Power Telemetry** | TI INA226 | I2C | Monitors NP-F550 voltage, current, and wattage |
 | **RTC** | RX8130CE | I2C | Offline hardware clock with battery backup |
@@ -83,7 +85,7 @@ tab5-devos/
 ├── sdkconfig.defaults             # Global target settings, PSRAM, FreeRTOS affinity
 ├── partitions.csv                 # Custom partition table (app, ota_0, ota_1, nvs, storage)
 ├── components/
-│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, GT911, INA226, RTC)
+│   ├── bsp_tab5/                  # Tab5 board drivers (MIPI-DSI, touch, INA226, RTC, camera) on the i2c_master driver
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher
@@ -93,6 +95,7 @@ tab5-devos/
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
+│   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
 │   ├── devos_ota/                 # OTA manifest check + target flash path
