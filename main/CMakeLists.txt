@@ -6,6 +6,12 @@ set(APP_SRCS
     "apps/app_tailscale/app_tailscale.c"
     "apps/app_mqtt/app_mqtt.c"
     "apps/app_wireguard/app_wireguard.c"
+    "apps/app_netdiag/app_netdiag.c"
+    "apps/app_netdiag/nd_ui_ping.c"
+    "apps/app_netdiag/nd_ui_dns.c"
+    "apps/app_netdiag/nd_ui_scan.c"
+    "apps/app_netdiag/nd_ui_wifi.c"
+    "apps/app_netdiag/nd_ui_mdns.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
 )
@@ -42,6 +48,8 @@ idf_component_register(
         devos_wireguard
         devos_qr
         devos_json
+        devos_http
+        devos_netdiag
         lvgl
         nvs_flash
 )

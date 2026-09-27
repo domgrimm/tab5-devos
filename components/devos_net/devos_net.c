@@ -131,6 +131,8 @@ static esp_netif_t       *s_sta_netif = NULL;
 static devos_wifi_status_t s_st;
 static devos_wifi_ap_t     s_scan[DEVOS_WIFI_MAX_SCAN];
 static int                 s_scan_count = 0;
+static devos_wifi_bss_t    s_bss[DEVOS_WIFI_MAX_BSS];
+static int                 s_bss_count = 0;
 static uint32_t            s_scan_gen = 0;
 static saved_blob_t        s_saved;
 static volatile bool       s_scan_pending = false;   /* requested by the UI */
@@ -401,7 +403,8 @@ static void start_scan(bool auto_pick)
         s_auto_scan = s_auto_scan || auto_pick;
         return;
     }
-    wifi_scan_config_t sc = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+    /* hidden networks too: the site survey counts them (the join list drops them) */
+    wifi_scan_config_t sc = { .show_hidden = true, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
     if (esp_wifi_scan_start(&sc, false) == ESP_OK) {
         s_scan_running = true;
         s_auto_scan = auto_pick;
@@ -414,26 +417,39 @@ static void on_scan_done(void)
 {
     uint16_t n = 0;
     esp_wifi_scan_get_ap_num(&n);
-    if (n > 40) n = 40;
+    if (n > DEVOS_WIFI_MAX_BSS) n = DEVOS_WIFI_MAX_BSS;
     wifi_ap_record_t *recs = n ? calloc(n, sizeof(wifi_ap_record_t)) : NULL;
     devos_wifi_ap_t *raw = n ? calloc(n, sizeof(devos_wifi_ap_t)) : NULL;
     if (n == 0) {
         esp_wifi_clear_ap_list();
         lock();
         s_scan_count = 0;
+        s_bss_count = 0;
         s_scan_gen++;
         unlock();
     } else if (recs && raw && esp_wifi_scan_get_ap_records(&n, recs) == ESP_OK) {
+        static devos_wifi_bss_t bss[DEVOS_WIFI_MAX_BSS];
         for (int i = 0; i < n; i++) {
             snprintf(raw[i].ssid, sizeof(raw[i].ssid), "%s", (const char *)recs[i].ssid);
             raw[i].rssi = recs[i].rssi;
             raw[i].authmode = (uint8_t)recs[i].authmode;
+            devos_wifi_bss_t *b = &bss[i];
+            memcpy(b->ssid, raw[i].ssid, sizeof(b->ssid));
+            memcpy(b->bssid, recs[i].bssid, 6);
+            b->channel = recs[i].primary;
+            b->second = recs[i].second == WIFI_SECOND_CHAN_ABOVE ? 1 : recs[i].second == WIFI_SECOND_CHAN_BELOW ? -1 : 0;
+            b->rssi = recs[i].rssi;
+            b->authmode = (uint8_t)recs[i].authmode;
+            b->phy = (recs[i].phy_11b ? DEVOS_WIFI_PHY_B : 0) | (recs[i].phy_11g ? DEVOS_WIFI_PHY_G : 0) |
+                     (recs[i].phy_11n ? DEVOS_WIFI_PHY_N : 0) | (recs[i].phy_11ax ? DEVOS_WIFI_PHY_AX : 0);
         }
         devos_wifi_ap_t norm[DEVOS_WIFI_MAX_SCAN];
         int count = scan_normalize(raw, n, norm, DEVOS_WIFI_MAX_SCAN);
         lock();
         memcpy(s_scan, norm, sizeof(devos_wifi_ap_t) * count);
         s_scan_count = count;
+        memcpy(s_bss, bss, sizeof(devos_wifi_bss_t) * n);
+        s_bss_count = n;
         s_scan_gen++;
         unlock();
     } else {
@@ -738,6 +754,16 @@ int devos_net_wifi_scan_results(devos_wifi_ap_t *out, int max)
     return n;
 }
 
+int devos_net_wifi_bss_results(devos_wifi_bss_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    lock();
+    int n = s_bss_count < max ? s_bss_count : max;
+    memcpy(out, s_bss, sizeof(devos_wifi_bss_t) * n);
+    unlock();
+    return n;
+}
+
 uint32_t devos_net_wifi_scan_generation(void)
 {
     lock();
@@ -807,6 +833,8 @@ int devos_net_wifi_forget(const char *ssid)
 static devos_wifi_status_t s_st;
 static devos_wifi_ap_t s_scan[DEVOS_WIFI_MAX_SCAN];
 static int s_scan_count = 0;
+static devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
+static int s_bss_count = 0;
 static uint32_t s_scan_gen = 0;
 static bool s_scan_busy = false;
 static uint64_t s_scan_t0 = 0;
@@ -840,6 +868,34 @@ static void sim_tick(void)
         };
         s_scan_count = scan_normalize((devos_wifi_ap_t *)canned, (int)(sizeof(canned) / sizeof(canned[0])),
                                       s_scan, DEVOS_WIFI_MAX_SCAN);
+        /* a made-up neighbourhood for the site survey: signals drift, one AP comes and goes */
+        static const struct { const char *ssid; uint8_t mac5; uint8_t ch; int8_t sec; int8_t rssi; uint8_t auth, phy; } nb[] = {
+            {"DevNet", 0x11, 6, 0, -58, 3, 0x0f}, {"DevNet", 0x12, 1, 0, -71, 3, 0x0f},
+            {"Workplace-5G", 0x21, 11, -1, -64, 4, 0x0e}, {"M5_Hotspot", 0x31, 6, 0, -72, 3, 0x07},
+            {"Guest-IoT", 0x41, 1, 0, -80, 0, 0x07}, {"Neighbour", 0x51, 3, 1, -88, 3, 0x06},
+            {"", 0x61, 11, 0, -83, 3, 0x07}, {"TELSTRA4F2A", 0x71, 9, 0, -77, 4, 0x0f},
+            {"ESP_7F21C3", 0x81, 1, 0, -66, 0, 0x07}, {"Printer-Setup", 0x91, 13, 0, -85, 0, 0x03},
+            {"Cafe WiFi", 0xa1, 6, 0, -90, 0, 0x07}, {"", 0xb1, 4, 0, -92, 3, 0x06},
+        };
+        static int drift[sizeof(nb) / sizeof(nb[0])];
+        static unsigned seed = 12345;
+        s_bss_count = 0;
+        for (unsigned i = 0; i < sizeof(nb) / sizeof(nb[0]) && s_bss_count < DEVOS_WIFI_MAX_BSS; i++) {
+            seed = seed * 1103515245u + 12345u;
+            drift[i] += (int)((seed >> 16) % 7) - 3;
+            if (drift[i] > 6) drift[i] = 6;
+            if (drift[i] < -6) drift[i] = -6;
+            if (nb[i].mac5 == 0xa1 && (s_scan_gen / 4) % 2) continue;
+            devos_wifi_bss_t *b = &s_bss[s_bss_count++];
+            snprintf(b->ssid, sizeof(b->ssid), "%s", nb[i].ssid);
+            uint8_t mac[6] = {0x24, 0x0a, 0xc4, 0x3e, 0x90, nb[i].mac5};
+            memcpy(b->bssid, mac, 6);
+            b->channel = nb[i].ch;
+            b->second = nb[i].sec;
+            b->rssi = (int8_t)(nb[i].rssi + drift[i]);
+            b->authmode = nb[i].auth;
+            b->phy = nb[i].phy;
+        }
         s_scan_gen++;
         s_scan_busy = false;
     }
@@ -909,6 +965,15 @@ int devos_net_wifi_scan_results(devos_wifi_ap_t *out, int max)
 }
 
 uint32_t devos_net_wifi_scan_generation(void) { sim_tick(); return s_scan_gen; }
+
+int devos_net_wifi_bss_results(devos_wifi_bss_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    sim_tick();
+    int n = s_bss_count < max ? s_bss_count : max;
+    memcpy(out, s_bss, sizeof(devos_wifi_bss_t) * n);
+    return n;
+}
 
 int devos_net_wifi_connect(const char *ssid, const char *password)
 {
@@ -1030,6 +1095,15 @@ static void route_bind(int sock, const struct sockaddr_in *dest)
         ESP_LOGW(TAG, "couldn't bind to the tunnel address (errno %d)", errno);
 #endif
     }
+}
+
+void devos_net_socket_route(int sock, uint32_t dest_ip)
+{
+    struct sockaddr_in d;
+    memset(&d, 0, sizeof(d));
+    d.sin_family = AF_INET;
+    d.sin_addr.s_addr = dest_ip;
+    route_bind(sock, &d);
 }
 
 int devos_net_socket_connect(const char *host, int port, int timeout_ms)

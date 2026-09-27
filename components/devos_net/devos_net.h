@@ -57,6 +57,25 @@ int  devos_net_wifi_scan_results(devos_wifi_ap_t *out, int max);
 /* Bumps each time new scan results land (lets the UI refresh only on change). */
 uint32_t devos_net_wifi_scan_generation(void);
 
+/* Every BSS (access point radio) the last scan heard, hidden ones included,
+ * in the order the radio reported them - for the Wi-Fi site survey. The C6
+ * is a 2.4 GHz radio: channels 1-14. */
+#define DEVOS_WIFI_MAX_BSS 48
+#define DEVOS_WIFI_PHY_B   0x01
+#define DEVOS_WIFI_PHY_G   0x02
+#define DEVOS_WIFI_PHY_N   0x04
+#define DEVOS_WIFI_PHY_AX  0x08
+typedef struct {
+    char ssid[33];                /* "" = hidden network */
+    uint8_t bssid[6];
+    uint8_t channel;              /* primary channel */
+    int8_t second;                /* 40 MHz: +1 channel above, -1 below, 0 = 20 MHz */
+    int8_t rssi;
+    uint8_t authmode;             /* wifi_auth_mode_t */
+    uint8_t phy;                  /* DEVOS_WIFI_PHY_* bits */
+} devos_wifi_bss_t;
+int devos_net_wifi_bss_results(devos_wifi_bss_t *out, int max);
+
 /* Connect to ssid. password == NULL uses the saved password (or none for open
  * networks). The network is remembered once it connects successfully. */
 int  devos_net_wifi_connect(const char *ssid, const char *password);
@@ -89,6 +108,10 @@ int devos_net_socket_send_all(int sock, const void *data, size_t len);
  * that owns that address. */
 typedef bool (*devos_net_route_fn)(uint32_t dest_ip, uint32_t *src_ip);
 void devos_net_set_route_hook(devos_net_route_fn fn);
+/* Apply the VPN routing to a socket of your own (UDP, raw ICMP) before its
+ * first send: binds it to the tunnel address if a VPN claims dest_ip
+ * (network byte order). devos_net_socket_connect* already do this. */
+void devos_net_socket_route(int sock, uint32_t dest_ip);
 
 /* Non-blocking variant: start returns an in-progress fd (or -1); poll wait
  * until it returns 0 (connected) or -1 (failed). 1 means keep polling. */

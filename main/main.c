@@ -20,6 +20,7 @@
 #include "apps/app_editor/app_editor.h"
 #include "apps/app_tailscale/app_tailscale.h"
 #include "apps/app_mqtt/app_mqtt.h"
+#include "apps/app_netdiag/app_netdiag.h"
 #include "apps/app_wireguard/app_wireguard.h"
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
@@ -344,6 +345,11 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering MQTT...\n");
     devos_core_register_app(app_mqtt_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Network...\n");
+    devos_core_register_app(app_netdiag_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif

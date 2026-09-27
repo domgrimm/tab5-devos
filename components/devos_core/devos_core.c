@@ -160,6 +160,39 @@ void devos_core_switch_app_by_uid(const char *uid)
     }
 }
 
+static struct {
+    char uid[24];
+    char action[24];
+    char arg[512];
+} s_intent;
+
+bool devos_core_open_with(const char *uid, const char *action, const char *arg)
+{
+    devos_app_descriptor_t *app = devos_core_find_app(uid);
+    if (!app) return false;
+    if (!strcmp(uid, "terminal") && action && !strcmp(action, "ssh")) {
+        /* the terminal's older mechanism */
+        snprintf(telemetry_data.terminal_requested_host, sizeof(telemetry_data.terminal_requested_host), "%s",
+                 arg ? arg : "");
+    } else {
+        snprintf(s_intent.uid, sizeof(s_intent.uid), "%s", uid);
+        snprintf(s_intent.action, sizeof(s_intent.action), "%s", action ? action : "");
+        snprintf(s_intent.arg, sizeof(s_intent.arg), "%s", arg ? arg : "");
+    }
+    if (current_app_id == app->id && app->show) app->show();   /* already there: re-check */
+    else devos_core_switch_app(app->id);
+    return true;
+}
+
+bool devos_core_take_intent(const char *uid, char *action, size_t action_cap, char *arg, size_t arg_cap)
+{
+    if (!uid || !s_intent.uid[0] || strcmp(uid, s_intent.uid) != 0) return false;
+    if (action && action_cap) snprintf(action, action_cap, "%s", s_intent.action);
+    if (arg && arg_cap) snprintf(arg, arg_cap, "%s", s_intent.arg);
+    s_intent.uid[0] = '\0';
+    return true;
+}
+
 void devos_core_switch_app(devos_app_id_t app_id)
 {
     devos_app_descriptor_t *target = find_by_id(app_id);
