@@ -1553,7 +1553,9 @@ static void build_system_panel(lv_obj_t *pn)
     lv_obj_set_style_text_line_space(lbl_sys_mem, 6, 0);
 
     c = mk_card(pn, 0, 412, PANEL_W, 176, "FIRMWARE UPDATE");
-    lbl_fw = mk_label(c, &st_text, DEVOS_VERSION_STR);
+    char fw[96];
+    snprintf(fw, sizeof(fw), "%s   (%s)", DEVOS_VERSION_STR, devos_ota_build_text());
+    lbl_fw = mk_label(c, &st_text, fw);
     lv_obj_set_pos(lbl_fw, 0, 30);
     btn_ota = mk_btn(c, LV_SYMBOL_REFRESH "  Check for updates", NULL, ota_check_cb, NULL, &lbl_ota_btn);
     lv_obj_set_pos(btn_ota, 0, 58);
@@ -1590,13 +1592,13 @@ static void refresh_system(void)
     snprintf(soc, sizeof(soc), "Desktop simulator (SDL2)");
 #endif
     snprintf(buf, sizeof(buf),
-             "Firmware    %s (%s), built %s\n"
+             "Firmware    %s (%s), %s\n"
              "SoC         %s\n"
              "Wi-Fi       ESP32-C6 co-processor via ESP-Hosted (SDIO)\n"
              "Display     %s, 720 x 1280 MIPI-DSI (shown 1280 x 720)\n"
              "Keyboard    %s\n"
              "Uptime      %luh %02lum %02lus",
-             DEVOS_VERSION_STR, DEVOS_BUILD_CODENAME, __DATE__, soc, bsp_tab5_panel_name(),
+             DEVOS_VERSION_STR, DEVOS_BUILD_CODENAME, devos_ota_build_text(), soc, bsp_tab5_panel_name(),
              tab5_keyboard_is_connected() ? "Tab5 keyboard connected" : "not detected",
              (unsigned long)(t->uptime_s / 3600), (unsigned long)((t->uptime_s / 60) % 60),
              (unsigned long)(t->uptime_s % 60));

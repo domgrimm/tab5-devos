@@ -137,8 +137,10 @@ static void (*s_touch_activity_cb)(void) = NULL;
  * into it while the DSI DMA was reading it) is what caused the flicker.
  * ----------------------------------------------------------------------- */
 
-/* Fires from ISR after each full frame has been scanned out of the DPI panel. */
-static bool dpi_refresh_done_cb(esp_lcd_panel_handle_t panel,
+/* Fires from ISR after each full frame has been scanned out of the DPI panel.
+ * In IRAM (CONFIG_LCD_DSI_ISR_IRAM_SAFE): it also runs during flash writes,
+ * so it may only touch internal RAM (the semaphore is). */
+static IRAM_ATTR bool dpi_refresh_done_cb(esp_lcd_panel_handle_t panel,
                                 esp_lcd_dpi_panel_event_data_t *edata, void *user_ctx)
 {
     (void)panel;

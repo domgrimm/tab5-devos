@@ -1,9 +1,9 @@
 /* Ponytail check: OTA manifest fetch/compare + power state machine.
  *
- * Runs standalone with mocked network GET and isolated CWD:
+ * Runs standalone (manifests are written to the CWD and read over file://,
+ * so it needs curl). Build from the repository root, run from an isolated CWD:
  *
- *   mkdir -p /tmp/opencode/otatest && cd /tmp/opencode/otatest && \
- *   gcc -o ota_test tools/ota_test.c \
+ *   gcc -o /tmp/ota_test tools/ota_test.c \
  *     components/devos_ota/devos_ota.c \
  *     components/devos_json/devos_json.c \
  *     components/devos_power/devos_power.c \
@@ -14,10 +14,13 @@
  *     -Icomponents/devos_power \
  *     -Icomponents/devos_core \
  *     -Icomponents/devos_storage \
- *     -Icomponents/lvgl && ./ota_test
+ *     -Icomponents/lvgl -lpthread && \
+ *   mkdir -p /tmp/devos_otatest && cd /tmp/devos_otatest && /tmp/ota_test
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "devos_core.h"
 static devos_telemetry_t fake_t;
@@ -69,20 +72,57 @@ int main(void)
     CHECK(devos_power_mode() == DEVOS_POWER_SLEEP);
     CHECK(strcmp(devos_power_mode_text(), "Sleep") == 0);
 
-    /* OTA against the stub shelf (expects v9.9.9 manifest on :8090) */
+    /* OTA manifests: written here, fetched over file:// (the simulator's
+     * check uses curl), each check waited for. DEVOS_SIM_BUILD stands in for
+     * the running image's build id. */
     devos_ota_init();
-    char feed[128];
+    char feed[256], cwd[160];
     devos_ota_get_feed(feed, sizeof(feed));
-    CHECK(strstr(feed, "https://") == feed && strstr(feed, "/ota/devos-manifest.json") != NULL);
-    CHECK(devos_ota_set_feed("http://127.0.0.1:8090/devos-manifest.json") == 0);
-    CHECK(devos_ota_check() == 0);
-    CHECK(strstr(devos_ota_update_text(), "v9.9.9") != NULL);
-    CHECK(devos_ota_has_update() == true);
+    CHECK(strstr(feed, "https://") == feed && strstr(feed, "/ota/devos-manifest.json") != NULL);  /* default */
+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+    /* OTA_TEST_BASE (e.g. http://127.0.0.1:8099 serving this folder) when the
+     * CWD path is too long for a feed URL (DEVOS_OTA_FEED_MAX) */
+    char base[200];
+    if (getenv("OTA_TEST_BASE")) snprintf(base, sizeof(base), "%s", getenv("OTA_TEST_BASE"));
+    else snprintf(base, sizeof(base), "file://%s", cwd);
+    setenv("DEVOS_SIM_BUILD", "8dc918537bb2c81b00112233445566778899aabbccddeeff0011223344556677", 1);
+    long local = devos_ota_parse_version(DEVOS_VERSION_STR);
+    char same[32], newer[32];
+    snprintf(same, sizeof(same), "%ld.%ld.%ld", local >> 16, (local >> 8) & 255, local & 255);
+    snprintf(newer, sizeof(newer), "%ld.%ld.%ld", local >> 16, ((local >> 8) & 255) + 1, 0L);
+    struct { const char *name, *ver, *build; bool update; const char *text; } cases[] = {
+        { "newer.json", newer, "", true, "available" },
+        { "same_build.json", same, "8dc918537bb2c81b", false, "this build" },
+        { "other_build.json", same, "0123456789abcdef", true, "New build" },
+        { "same_nobuild.json", same, "", false, "Up to date" },
+        { "older.json", "0.0.1", "0123456789abcdef", false, "Up to date" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        FILE *f = fopen(cases[i].name, "w");
+        CHECK(f != NULL);
+        if (!f) continue;
+        fprintf(f, "{\"version\":\"%s\",\"url\":\"tab5-devos.bin\",\"size\":2097152%s%s%s}\n", cases[i].ver,
+                cases[i].build[0] ? ",\"build\":\"" : "", cases[i].build, cases[i].build[0] ? "\"" : "");
+        fclose(f);
+        snprintf(feed, sizeof(feed), "%s/%s", base, cases[i].name);
+        CHECK(devos_ota_set_feed(feed) == 0);
+        CHECK(devos_ota_check() == 0);
+        for (int t = 0; t < 100 && devos_ota_busy(); t++) usleep(50000);
+        if (devos_ota_has_update() != cases[i].update || !strstr(devos_ota_update_text(), cases[i].text)) {
+            printf("FAIL %s: update=%d \"%s\"\n", cases[i].name, devos_ota_has_update(), devos_ota_update_text());
+            failures++;
+        }
+    }
+    snprintf(feed, sizeof(feed), "%s/newer.json", base);
+    devos_ota_set_feed(feed);
+    devos_ota_check();
+    for (int t = 0; t < 100 && devos_ota_busy(); t++) usleep(50000);
     CHECK(devos_ota_apply() == 0); /* sim dry run */
-    CHECK(strstr(devos_ota_update_text(), "dry-run") != NULL);
+    CHECK(strstr(devos_ota_update_text(), "dry run") != NULL);
     CHECK(devos_ota_set_feed("not a url") != 0);
     CHECK(devos_ota_set_feed("http://127.0.0.1:1/nope.json") == 0);
-    CHECK(devos_ota_check() != 0);
+    CHECK(devos_ota_check() == 0);
+    for (int t = 0; t < 200 && devos_ota_busy(); t++) usleep(50000);
     CHECK(strstr(devos_ota_update_text(), "unreachable") != NULL);
 
     if (failures == 0) printf("ota/power unit tests: ALL PASS\n");

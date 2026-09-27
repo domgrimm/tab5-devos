@@ -59,6 +59,11 @@ int devos_ota_set_feed(const char *url);
 
 /* "devOS v0.1.0" / "0.1.0" -> 0x000100; -1 if unparseable. Exposed for tests. */
 long devos_ota_parse_version(const char *s);
+/* Which build is running: "build 8dc91853, Sep 27 2026 08:46" (the ELF hash
+ * esptool stamps into the image, and its build time). A manifest "build"
+ * matching it means this exact image is already installed; a different
+ * build of the same version is offered as an update. */
+const char *devos_ota_build_text(void);
 
 #ifdef __cplusplus
 }
