@@ -575,7 +575,17 @@ static void finder_scan(struct quirc *q, unsigned int y)
 	}
 }
 
-static void find_alignment_pattern(struct quirc *q, int index)
+/* devOS: add (to out[n..max-1]) the regions of roughly one module near an
+ * estimated alignment pattern corner, nearest first; returns the new count.
+ * Upstream took the first region near the extended-capstone-edge estimate,
+ * but on blurred or noisy frames that estimate is often a module or two out
+ * (1 px of corner noise over a 7-module edge is ~10 px at the far corner)
+ * and the region is a data module: the grid then drifts away from the
+ * capstones and the code fails ECC. fit_grid() picks the candidate the grid
+ * fits best. */
+static int alignment_candidates(struct quirc *q, int index,
+				const struct quirc_point *from,
+				int *out, int n, int max)
 {
 	struct quirc_grid *qr = &q->grids[index];
 	struct quirc_capstone *c0 = &q->capstones[qr->caps[0]];
@@ -588,8 +598,8 @@ static void find_alignment_pattern(struct quirc *q, int index)
 	int dir = 0;
 	quirc_float_t u, v;
 
-	/* Grab our previous estimate of the alignment pattern corner */
-	memcpy(&b, &qr->align, sizeof(b));
+	/* Start from the estimate of the alignment pattern corner */
+	memcpy(&b, from, sizeof(b));
 
 	/* Guess another two corners of the alignment pattern so that we
 	 * can estimate its size.
@@ -602,26 +612,28 @@ static void find_alignment_pattern(struct quirc *q, int index)
 	size_estimate = abs((a.x - b.x) * -(c.y - b.y) +
 			    (a.y - b.y) * (c.x - b.x));
 
-	/* Spiral outwards from the estimate point until we find something
+	/* Spiral outwards from the estimate point collecting things
 	 * roughly the right size. Don't look too far from the estimate
 	 * point.
 	 */
-	while (step_size * step_size < size_estimate * 100) {
+	while (step_size * step_size < size_estimate * 100 && n < max) {
 		static const int dx_map[] = {1, 0, -1, 0};
 		static const int dy_map[] = {0, -1, 0, 1};
 		int i;
 
-		for (i = 0; i < step_size; i++) {
+		for (i = 0; i < step_size && n < max; i++) {
 			int code = region_code(q, b.x, b.y);
 
 			if (code >= 0) {
 				struct quirc_region *reg = &q->regions[code];
+				int j;
 
-				if (reg->count >= size_estimate / 2 &&
-				    reg->count <= size_estimate * 2) {
-					qr->align_region = code;
-					return;
-				}
+				for (j = 0; j < n && out[j] != code; j++)
+					;
+				if (j == n &&
+				    reg->count >= size_estimate / 2 &&
+				    reg->count <= size_estimate * 2)
+					out[n++] = code;
 			}
 
 			b.x += dx_map[dir];
@@ -632,6 +644,8 @@ static void find_alignment_pattern(struct quirc *q, int index)
 		if (!(dir & 1))
 			step_size++;
 	}
+
+	return n;
 }
 
 static void find_leftmost_to_line(void *user_data, int y, int left, int right)
@@ -812,7 +826,12 @@ static void jiggle_perspective(struct quirc *q, int index)
 	int pass;
 	quirc_float_t adjustments[8];
 	int i;
+	int round;
 
+	/* devOS: a second round with fresh step sizes gets out of the local
+	 * optimum the first often stops in on blurred frames (+5% decoded
+	 * on a synthetic camera set, for ~40% more fitting time) */
+	for (round = 0; round < 2; round++) {
 	for (i = 0; i < 8; i++)
 		adjustments[i] = qr->c[i] * (quirc_float_t)0.02;
 
@@ -840,6 +859,7 @@ static void jiggle_perspective(struct quirc *q, int index)
 
 		for (i = 0; i < 8; i++)
 			adjustments[i] *= 0.5;
+	}
 	}
 }
 
@@ -894,6 +914,88 @@ static void rotate_capstone(struct quirc_capstone *cap,
 		       sizeof(copy[j]));
 	memcpy(cap->corners, copy, sizeof(cap->corners));
 	perspective_setup(cap->c, cap->corners, 7.0, 7.0);
+}
+
+/* devOS: the corner of alignment region `region` closest to the top-left
+ * of the grid (upstream's code from record_qr_grid) */
+static void align_corner(struct quirc *q, int index, int region,
+			 struct quirc_point *out)
+{
+	struct quirc_grid *qr = &q->grids[index];
+	struct quirc_region *reg = &q->regions[region];
+	struct polygon_score_data psd;
+
+	psd.ref.x = q->capstones[qr->caps[2]].center.x -
+		    q->capstones[qr->caps[0]].center.x;
+	psd.ref.y = q->capstones[qr->caps[2]].center.y -
+		    q->capstones[qr->caps[0]].center.y;
+
+	/* Start from some point inside the alignment pattern */
+	memcpy(out, &reg->seed, sizeof(*out));
+	psd.corners = out;
+	psd.scores[0] = -psd.ref.y * out->x + psd.ref.x * out->y;
+
+	flood_fill_seed(q, reg->seed.x, reg->seed.y,
+			region, QUIRC_PIXEL_BLACK, NULL, NULL);
+	flood_fill_seed(q, reg->seed.x, reg->seed.y,
+			QUIRC_PIXEL_BLACK, region,
+			find_leftmost_to_line, &psd);
+}
+
+#define ALIGN_CANDIDATES	8
+
+/* devOS: choose the alignment corner (a region near either estimate, or an
+ * estimate itself) that gives the best-fitting grid, then refine the
+ * perspective. Needs grid_size, align_est and align_aff. */
+static void fit_grid(struct quirc *q, int index)
+{
+	struct quirc_grid *qr = &q->grids[index];
+	const struct quirc_point est[2] = { qr->align_aff, qr->align_est };
+	struct quirc_point best_align = est[0];
+	int best_region = -1;
+	int best = INT_MIN;
+	int cand[ALIGN_CANDIDATES];
+	int n = 0;
+	int i;
+
+	/* V2+ grids have an alignment pattern */
+	if (qr->grid_size > 21) {
+		n = alignment_candidates(q, index, &est[0], cand, n,
+					 ALIGN_CANDIDATES / 2);
+		n = alignment_candidates(q, index, &est[1], cand, n,
+					 ALIGN_CANDIDATES);
+	}
+
+	for (i = -2; i < n; i++) {
+		struct quirc_point p;
+		struct quirc_point rect[4];
+		int score;
+
+		if (i >= 0)
+			align_corner(q, index, cand[i], &p);
+		else
+			p = est[i + 2];
+
+		memcpy(&rect[0], &q->capstones[qr->caps[1]].corners[0],
+		       sizeof(rect[0]));
+		memcpy(&rect[1], &q->capstones[qr->caps[2]].corners[0],
+		       sizeof(rect[0]));
+		memcpy(&rect[2], &p, sizeof(rect[0]));
+		memcpy(&rect[3], &q->capstones[qr->caps[0]].corners[0],
+		       sizeof(rect[0]));
+		perspective_setup(qr->c, rect, qr->grid_size - 7,
+				  qr->grid_size - 7);
+		score = fitness_all(q, index);
+		if (score > best) {
+			best = score;
+			best_align = p;
+			best_region = i >= 0 ? cand[i] : -1;
+		}
+	}
+
+	qr->align = best_align;
+	qr->align_region = best_region;
+	setup_qr_perspective(q, index);
 }
 
 static void record_qr_grid(struct quirc *q, int a, int b, int c)
@@ -958,37 +1060,18 @@ static void record_qr_grid(struct quirc *q, int a, int b, int c)
 			    &qr->align))
 		goto fail;
 
-	/* On V2+ grids, we should use the alignment pattern. */
-	if (qr->grid_size > 21) {
-		/* Try to find the actual location of the alignment pattern. */
-		find_alignment_pattern(q, qr_index);
+	memcpy(&qr->align_est, &qr->align, sizeof(qr->align_est));
+	/* ...and by completing the parallelogram of the capstone corners,
+	 * which doesn't magnify corner noise (fine unless the perspective
+	 * is steep, when the estimate above is better) */
+	qr->align_aff.x = q->capstones[c].corners[0].x +
+			  q->capstones[a].corners[0].x -
+			  q->capstones[b].corners[0].x;
+	qr->align_aff.y = q->capstones[c].corners[0].y +
+			  q->capstones[a].corners[0].y -
+			  q->capstones[b].corners[0].y;
 
-		/* Find the point of the alignment pattern closest to the
-		 * top-left of the QR grid.
-		 */
-		if (qr->align_region >= 0) {
-			struct polygon_score_data psd;
-			struct quirc_region *reg =
-				&q->regions[qr->align_region];
-
-			/* Start from some point inside the alignment pattern */
-			memcpy(&qr->align, &reg->seed, sizeof(qr->align));
-
-			memcpy(&psd.ref, &hd, sizeof(psd.ref));
-			psd.corners = &qr->align;
-			psd.scores[0] = -hd.y * qr->align.x +
-				hd.x * qr->align.y;
-
-			flood_fill_seed(q, reg->seed.x, reg->seed.y,
-					qr->align_region, QUIRC_PIXEL_BLACK,
-					NULL, NULL);
-			flood_fill_seed(q, reg->seed.x, reg->seed.y,
-					QUIRC_PIXEL_BLACK, qr->align_region,
-					find_leftmost_to_line, &psd);
-		}
-	}
-
-	setup_qr_perspective(q, qr_index);
+	fit_grid(q, qr_index);
 	return;
 
 fail:
@@ -1026,6 +1109,32 @@ static void test_neighbours(struct quirc *q, int i,
 	}
 }
 
+/* devOS: where p lies in capstone cap's module grid, using the capstone's
+ * affine frame (opposite edges averaged). Upstream extrapolated the full
+ * perspective fitted to the 7-module capstone, which turns 1 px of corner
+ * noise into ~20% scale errors 50 modules away: test_neighbours' squareness
+ * check then rejected sharp, upright codes. */
+static void capstone_unmap(const struct quirc_capstone *cap,
+			   const struct quirc_point *p,
+			   quirc_float_t *u, quirc_float_t *v)
+{
+	const struct quirc_point *k = cap->corners;
+	quirc_float_t ex = (quirc_float_t)((k[1].x - k[0].x) + (k[2].x - k[3].x)) / 14;
+	quirc_float_t ey = (quirc_float_t)((k[1].y - k[0].y) + (k[2].y - k[3].y)) / 14;
+	quirc_float_t fx = (quirc_float_t)((k[3].x - k[0].x) + (k[2].x - k[1].x)) / 14;
+	quirc_float_t fy = (quirc_float_t)((k[3].y - k[0].y) + (k[2].y - k[1].y)) / 14;
+	quirc_float_t dx = p->x - (quirc_float_t)(k[0].x + k[1].x + k[2].x + k[3].x) / 4;
+	quirc_float_t dy = p->y - (quirc_float_t)(k[0].y + k[1].y + k[2].y + k[3].y) / 4;
+	quirc_float_t det = ex * fy - ey * fx;
+
+	if (det == 0) {
+		*u = *v = 0;
+		return;
+	}
+	*u = (dx * fy - dy * fx) / det + (quirc_float_t)3.5;
+	*v = (ex * dy - ey * dx) / det + (quirc_float_t)3.5;
+}
+
 static void test_grouping(struct quirc *q, unsigned int i)
 {
 	struct quirc_capstone *c1 = &q->capstones[i];
@@ -1046,7 +1155,7 @@ static void test_grouping(struct quirc *q, unsigned int i)
 		if (i == j)
 			continue;
 
-		perspective_unmap(c1->c, &c2->center, &u, &v);
+		capstone_unmap(c1, &c2->center, &u, &v);
 
 		u = fabs(u - (quirc_float_t)3.5);
 		v = fabs(v - (quirc_float_t)3.5);
@@ -1113,6 +1222,20 @@ void quirc_end(struct quirc *q)
 
 	for (i = 0; i < q->num_capstones; i++)
 		test_grouping(q, i);
+}
+
+/* devOS: measure_grid_size() is often one version out on blurred or noisy
+ * camera frames (capstones look bigger or smaller once thresholded), which
+ * makes an otherwise fine code fail ECC. Refit the grid for another size. */
+int quirc_refit(struct quirc *q, int index, int grid_size)
+{
+	if (index < 0 || index >= q->num_grids ||
+	    grid_size < 21 || grid_size > 177 || (grid_size - 17) % 4)
+		return -1;
+
+	q->grids[index].grid_size = grid_size;
+	fit_grid(q, index);
+	return 0;
 }
 
 void quirc_extract(const struct quirc *q, int index,

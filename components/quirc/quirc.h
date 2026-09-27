@@ -164,6 +164,11 @@ int quirc_count(const struct quirc *q);
 void quirc_extract(const struct quirc *q, int index,
 		   struct quirc_code *code);
 
+/* devOS: redo the grid fit of code `index` for another grid size (the
+ * estimate is often one version out on camera frames); extract again after.
+ * Returns -1 for an invalid index or size. */
+int quirc_refit(struct quirc *q, int index, int grid_size);
+
 /* Decode a QR-code, returning the payload data. */
 quirc_decode_error_t quirc_decode(const struct quirc_code *code,
 				  struct quirc_data *data);

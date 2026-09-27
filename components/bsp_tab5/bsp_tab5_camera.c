@@ -161,7 +161,6 @@ static bool hw_init(void)
         snprintf(s_err, sizeof(s_err), "No camera found");
         return false;
     }
-    if (s_csi && s_isp) return true;
     esp_cam_sensor_format_array_t fa = {0};
     esp_cam_sensor_query_format(s_cam, &fa);
     const esp_cam_sensor_format_t *fmt = NULL;
@@ -241,35 +240,71 @@ static bool hw_init(void)
     return true;
 }
 
+/* Take the receiver + ISP down completely. The CSI driver's stop aborts the
+ * DMA mid-frame and a restarted controller gave no pictures, so (like
+ * esp_video) every start rebuilds them; the sensor stays detected and the
+ * frame buffers stay allocated. Order: sensor, receiver, ISP. */
+static void teardown(void)
+{
+    bool was = s_streaming;
+    s_streaming = false;
+    if (s_cam && was) {
+        int off = 0;
+        esp_cam_sensor_ioctl(s_cam, ESP_CAM_SENSOR_IOC_S_STREAM, &off);
+    }
+    if (s_csi) {
+        if (was) esp_cam_ctlr_stop(s_csi);
+        esp_cam_ctlr_disable(s_csi);
+        esp_cam_ctlr_del(s_csi);
+        s_csi = NULL;
+    }
+    if (s_isp) {
+        esp_isp_disable(s_isp);
+        esp_isp_del_processor(s_isp);
+        s_isp = NULL;
+    }
+    s_ready_hw = false;
+    portENTER_CRITICAL(&s_mux);
+    s_done = s_held = s_filling = -1;
+    portEXIT_CRITICAL(&s_mux);
+}
+
 bool bsp_tab5_camera_start(void)
 {
     s_err[0] = '\0';
     if (s_streaming) return true;
     if (!s_ready_hw) {
-        if (!hw_init()) return false;
+        if (!hw_init()) {
+            teardown();
+            return false;
+        }
         s_ready_hw = true;
     }
-    int on = 1;
-    esp_err_t e = esp_cam_sensor_ioctl(s_cam, ESP_CAM_SENSOR_IOC_S_STREAM, &on);
-    if (e == ESP_OK) e = esp_cam_ctlr_start(s_csi);
+    portENTER_CRITICAL(&s_mux);
+    s_done = s_held = s_filling = -1;
+    portEXIT_CRITICAL(&s_mux);
+    xSemaphoreTake(s_frame_sem, 0);
+    /* receiver first, then the sensor, so the first frame arrives whole */
+    esp_err_t e = esp_cam_ctlr_start(s_csi);
+    if (e == ESP_OK) {
+        s_streaming = true;                     /* teardown() stops the receiver */
+        int on = 1;
+        e = esp_cam_sensor_ioctl(s_cam, ESP_CAM_SENSOR_IOC_S_STREAM, &on);
+    }
     if (e != ESP_OK) {
         fail("Camera start", e);
+        teardown();
         return false;
     }
-    portENTER_CRITICAL(&s_mux);
-    s_done = s_held = -1;
-    portEXIT_CRITICAL(&s_mux);
-    s_streaming = true;
+    ESP_LOGI(TAG, "streaming %dx%d (exposure %ld, gain %ld)", s_w, s_h, (long)s_exp, (long)s_gain);
     return true;
 }
 
 void bsp_tab5_camera_stop(void)
 {
-    if (!s_streaming) return;
-    s_streaming = false;
-    esp_cam_ctlr_stop(s_csi);
-    int off = 0;
-    esp_cam_sensor_ioctl(s_cam, ESP_CAM_SENSOR_IOC_S_STREAM, &off);
+    bool was = s_streaming;
+    teardown();
+    if (was) ESP_LOGI(TAG, "stopped");
 }
 
 bool bsp_tab5_camera_streaming(void) { return s_streaming; }
@@ -288,6 +323,7 @@ bool bsp_tab5_camera_grab_gray(uint8_t *out, int w, int h, int step, int timeout
     xSemaphoreTake(s_frame_sem, 0);                         /* want a fresh one */
     if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         snprintf(s_err, sizeof(s_err), "No picture from the camera");
+        ESP_LOGW(TAG, "no frame in %d ms", timeout_ms);
         return false;
     }
     portENTER_CRITICAL(&s_mux);
@@ -301,14 +337,22 @@ bool bsp_tab5_camera_grab_gray(uint8_t *out, int w, int h, int step, int timeout
     int x0 = (s_w - w * step) / 2, y0 = (s_h - h * step) / 2;
     uint32_t sum = 0;
     for (int y = 0; y < h; y++) {
-        const uint16_t *row = px + (size_t)(y0 + y * step) * s_w + x0;
         uint8_t *o = out + (size_t)y * w;
         for (int x = 0; x < w; x++) {
-            uint16_t c = row[x * step];
-            /* RGB565 -> luma: 0.299 R8 + 0.587 G8 + 0.114 B8 with R8 = r*255/31,
-             * G8 = g*255/63, B8 = b*255/31; *256 -> 630 r + 608 g + 240 b */
-            uint32_t r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
-            uint32_t l = (r * 630 + g * 608 + b * 240) >> 8;        /* 0..255 */
+            /* step > 1: average the step x step block (less noise and moire
+             * than picking one pixel) */
+            uint32_t acc = 0;
+            for (int dy = 0; dy < step; dy++) {
+                const uint16_t *row = px + (size_t)(y0 + y * step + dy) * s_w + x0 + x * step;
+                for (int dx = 0; dx < step; dx++) {
+                    uint16_t c = row[dx];
+                    /* RGB565 -> luma: 0.299 R8 + 0.587 G8 + 0.114 B8 with R8 = r*255/31,
+                     * G8 = g*255/63, B8 = b*255/31; *256 -> 630 r + 608 g + 240 b */
+                    uint32_t r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
+                    acc += (r * 630 + g * 608 + b * 240) >> 8;      /* 0..255 */
+                }
+            }
+            uint32_t l = acc / (uint32_t)(step * step);
             o[x] = (uint8_t)(l > 255 ? 255 : l);
             sum += o[x];
         }
@@ -381,8 +425,14 @@ bool bsp_tab5_camera_grab_gray(uint8_t *out, int w, int h, int step, int timeout
     (void)timeout_ms;
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
-            int sx = (s_w - w * step) / 2 + x * step, sy = (s_h - h * step) / 2 + y * step;
-            out[(size_t)y * w + x] = (sx >= 0 && sy >= 0 && sx < s_w && sy < s_h) ? s_img[(size_t)sy * s_w + sx] : 255;
+            uint32_t acc = 0;
+            for (int dy = 0; dy < step; dy++) {
+                for (int dx = 0; dx < step; dx++) {
+                    int sx = (s_w - w * step) / 2 + x * step + dx, sy = (s_h - h * step) / 2 + y * step + dy;
+                    acc += (sx >= 0 && sy >= 0 && sx < s_w && sy < s_h) ? s_img[(size_t)sy * s_w + sx] : 255;
+                }
+            }
+            out[(size_t)y * w + x] = (uint8_t)(acc / (uint32_t)(step * step));
         }
     }
     return true;

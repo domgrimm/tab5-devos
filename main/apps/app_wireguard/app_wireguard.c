@@ -562,7 +562,7 @@ static void scan_open(void)
     set_text(lbl_scan_keys, "Esc  cancel");
     lv_obj_remove_flag(scan_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(scan_overlay);
-    if (devos_qr_start() == 0) scan_status("Hold the WireGuard QR code (e.g. from wg-quick or your VPN provider) up to the camera.", false);
+    if (devos_qr_start() == 0) scan_status("Hold the WireGuard QR code 20 to 40 cm from the camera, steady. It doesn't need to fill the frame: sharp matters more than big.", false);
     else scan_status(devos_qr_error(), true);
 }
 
