@@ -1,4 +1,4 @@
-/* Settings: Wi-Fi, display, power, date & time, system info.
+/* Settings: Wi-Fi, display, keyboard, power, date & time, apps, system info.
  *
  * Every value shown here is live (devos_net, devos_sysmon, devos_power, the
  * BSP); nothing is hard-coded. Layout: a section list on the left, one panel
@@ -16,6 +16,9 @@
  * S scans, A adds a network, X disconnects. In the dialog the physical
  * keyboard types into the focused field, Tab moves, Enter connects / saves,
  * Esc cancels. The on-screen keyboard only appears without a keyboard.
+ * Apps: one switch per app (devos_core's boot mask) with the memory it took
+ * at start; Space switches, Enter restarts to apply, Esc leaves (the changes
+ * still apply next start).
  * Each panel shows its keys in a hint line at the bottom.
  */
 #include "app_settings.h"
@@ -37,7 +40,7 @@
 #include "sdkconfig.h"
 #endif
 
-enum { SEC_WIFI = 0, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_SYSTEM, SEC_COUNT };
+enum { SEC_WIFI = 0, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SYSTEM, SEC_COUNT };
 
 static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_WIFI "   Wi-Fi",
@@ -45,6 +48,7 @@ static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_KEYBOARD "   Keyboard",
     LV_SYMBOL_BATTERY_FULL "   Power",
     LV_SYMBOL_BELL "   Date & Time",
+    LV_SYMBOL_LIST "   Apps",
     LV_SYMBOL_SETTINGS "   System",
 };
 
@@ -112,6 +116,20 @@ static lv_obj_t *sw_kbd_custom, *lbl_kbd_state, *card_light[2], *dd_light[2], *s
 static lv_obj_t *lbl_bat_pct, *bar_bat, *lbl_bat_status, *lbl_bat_detail, *lbl_pwr_state;
 static lv_obj_t *lbl_clock_big, *lbl_clock_date, *lbl_clock_src, *dd_tz;
 static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, *btn_ota, *bar_ota, *lbl_feed;
+
+/* ---- Apps panel: one row per app, built on first view (the list is
+ * complete only after every app has registered) ---- */
+typedef struct {
+    devos_app_descriptor_t *app;
+    lv_obj_t *row, *sw, *lbl_cost, *lbl_state;
+    lv_style_t *state_style;
+    bool sel;                   /* drawn with the selection border */
+} app_row_t;
+static app_row_t s_app_rows[DEVOS_MAX_APPS];
+static int s_app_rows_n = -1;
+static lv_obj_t *list_apps, *lbl_apps_banner, *lbl_apps_total;
+static lv_style_t *s_banner_style = &st_muted;
+static char s_apps_note[96];
 
 static const uint32_t s_dim_opts_s[] = { 30, 60, 120, 300, 600, 0 };
 static const char *s_dim_opts_txt = "30 seconds\n1 minute\n2 minutes\n5 minutes\n10 minutes\nNever";
@@ -1627,6 +1645,220 @@ static void refresh_system(void)
 }
 
 /* ======================================================================== */
+/* Apps                                                                     */
+/* ======================================================================== */
+static void fmt_bytes(char *out, size_t cap, int32_t b)
+{
+    if (b >= 1024 * 1024) snprintf(out, cap, "%.1f MB", b / (1024.0 * 1024.0));
+    else snprintf(out, cap, "%ld KB", (long)((b + 1023) / 1024));
+}
+
+/* Give a label one of the text styles; *cur remembers which, so the
+ * 500 ms refresh doesn't restyle (and redraw) it every time. */
+static void swap_style(lv_obj_t *o, lv_style_t **cur, lv_style_t *want)
+{
+    if (*cur == want) return;
+    if (*cur) lv_obj_remove_style(o, *cur, 0);
+    lv_obj_add_style(o, want, 0);
+    *cur = want;
+}
+
+static void app_switch_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i < 0 || i >= s_app_rows_n) return;
+    bool on = lv_obj_has_state(s_app_rows[i].sw, LV_STATE_CHECKED);
+    devos_core_set_app_enabled_next(s_app_rows[i].app->uid, on);
+    s_apps_note[0] = '\0';
+    refresh_visible();
+}
+
+static void build_apps_panel(lv_obj_t *pn)
+{
+    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, PANEL_H - HINT_H - 8, "APPS");
+    lv_obj_t *l = mk_label(c, &st_muted,
+                           "A switched-off app doesn't start at all - no screen, no background work - so its "
+                           "memory stays free. Changes apply after a restart.");
+    lv_obj_set_pos(l, 0, 24);
+    lv_obj_set_width(l, PANEL_W - 34);
+    lbl_apps_banner = mk_label(c, &st_muted, "");
+    lv_obj_set_pos(lbl_apps_banner, 0, 50);
+    lv_obj_set_width(lbl_apps_banner, PANEL_W - 34);
+    lv_label_set_long_mode(lbl_apps_banner, LV_LABEL_LONG_DOT);
+
+    int inner_h = PANEL_H - HINT_H - 8 - 32;
+    list_apps = lv_obj_create(c);
+    lv_obj_remove_style_all(list_apps);
+    lv_obj_set_pos(list_apps, 0, 80);
+    lv_obj_set_size(list_apps, PANEL_W - 34, inner_h - 80 - 30);
+    lv_obj_set_flex_flow(list_apps, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list_apps, 2, 0);
+    lv_obj_set_scrollbar_mode(list_apps, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(list_apps, LV_DIR_VER);
+
+    lbl_apps_total = mk_label(c, &st_muted, "");
+    lv_obj_set_pos(lbl_apps_total, 0, inner_h - 20);
+    lv_obj_set_width(lbl_apps_total, PANEL_W - 34);
+    lv_label_set_long_mode(lbl_apps_total, LV_LABEL_LONG_DOT);
+}
+
+static void build_app_rows(void)
+{
+    lv_obj_clean(list_apps);
+    devos_focus_init(&s_pf[SEC_APPS]);
+    s_app_rows_n = 0;
+    int n = devos_core_known_app_count();
+    for (int i = 0; i < n && s_app_rows_n < DEVOS_MAX_APPS; i++) {
+        devos_app_descriptor_t *app = devos_core_known_app_at(i);
+        if (!app || !app->uid) continue;
+        app_row_t *r = &s_app_rows[s_app_rows_n];
+        r->app = app;
+        lv_obj_t *row = lv_obj_create(list_apps);
+        r->row = row;
+        r->sel = false;
+        lv_obj_remove_style_all(row);
+        lv_obj_add_style(row, &st_row, 0);
+        lv_obj_set_size(row, lv_pct(100), 54);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        r->sw = lv_switch_create(row);
+        style_switch(r->sw);
+        lv_obj_set_size(r->sw, 46, 24);
+        lv_obj_align(r->sw, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_add_event_cb(r->sw, app_switch_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)s_app_rows_n);
+        if (devos_core_app_required(app->uid)) {
+            lv_obj_add_state(r->sw, LV_STATE_CHECKED | LV_STATE_DISABLED);
+        } else {
+            focus_add(SEC_APPS, &s_pf[SEC_APPS], r->sw);
+        }
+
+        char name[64];
+        snprintf(name, sizeof(name), "%s%s%s", app->icon ? app->icon : "", app->icon ? "  " : "",
+                 app->name ? app->name : app->uid);
+        lv_obj_t *l = mk_label(row, &st_text, name);
+        lv_obj_set_pos(l, 64, 2);
+        l = mk_label(row, &st_muted, app->subtitle ? app->subtitle : "");
+        lv_obj_set_pos(l, 64, 24);
+        lv_obj_set_width(l, 480);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
+
+        r->lbl_cost = mk_label(row, &st_text, "");
+        lv_obj_align(r->lbl_cost, LV_ALIGN_TOP_RIGHT, 0, 2);
+        r->lbl_state = mk_label(row, &st_muted, "");
+        r->state_style = &st_muted;
+        lv_obj_align(r->lbl_state, LV_ALIGN_TOP_RIGHT, 0, 24);
+        s_app_rows_n++;
+    }
+}
+
+static void refresh_apps(void)
+{
+    if (s_app_rows_n != devos_core_known_app_count()) build_app_rows();
+    int64_t sum_sram = 0, sum_psram = 0;
+    int on_now = 0;
+    char buf[160], a[24], b[24];
+    /* the focus ring hides on a switch that is on: mark the whole row */
+    lv_obj_t *focused = s_in_panel && s_section == SEC_APPS ? devos_focus_get(&s_pf[SEC_APPS]) : NULL;
+    for (int i = 0; i < s_app_rows_n; i++) {
+        app_row_t *r = &s_app_rows[i];
+        const char *uid = r->app->uid;
+        bool sel = focused && focused == r->sw;
+        if (sel != r->sel) {
+            if (sel) lv_obj_add_style(r->row, &st_row_sel, 0);
+            else lv_obj_remove_style(r->row, &st_row_sel, 0);
+            r->sel = sel;
+        }
+        bool req = devos_core_app_required(uid), now = devos_core_app_enabled(uid),
+             next = devos_core_app_enabled_next(uid);
+        if (!req && lv_obj_has_state(r->sw, LV_STATE_CHECKED) != next) {
+            if (next) lv_obj_add_state(r->sw, LV_STATE_CHECKED);
+            else lv_obj_remove_state(r->sw, LV_STATE_CHECKED);
+        }
+
+        int32_t sram = 0, psram = 0;
+        bool this_boot = false;
+        if (devos_core_app_cost(uid, &sram, &psram, &this_boot)) {
+            fmt_bytes(a, sizeof(a), sram);
+            fmt_bytes(b, sizeof(b), psram);
+#ifdef ESP_PLATFORM
+            snprintf(buf, sizeof(buf), "%sRAM %s   PSRAM %s", this_boot ? "" : "last start: ", a, b);
+#else
+            snprintf(buf, sizeof(buf), "%sheap %s (simulator)", this_boot ? "" : "last start: ", b);
+#endif
+            if (now && this_boot) {
+                sum_sram += sram;
+                sum_psram += psram;
+            }
+        } else {
+            snprintf(buf, sizeof(buf), now ? "under 1 KB" : "not measured yet");
+        }
+        set_text(r->lbl_cost, buf);
+        if (now) on_now++;
+
+        const char *st;
+        lv_style_t *sty = &st_muted;
+        if (req) st = "Always on";
+        else if (now && !next) { st = "Off after restart"; sty = &st_warn; }
+        else if (!now && next) { st = "On after restart"; sty = &st_warn; }
+        else st = now ? "On" : "Off";
+        set_text(r->lbl_state, st);
+        swap_style(r->lbl_state, &r->state_style, sty);
+    }
+
+    bool pending = devos_core_apps_restart_pending();
+    devos_apps_boot_t kind = devos_core_apps_boot_kind();
+    lv_style_t *sty = &st_muted;
+    if (pending) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "  Restart required: Enter restarts now. "
+                                   "Esc leaves without restarting - the changes apply next start.");
+        sty = &st_warn;
+    } else if (s_apps_note[0]) {
+        snprintf(buf, sizeof(buf), "%s", s_apps_note);
+    } else if (kind == DEVOS_APPS_BOOT_REVERTED) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "  The last change stopped devOS from starting, "
+                                   "so the switches before it were put back.");
+        sty = &st_err;
+    } else if (kind == DEVOS_APPS_BOOT_SAFE) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "  Safe start: every app was switched back on.");
+        sty = &st_warn;
+    } else {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  Running as switched. Safe start (every app on): hold "
+                                   "a finger on the screen while the Tab5 powers on.");
+    }
+    set_text(lbl_apps_banner, buf);
+    swap_style(lbl_apps_banner, &s_banner_style, sty);
+
+    const devos_telemetry_t *t = devos_telemetry_get();
+    fmt_bytes(a, sizeof(a), (int32_t)sum_sram);
+    fmt_bytes(b, sizeof(b), (int32_t)(sum_psram > INT32_MAX ? INT32_MAX : sum_psram));
+#ifdef ESP_PLATFORM
+    snprintf(buf, sizeof(buf), "%d of %d on, taking about %s RAM and %s PSRAM at start.   "
+             "Free now: %u KB RAM (lowest %u KB), %.1f MB PSRAM.",
+             on_now, s_app_rows_n, a, b, (unsigned)t->free_sram_kb, (unsigned)t->sram_min_free_kb,
+             t->free_psram_kb / 1024.0f);
+#else
+    LV_UNUSED(t);
+    snprintf(buf, sizeof(buf), "%d of %d on, taking about %s of heap at start (simulator: no RAM split).",
+             on_now, s_app_rows_n, b);
+#endif
+    set_text(lbl_apps_total, buf);
+}
+
+/* Enter in the Apps panel */
+static void apps_restart(void)
+{
+    if (!devos_core_apps_restart_pending()) {
+        snprintf(s_apps_note, sizeof(s_apps_note),
+                 LV_SYMBOL_OK "  Nothing to apply: every switch matches what's running.");
+        refresh_apps();
+        return;
+    }
+    set_text(lbl_apps_banner, LV_SYMBOL_REFRESH "  Restarting...");
+    lv_refr_now(NULL);
+    devos_core_restart();
+}
+
+/* ======================================================================== */
 static void refresh_visible(void)
 {
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
@@ -1636,6 +1868,7 @@ static void refresh_visible(void)
     case SEC_KEYBOARD: refresh_keyboard(); break;
     case SEC_POWER:   refresh_power(); break;
     case SEC_TIME:    refresh_time(); break;
+    case SEC_APPS:    refresh_apps(); break;
     case SEC_SYSTEM:  refresh_system(); break;
     default: break;
     }
@@ -1715,6 +1948,7 @@ static void settings_init(void)
     build_keyboard_panel(panels[SEC_KEYBOARD]);
     build_power_panel(panels[SEC_POWER]);
     build_time_panel(panels[SEC_TIME]);
+    build_apps_panel(panels[SEC_APPS]);
     build_system_panel(panels[SEC_SYSTEM]);
     for (int i = 0; i < SEC_COUNT; i++) {
         lbl_hint[i] = mk_label(panels[i], &st_muted, "");
@@ -1777,6 +2011,10 @@ static void update_hint(void)
             break;
         case SEC_TIME:
             h = "Left / Right  change   Enter  open the list   Esc  sections";
+            break;
+        case SEC_APPS:
+            h = "Up / Down  move   Space  switch on / off   Enter  restart now   "
+                "Esc  sections (changes still apply next start)";
             break;
         default:
             h = "Up / Down / Left / Right  move   Enter  press   Esc  sections";
@@ -1959,13 +2197,23 @@ static bool nav_handle_key(uint32_t key, uint8_t mods)
 
 static bool panel_handle_key(uint32_t key, uint8_t mods)
 {
+    if (s_section == SEC_APPS && (key == '\r' || key == '\n')) {
+        apps_restart();
+        return true;
+    }
     if (s_section == SEC_WIFI) {
         if (wifi_handle_key(key, mods)) return true;
     } else {
         devos_focus_t *f = &s_pf[s_section];
         focus_drop_unusable(f);
         focus_sync_dropdown(f);
-        if (devos_focus_key(f, key, mods) || focus_button_row_key(f, key)) return true;
+        if (devos_focus_key(f, key, mods) || focus_button_row_key(f, key)) {
+            /* the whole row, not just its switch */
+            if (s_section == SEC_APPS && devos_focus_get(f)) {
+                lv_obj_scroll_to_view(lv_obj_get_parent(devos_focus_get(f)), LV_ANIM_OFF);
+            }
+            return true;
+        }
     }
     if (key == LV_KEY_ESC) {
         leave_panel();

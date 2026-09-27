@@ -112,6 +112,48 @@ devos_app_descriptor_t *devos_core_get_app_at(int index);
 devos_app_descriptor_t *devos_core_find_app(const char *uid);
 void devos_core_switch_app_by_uid(const char *uid);
 
+/* App switches (Settings > Apps, devos_apps.c). One boot mask - the apps
+ * switched off - read once early in boot, before any engine starts. A
+ * switched-off app is recorded but never init()ed or listed (launcher,
+ * Sym+n, intents), main.c doesn't start its engine, and engine getters
+ * report "off" when their init never ran. Changes apply on the next restart.
+ * The Launcher and Settings can't be switched off.
+ * Recovery: a changed mask that twice fails to keep the Home Screen up for
+ * 15 s (devos_core_apps_boot_ok()) is put back to the last one that did; a
+ * safe start (finger on the screen at power-on) switches every app back on. */
+typedef enum {
+    DEVOS_APPS_BOOT_NORMAL = 0,
+    DEVOS_APPS_BOOT_REVERTED,      /* the new switches never booted: put back */
+    DEVOS_APPS_BOOT_SAFE,          /* safe start: every app switched back on */
+} devos_apps_boot_t;
+
+void devos_core_apps_load(bool safe_start);
+devos_apps_boot_t devos_core_apps_boot_kind(void);
+bool devos_core_app_required(const char *uid);       /* launcher, settings */
+bool devos_core_app_enabled(const char *uid);        /* this boot */
+bool devos_core_app_enabled_next(const char *uid);   /* after the next restart */
+void devos_core_set_app_enabled_next(const char *uid, bool on);
+bool devos_core_apps_restart_pending(void);          /* next boot's switches differ */
+void devos_core_apps_boot_ok(void);                  /* Home Screen up for 15 s */
+/* Restart the device (the simulator re-executes itself through the hook
+ * main.c sets). */
+typedef void (*devos_restart_fn)(void);
+void devos_core_set_restart_cb(devos_restart_fn cb);
+void devos_core_restart(void);
+/* Every app registered, switched-off ones included (registration order). */
+int devos_core_known_app_count(void);
+devos_app_descriptor_t *devos_core_known_app_at(int index);
+
+/* Memory an app takes when it starts (its init() - measured by
+ * register_app - plus its engine, measured by main.c), in bytes. Target:
+ * internal RAM and PSRAM (heap + LVGL pool); simulator: process heap as
+ * "PSRAM". Kept across boots so switched-off apps still show a figure. */
+typedef struct { int64_t sram, psram; } devos_mem_mark_t;
+void devos_core_mem_mark(devos_mem_mark_t *m);
+void devos_core_app_add_cost(const char *uid, const devos_mem_mark_t *since);
+/* false if never measured; *this_boot = measured during this boot */
+bool devos_core_app_cost(const char *uid, int32_t *sram, int32_t *psram, bool *this_boot);
+
 /* Intents: one app asking another to do something - "ssh" a host in the
  * terminal, "get" a URL in the REST client, "ping" a host in Network.
  * open_with() stores the request and switches to the app (false if it isn't

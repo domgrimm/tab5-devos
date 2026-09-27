@@ -486,7 +486,7 @@ int devos_tailnet_forget(void)
 
 int devos_tailnet_set_auth_key(const char *key)
 {
-    if (!key) return -1;
+    if (!key || !s_lock) return -1;
     while (*key == ' ') key++;
     snprintf(s_cfg.auth_key, sizeof(s_cfg.auth_key), "%s", key);
     size_t n = strlen(s_cfg.auth_key);
@@ -503,7 +503,7 @@ int devos_tailnet_set_auth_key(const char *key)
 
 int devos_tailnet_set_hostname(const char *name)
 {
-    if (!name) return -1;
+    if (!name || !s_lock) return -1;
     /* DNS label: lower-case letters, digits and '-' */
     char clean[DEVOS_TS_HOSTNAME_MAX];
     size_t j = 0;
@@ -626,6 +626,7 @@ int devos_tailnet_ping(int peer_index)
 
 void devos_tailnet_housekeeping(void)
 {
+    if (!s_lock) return;                    /* switched off (Settings > Apps) */
     ml_peer_nvs_flush_if_idle(20000);
 }
 

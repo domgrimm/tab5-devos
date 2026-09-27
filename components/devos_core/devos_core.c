@@ -95,9 +95,47 @@ void devos_core_init(void)
 #endif
 }
 
+/* Every descriptor seen, switched-off apps included (Settings > Apps). */
+static devos_app_descriptor_t *known_apps[DEVOS_MAX_APPS];
+static int known_count = 0;
+
+static void remember_app(devos_app_descriptor_t *app)
+{
+    for (int i = 0; i < known_count; i++) {
+        if (known_apps[i] == app ||
+            (app->uid && known_apps[i]->uid && strcmp(known_apps[i]->uid, app->uid) == 0)) {
+            known_apps[i] = app;
+            return;
+        }
+    }
+    if (known_count < DEVOS_MAX_APPS) known_apps[known_count++] = app;
+}
+
+int devos_core_known_app_count(void) { return known_count; }
+
+devos_app_descriptor_t *devos_core_known_app_at(int index)
+{
+    return index >= 0 && index < known_count ? known_apps[index] : NULL;
+}
+
+static void init_app(devos_app_descriptor_t *app)
+{
+    if (!app->init) return;
+    devos_mem_mark_t m;
+    devos_core_mem_mark(&m);
+    app->init();
+    devos_core_app_add_cost(app->uid, &m);
+}
+
 void devos_core_register_app(devos_app_descriptor_t *app)
 {
-    if (!app || registered_count >= DEVOS_MAX_APPS) return;
+    if (!app) return;
+    remember_app(app);
+    if (!devos_core_app_enabled(app->uid)) {
+        printf("[devOS]     %s is switched off (Settings > Apps)\n", app->uid);
+        return;
+    }
+    if (registered_count >= DEVOS_MAX_APPS) return;
     /* ponytail: id/uid collision replaces (re-register on reboot is harmless) */
     for (int i = 0; i < registered_count; i++) {
         bool match = false;
@@ -108,7 +146,7 @@ void devos_core_register_app(devos_app_descriptor_t *app)
         }
         if (match) {
             registered_apps[i] = app;
-            if (app->init) app->init();
+            init_app(app);
             return;
         }
     }
@@ -117,9 +155,7 @@ void devos_core_register_app(devos_app_descriptor_t *app)
         app->id = (devos_app_id_t)(100 + registered_count);
     }
     registered_apps[registered_count++] = app;
-    if (app->init) {
-        app->init();
-    }
+    init_app(app);
 }
 
 static devos_app_descriptor_t *find_by_id(devos_app_id_t app_id)

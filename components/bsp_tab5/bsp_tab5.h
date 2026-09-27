@@ -47,6 +47,11 @@ const char *bsp_tab5_panel_name(void);
  * power manager can treat touch as user activity. */
 void bsp_tab5_set_touch_activity_cb(void (*cb)(void));
 
+/* A finger held on the touchscreen right now (read directly, for the safe
+ * start check during boot, before LVGL polls touch). Simulator:
+ * DEVOS_SAFE_START=1 in the environment. */
+bool bsp_tab5_touch_held(void);
+
 #ifdef __cplusplus
 }
 #endif

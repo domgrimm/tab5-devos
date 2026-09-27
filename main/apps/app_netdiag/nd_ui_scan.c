@@ -191,7 +191,7 @@ static bool key(uint32_t k, uint8_t mods)
         const devos_scan_host_t *h = &s_hosts[s_list.sel];
         if (k == 'p' || k == 'P') { nd_ping_host(h->ip); return true; }
         if (k == 's' || k == 'S') {
-            if (!devos_core_open_with("terminal", "ssh", h->ip)) nd_flash("No terminal app");
+            if (!devos_core_open_with("terminal", "ssh", h->ip)) nd_flash("The Terminal is switched off (Settings > Apps)");
             return true;
         }
         if (k == 'd' || k == 'D') { nd_dns_name(h->ip); return true; }
