@@ -29,6 +29,10 @@ void devos_hmac(devos_hash_t h, const void *key, size_t key_len, const void *msg
 
 void devos_pbkdf2_sha256(const void *pw, size_t pw_len, const uint8_t *salt, size_t salt_len, uint32_t iterations,
                          uint8_t *out, size_t out_len);
+/* The same, counting iterations done into *done (for a progress bar; read it
+ * from another task). */
+void devos_pbkdf2_sha256_progress(const void *pw, size_t pw_len, const uint8_t *salt, size_t salt_len,
+                                  uint32_t iterations, uint8_t *out, size_t out_len, volatile uint32_t *done);
 
 /* AEAD: out gets the ciphertext (same length as in) and tag the 16-byte tag. */
 void devos_chachapoly_seal(const uint8_t key[32], const uint8_t nonce[12], const void *aad, size_t aad_len,

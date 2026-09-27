@@ -67,7 +67,7 @@ static uint8_t *load_blob(size_t *len)
     if (nvs_open("totp", NVS_READONLY, &h) != ESP_OK) return NULL;
     size_t n = 0;
     uint8_t *b = NULL;
-    if (nvs_get_blob(h, "vault", NULL, &n) == ESP_OK && n > HDR_LEN + 16 && (b = malloc(n)) &&
+    if (nvs_get_blob(h, "vault", NULL, &n) == ESP_OK && n >= HDR_LEN + 16 && (b = malloc(n)) &&
         nvs_get_blob(h, "vault", b, &n) == ESP_OK) {
         *len = n;
     } else {
@@ -82,7 +82,7 @@ static uint8_t *load_blob(size_t *len)
     uint8_t *b = malloc(PLAIN_MAX + HDR_LEN + 16);
     size_t n = b ? fread(b, 1, PLAIN_MAX + HDR_LEN + 16, f) : 0;
     fclose(f);
-    if (n <= HDR_LEN + 16) {
+    if (n < HDR_LEN + 16) {                      /* an empty vault is header + tag */
         free(b);
         return NULL;
     }
@@ -434,6 +434,18 @@ static struct {
     job_t kind;
     char pass[128];
 } s_job;
+static volatile uint32_t s_kdf_done, s_kdf_total;   /* the running job's PBKDF2 rounds */
+
+#ifdef ESP_PLATFORM
+static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+#else
+static uint32_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+#endif
 
 static void job_run(void)
 {
@@ -447,7 +459,10 @@ static void job_run(void)
     if (kind == JOB_CREATE || kind == JOB_REKEY) {
         uint8_t salt[16], key[32];
         devos_random(salt, sizeof(salt));
-        devos_pbkdf2_sha256(pass, pl, salt, sizeof(salt), ROUNDS, key, sizeof(key));
+        s_kdf_total = ROUNDS;
+        uint32_t t0 = now_ms();
+        devos_pbkdf2_sha256_progress(pass, pl, salt, sizeof(salt), ROUNDS, key, sizeof(key), &s_kdf_done);
+        printf("[totp] key derived in %u ms (%u rounds)\n", (unsigned)(now_ms() - t0), (unsigned)ROUNDS);
         LOCK();
         memcpy(s_salt, salt, 16);
         memcpy(s_key, key, 32);
@@ -472,11 +487,14 @@ static void job_run(void)
             }
         }
         bool ok = false;
-        if (blob && bl > HDR_LEN + 16 && !memcmp(blob, MAGIC, 4)) {
+        if (blob && bl >= HDR_LEN + 16 && !memcmp(blob, MAGIC, 4)) {
             uint32_t rounds = blob[4] | (uint32_t)blob[5] << 8 | (uint32_t)blob[6] << 16 | (uint32_t)blob[7] << 24;
             if (rounds < 1000 || rounds > 10000000) rounds = ROUNDS;
             uint8_t key[32];
-            devos_pbkdf2_sha256(pass, pl, blob + 8, 16, rounds, key, sizeof(key));
+            s_kdf_total = rounds;
+            uint32_t t0 = now_ms();
+            devos_pbkdf2_sha256_progress(pass, pl, blob + 8, 16, rounds, key, sizeof(key), &s_kdf_done);
+            printf("[totp] key derived in %u ms (%u rounds)\n", (unsigned)(now_ms() - t0), (unsigned)rounds);
             size_t cl = bl - HDR_LEN - 16;
             char *plain = malloc(cl + 1);
             if (plain && devos_chachapoly_open(key, blob + 24, blob, 24, blob + HDR_LEN, cl, blob + bl - 16, (uint8_t *)plain)) {
@@ -558,6 +576,8 @@ static int job_start(job_t kind, const char *pass)
     }
     s_job.kind = kind;
     snprintf(s_job.pass, sizeof(s_job.pass), "%s", pass);
+    s_kdf_done = 0;
+    s_kdf_total = ROUNDS;
     devos_totp_state_t prev = s_state;
     s_state = DEVOS_TOTP_BUSY;
     s_err[0] = '\0';
@@ -603,6 +623,23 @@ void devos_totp_init(void)
 }
 
 devos_totp_state_t devos_totp_state(void) { return s_state; }
+
+const char *devos_totp_busy_text(void)
+{
+    switch (s_job.kind) {
+    case JOB_CREATE: return "Creating the vault";
+    case JOB_UNLOCK: return "Unlocking";
+    case JOB_REKEY:  return "Changing the passphrase";
+    default:         return "Opening the backup";
+    }
+}
+
+int devos_totp_progress(void)
+{
+    uint32_t total = s_kdf_total, done = s_kdf_done;
+    if (s_state != DEVOS_TOTP_BUSY || !total) return 0;
+    return done >= total ? 100 : (int)((uint64_t)done * 100 / total);
+}
 const char *devos_totp_error(void) { return s_err; }
 
 int devos_totp_lockout_s(void)

@@ -38,6 +38,7 @@ static lv_obj_t *p_lock, *ta_unlock, *lbl_lock_msg, *btn_unlock, *btn_erase;
 static devos_focus_t s_fsetup, s_flock;
 /* main */
 static lv_obj_t *p_main, *lbl_empty;
+static lv_obj_t *p_busy, *lbl_busy, *bar_busy, *lbl_busy_pct;   /* while the key is derived */
 static devos_vlist_t s_list;
 /* big view */
 static lv_obj_t *big, *lbl_big_name, *lbl_big_code, *lbl_big_next, *bar_big;
@@ -515,9 +516,17 @@ static void apply_state(devos_totp_state_t st)
     bool unlocked = st == DEVOS_TOTP_UNLOCKED;
     if (st == DEVOS_TOTP_NO_VAULT) lv_obj_remove_flag(p_setup, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(p_setup, LV_OBJ_FLAG_HIDDEN);
-    if (st == DEVOS_TOTP_LOCKED || (st == DEVOS_TOTP_BUSY && s_last_state != DEVOS_TOTP_UNLOCKED && s_last_state != DEVOS_TOTP_NO_VAULT))
-        lv_obj_remove_flag(p_lock, LV_OBJ_FLAG_HIDDEN);
+    if (st == DEVOS_TOTP_LOCKED) lv_obj_remove_flag(p_lock, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(p_lock, LV_OBJ_FLAG_HIDDEN);
+    if (st == DEVOS_TOTP_BUSY) {
+        char t[64];
+        snprintf(t, sizeof(t), LV_SYMBOL_REFRESH "  %s...", devos_totp_busy_text());
+        devos_w_set_text(lbl_busy, t);
+        lv_bar_set_value(bar_busy, 0, LV_ANIM_OFF);
+        lv_obj_remove_flag(p_busy, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(p_busy, LV_OBJ_FLAG_HIDDEN);
+    }
     if (unlocked) lv_obj_remove_flag(p_main, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(p_main, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *btns[] = { btn_add, btn_backup, btn_lock };
@@ -551,7 +560,7 @@ static const char *keys_text(void)
     switch (devos_totp_state()) {
     case DEVOS_TOTP_NO_VAULT: return "Type a passphrase, Tab, type it again, Enter    Esc home";
     case DEVOS_TOTP_LOCKED: return "Type your passphrase, Enter unlocks    Tab reaches Erase    Esc home";
-    case DEVOS_TOTP_BUSY: return "Working...";
+    case DEVOS_TOTP_BUSY: return "Working - a few seconds    Esc home (it carries on)";
     default: return "Up / Down pick    Enter big code    A add    E edit    Del delete    Aa+Up / Down move    B backup    L lock    Esc home";
     }
 }
@@ -592,8 +601,10 @@ static void tick_cb(lv_timer_t *t)
             devos_w_set_text(lbl_lock_msg, buf);
         }
     } else if (st == DEVOS_TOTP_BUSY) {
-        devos_w_set_text(lbl_lock_msg, "Unlocking...");
-        devos_w_set_text(lbl_setup_err, "Creating the vault...");
+        int pct = devos_totp_progress();
+        lv_bar_set_value(bar_busy, pct, LV_ANIM_OFF);
+        snprintf(buf, sizeof(buf), "%d%%", pct);
+        devos_w_set_text(lbl_busy_pct, buf);
     }
     if (st == DEVOS_TOTP_UNLOCKED) {
         int n = devos_totp_count();
@@ -769,6 +780,24 @@ static void totp_init(void)
     devos_focus_add(&s_flock, ta_unlock);
     devos_focus_add(&s_flock, btn_unlock);
     devos_focus_add(&s_flock, btn_erase);
+
+    /* busy: the passphrase is being stretched (seconds on the device) */
+    p_busy = centre_panel(s_screen, 560, 164);
+    lbl_busy = devos_w_label(p_busy, &lv_font_montserrat_20, DEVOS_W_TEXT_ACCENT, "");
+    bar_busy = lv_bar_create(p_busy);
+    lv_obj_set_size(bar_busy, 440, 10);
+    lv_obj_set_pos(bar_busy, 0, 56);
+    lv_bar_set_range(bar_busy, 0, 100);
+    devos_w_track(bar_busy, DEVOS_W_PROGRESS);
+    lbl_busy_pct = devos_w_label(p_busy, &lv_font_montserrat_14, DEVOS_W_TEXT, "0%");
+    lv_obj_set_pos(lbl_busy_pct, 456, 50);
+    lv_obj_t *bt = devos_w_label(p_busy, &lv_font_montserrat_14, DEVOS_W_TEXT_DIM,
+                                 "Your passphrase is stretched 100 000 times so that guessing it is slow. "
+                                 "This takes a few seconds.");
+    lv_obj_set_width(bt, 510);
+    lv_label_set_long_mode(bt, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(bt, 0, 86);
+    lv_obj_add_flag(p_busy, LV_OBJ_FLAG_HIDDEN);
 
     /* main list */
     int h = DEVOS_CONTENT_HEIGHT - DEVOS_W_BAR_H - DEVOS_W_KEYS_H;
