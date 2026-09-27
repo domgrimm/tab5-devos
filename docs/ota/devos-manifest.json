@@ -1,7 +1,8 @@
 {
-  "version": "0.2.0",
-  "url": "tab5-devos-0.2.0.bin",
-  "size": 2525984,
-  "sha256": "938ea7733f77e47825c262cc10720fdc92de2ce223afc80c47a04c591d3d2e0f",
-  "notes": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards"
+  "version": "0.2.1",
+  "url": "tab5-devos-0.2.1.bin",
+  "size": 2528048,
+  "sha256": "38940e0fb429ad53a432972b5c287969903d506fa3b18b3a8c56da336211d708",
+  "build": "a820e79b77e5aad8deafe298346860a19c0c884af6deba7447c3bb2a0a78649c",
+  "notes": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported"
 }

@@ -17,9 +17,12 @@ static char s_ver[32] = "";
 static char s_url[256] = "";
 static char s_sha[65] = "";
 static char s_notes[200] = "";
+static char s_build[65] = "";               /* the manifest's "build": its image's ELF SHA-256 */
 static long s_size = 0;
 static volatile devos_ota_state_t s_state = DEVOS_OTA_IDLE;
 static volatile int s_progress = -1;
+
+static const char *own_build(void);
 
 long devos_ota_parse_version(const char *s)
 {
@@ -70,12 +73,27 @@ static int handle_manifest(const char *json)
     devos_json_get_str(json, n, "notes", s_notes, sizeof(s_notes));
     int sz = 0;
     s_size = (devos_json_get_int(json, n, "size", &sz) == 0 && sz > 0) ? sz : 0;
-    if (remote <= local) {
-        snprintf(s_report, sizeof(s_report), "Up to date (%s; feed has %.20s)", DEVOS_VERSION_STR, ver);
+    /* The build id tells builds apart even when the version wasn't bumped. */
+    s_build[0] = '\0';
+    devos_json_get_str(json, n, "build", s_build, sizeof(s_build));
+    const char *mine = own_build();
+    size_t bl = strlen(s_build);
+    bool known = bl >= 8 && mine[0];
+    if (known && strncasecmp(s_build, mine, bl) == 0) {
+        snprintf(s_report, sizeof(s_report), "Up to date: this build (%.8s) is the one on the feed", mine);
         return 0;
     }
-    snprintf(s_report, sizeof(s_report), "Update %.20s available (%ld KB)", ver, s_size / 1024);
-    return 1;
+    if (remote > local) {
+        snprintf(s_report, sizeof(s_report), "Update %.20s available (%ld KB)", ver, s_size / 1024);
+        return 1;
+    }
+    if (remote == local && known) {
+        snprintf(s_report, sizeof(s_report), "New build of %.20s available (%.8s, %ld KB)", ver, s_build,
+                 s_size / 1024);
+        return 1;
+    }
+    snprintf(s_report, sizeof(s_report), "Up to date (%s; feed has %.20s)", DEVOS_VERSION_STR, ver);
+    return 0;
 }
 
 #ifdef ESP_PLATFORM
@@ -86,6 +104,7 @@ static int handle_manifest(const char *json)
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_system.h"
@@ -93,6 +112,27 @@ static int handle_manifest(const char *json)
 #include "nvs.h"
 
 static const char *TAG = "ota";
+
+/* The ELF SHA-256 esptool stamps into every image: unique per build. */
+static const char *own_build(void)
+{
+    static char hex[65];
+    if (!hex[0]) {
+        const uint8_t *d = esp_app_get_description()->app_elf_sha256;
+        for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", d[i]);
+    }
+    return hex;
+}
+
+const char *devos_ota_build_text(void)
+{
+    static char t[64];
+    if (!t[0]) {
+        const esp_app_desc_t *d = esp_app_get_description();
+        snprintf(t, sizeof(t), "build %.8s, %.12s %.5s", own_build(), d->date, d->time);
+    }
+    return t;
+}
 
 static void persist(void)
 {
@@ -289,6 +329,14 @@ static void install_worker(void)
         s_progress = -1;
         return;
     }
+    /* After the restart devos_ota_init() says whether it took (or was rolled back). */
+    nvs_handle_t h;
+    if (nvs_open("ota", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "want_part", target->label);
+        nvs_set_str(h, "want_ver", s_ver);
+        nvs_commit(h);
+        nvs_close(h);
+    }
     snprintf(s_report, sizeof(s_report), "Installed %.20s. Restarting...", s_ver);
     s_state = DEVOS_OTA_REBOOTING;
     ESP_LOGI(TAG, "update installed to %s, restarting", target->label);
@@ -328,7 +376,29 @@ void devos_ota_init(void)
 {
     load();
     const esp_partition_t *run = esp_ota_get_running_partition();
-    if (run) ESP_LOGI(TAG, "running from %s, feed %s", run->label, s_feed);
+    if (run) ESP_LOGI(TAG, "running from %s (%s), feed %s", run->label, devos_ota_build_text(), s_feed);
+
+    /* Did the last install take? It restarted into want_part; the bootloader
+     * rolls back to the old slot if the new image never confirmed itself. */
+    nvs_handle_t h;
+    char part[20] = "", ver[32] = "";
+    size_t l1 = sizeof(part), l2 = sizeof(ver);
+    if (!run || nvs_open("ota", NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_get_str(h, "want_part", part, &l1) == ESP_OK) {
+        if (nvs_get_str(h, "want_ver", ver, &l2) != ESP_OK) ver[0] = '\0';
+        if (strcmp(part, run->label) == 0) {
+            snprintf(s_report, sizeof(s_report), "Updated to %.20s (%s)", ver, devos_ota_build_text());
+        } else {
+            snprintf(s_report, sizeof(s_report), "The update to %.20s didn't start, so the Tab5 went back to "
+                     "the firmware before it (%s)", ver, run->label);
+            s_state = DEVOS_OTA_FAILED;
+        }
+        ESP_LOGW(TAG, "%s", s_report);
+        nvs_erase_key(h, "want_part");
+        nvs_erase_key(h, "want_ver");
+        nvs_commit(h);
+    }
+    nvs_close(h);
 }
 
 #else
@@ -401,6 +471,18 @@ static int start_job(int install)
 #define JOB_INSTALL 1
 
 void devos_ota_mark_boot_ok(void) {}
+
+/* Tests can pretend to be a build (DEVOS_SIM_BUILD); otherwise versions decide. */
+static const char *own_build(void)
+{
+    const char *b = getenv("DEVOS_SIM_BUILD");
+    return b ? b : "";
+}
+
+const char *devos_ota_build_text(void)
+{
+    return "simulator build, " __DATE__;
+}
 
 void devos_ota_init(void)
 {
