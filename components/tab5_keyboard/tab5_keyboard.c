@@ -4,7 +4,8 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
+#include "bsp_tab5.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -69,17 +70,35 @@ static const uint32_t s_map_sym[KBD_ROWS][KBD_COLS] = {
     { KM_CTRL, KM_ALT, 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', LV_KEY_LEFT, LV_KEY_DOWN, LV_KEY_RIGHT, ' ' },
 };
 
+/* On the BSP's external I2C bus (new i2c_master driver). */
+static i2c_master_dev_handle_t s_kbd_dev;
+
+static bool kbd_dev_ready(void)
+{
+    if (s_kbd_dev) return true;
+    i2c_master_bus_handle_t bus = (i2c_master_bus_handle_t)bsp_tab5_i2c_bus_external();
+    if (!bus) return false;
+    i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = TAB5_KBD_I2C_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    if (i2c_master_bus_add_device(bus, &cfg, &s_kbd_dev) != ESP_OK) s_kbd_dev = NULL;
+    return s_kbd_dev != NULL;
+}
+
+/* Is the keyboard there? (a probe logs nothing on NACK, unlike a transfer) */
+static bool kbd_present(void)
+{
+    i2c_master_bus_handle_t bus = (i2c_master_bus_handle_t)bsp_tab5_i2c_bus_external();
+    return bus && i2c_master_probe(bus, TAB5_KBD_I2C_ADDR, 50) == ESP_OK;
+}
+
 static esp_err_t kbd_write_reg(uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = {reg, val};
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, buf, 2, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+    if (!kbd_dev_ready()) return ESP_ERR_INVALID_STATE;
+    return i2c_master_transmit(s_kbd_dev, buf, 2, 50);
 }
 
 static void kbd_write_rgb(uint8_t base, uint32_t rgb)
@@ -91,20 +110,8 @@ static void kbd_write_rgb(uint8_t base, uint32_t rgb)
 
 static esp_err_t kbd_read_reg(uint8_t reg, uint8_t *buf, size_t len)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (TAB5_KBD_I2C_ADDR << 1) | I2C_MASTER_READ, true);
-    if (len > 1) {
-        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
-    }
-    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(TAB5_I2C_PORT, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+    if (!kbd_dev_ready()) return ESP_ERR_INVALID_STATE;
+    return i2c_master_transmit_receive(s_kbd_dev, &reg, 1, buf, len, 50);
 }
 #endif
 
@@ -495,7 +502,7 @@ static void keyboard_task(void *pvParameters)
     while (1) {
         if (!s_connected) {
             /* (Re)attach: also covers a keyboard plugged in after boot. */
-            if (kbd_write_reg(KBD_REG_MODE_KEYBOARD, KBD_MODE_NORMAL) == ESP_OK) {
+            if (kbd_present() && kbd_write_reg(KBD_REG_MODE_KEYBOARD, KBD_MODE_NORMAL) == ESP_OK) {
                 kbd_write_reg(KBD_REG_EVENT_NUM, 0x00);
                 uint8_t fw = 0;
                 kbd_read_reg(KBD_REG_FW_VERSION, &fw, 1);
@@ -514,7 +521,8 @@ static void keyboard_task(void *pvParameters)
         for (int n = 0; n < 16; n++) {
             uint8_t raw = KBD_EVENT_EMPTY;
             if (kbd_read_reg(KBD_REG_KEY_EVENT, &raw, 1) != ESP_OK) {
-                failures++;
+                /* unplugged? a quiet probe tells at once (each failed read logs) */
+                failures = kbd_present() ? failures + 1 : 50;
                 break;
             }
             failures = 0;

@@ -6,7 +6,7 @@
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
@@ -232,32 +232,71 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 /* -------------------------------------------------------------------------
  * Internal I2C Expander Bringup (PI4IOE5V6408)
  * ----------------------------------------------------------------------- */
+/* I2C runs on the new i2c_master driver (the camera stack requires it, and
+ * IDF refuses to link it next to the legacy driver). Port numbers stay as
+ * bus ids; devices get a handle on first use (400 kHz, bus-locked, so any
+ * task may use them). */
+static i2c_master_bus_handle_t s_i2c_ext;   /* Ext.Port1 GPIO 0/1: keyboard */
+static i2c_master_bus_handle_t s_i2c_int;   /* GPIO 31/32: touch, expanders, INA226, RTC, camera */
+typedef struct {
+    i2c_port_t port;
+    uint8_t addr;
+    i2c_master_dev_handle_t dev;
+} tab5_i2c_dev_t;
+static tab5_i2c_dev_t s_i2c_devs[12];
+static int s_i2c_dev_n;
+static SemaphoreHandle_t s_i2c_dev_mx;
+
+static i2c_master_bus_handle_t i2c_bus_of(i2c_port_t port)
+{
+    return port == TAB5_INTERNAL_I2C_PORT ? s_i2c_int : s_i2c_ext;
+}
+
+static i2c_master_dev_handle_t i2c_dev_of(i2c_port_t port, uint8_t addr)
+{
+    i2c_master_dev_handle_t dev = NULL;
+    if (!i2c_bus_of(port) || !s_i2c_dev_mx) return NULL;
+    xSemaphoreTake(s_i2c_dev_mx, portMAX_DELAY);
+    for (int i = 0; i < s_i2c_dev_n; i++) {
+        if (s_i2c_devs[i].port == port && s_i2c_devs[i].addr == addr) dev = s_i2c_devs[i].dev;
+    }
+    if (!dev && s_i2c_dev_n < (int)(sizeof(s_i2c_devs) / sizeof(s_i2c_devs[0]))) {
+        i2c_device_config_t cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = addr,
+            .scl_speed_hz = 400000,
+        };
+        if (i2c_master_bus_add_device(i2c_bus_of(port), &cfg, &dev) == ESP_OK) {
+            s_i2c_devs[s_i2c_dev_n++] = (tab5_i2c_dev_t){ port, addr, dev };
+        } else {
+            dev = NULL;
+        }
+    }
+    xSemaphoreGive(s_i2c_dev_mx);
+    return dev;
+}
+
+static esp_err_t i2c_write_buf(i2c_port_t port, uint8_t addr, const uint8_t *buf, size_t len)
+{
+    i2c_master_dev_handle_t dev = i2c_dev_of(port, addr);
+    return dev ? i2c_master_transmit(dev, buf, len, 50) : ESP_ERR_INVALID_STATE;
+}
+
+static esp_err_t i2c_read_buf(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t *buf, size_t len)
+{
+    i2c_master_dev_handle_t dev = i2c_dev_of(port, addr);
+    return dev ? i2c_master_transmit_receive(dev, &reg, 1, buf, len, 50) : ESP_ERR_INVALID_STATE;
+}
+
 static esp_err_t i2c_write_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = {reg, val};
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, buf, 2, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+    return i2c_write_buf(port, addr, buf, 2);
 }
 
 static esp_err_t i2c_read_reg(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t *val)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
-    i2c_master_read_byte(cmd, val, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+    return i2c_read_buf(port, addr, reg, val, 1);
 }
 
 static void bsp_io_expanders_init(void)
@@ -323,36 +362,6 @@ static void bsp_io_expanders_init(void)
 static bool s_ina226_ok = false;
 static bool s_rtc_ok = false;
 
-static esp_err_t i2c_write_buf(i2c_port_t port, uint8_t addr, const uint8_t *buf, size_t len)
-{
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, buf, len, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
-
-static esp_err_t i2c_read_buf(i2c_port_t port, uint8_t addr, uint8_t reg, uint8_t *buf, size_t len)
-{
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
-    if (len > 1) {
-        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
-    }
-    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
-    i2c_cmd_link_delete(cmd);
-    return ret;
-}
-
 static void bsp_power_monitor_init(void)
 {
     /* Config: AVG=16, VBUSCT=VSHCT=1.1 ms, continuous shunt+bus (0x4527). */
@@ -413,37 +422,21 @@ static void bsp_backlight_init(void)
 }
 
 /* -------------------------------------------------------------------------
- * Internal I2C helpers (legacy driver) for touch-controller probing
+ * I2C helpers for touch-controller probing
  * ----------------------------------------------------------------------- */
 static bool tab5_i2c_probe(i2c_port_t port, uint8_t addr7)
 {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return ret == ESP_OK;
+    i2c_master_bus_handle_t bus = i2c_bus_of(port);
+    return bus && i2c_master_probe(bus, addr7, 100) == ESP_OK;   /* no NACK log */
 }
 
 static esp_err_t tab5_i2c_read_reg16(i2c_port_t port, uint8_t addr7, uint16_t reg,
                                      uint8_t *buf, size_t len)
 {
     uint8_t reg_addr[2] = { (uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF) };
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, reg_addr, sizeof(reg_addr), true);
-    i2c_master_start(cmd); /* repeated start */
-    i2c_master_write_byte(cmd, (addr7 << 1) | I2C_MASTER_READ, true);
-    if (len > 1) {
-        i2c_master_read(cmd, buf, len - 1, I2C_MASTER_ACK);
-    }
-    i2c_master_read_byte(cmd, buf + len - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return ret;
+    i2c_master_dev_handle_t dev = i2c_dev_of(port, addr7);
+    return dev ? i2c_master_transmit_receive(dev, reg_addr, sizeof(reg_addr), buf, len, 100)
+               : ESP_ERR_INVALID_STATE;
 }
 
 /* Identify the display controller by probing the touch chip (see enum above). */
@@ -671,11 +664,10 @@ static void bsp_tab5_touch_init(void)
         gpio_set_level(TAB5_PIN_TOUCH_INT, 0);
 
         esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
-        io_cfg.scl_speed_hz = 0;  /* legacy v1 i2c-lcd IO rejects a nonzero value */
+        io_cfg.scl_speed_hz = 400000;   /* required by the i2c_master panel IO */
         io_cfg.dev_addr = tab5_i2c_probe(TAB5_INTERNAL_I2C_PORT, TAB5_TOUCH_ADDR_GT911_BACKUP)
                           ? TAB5_TOUCH_ADDR_GT911_BACKUP : TAB5_TOUCH_ADDR_GT911;
-        ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
-                                          &io_cfg, &tp_io);
+        ret = esp_lcd_new_panel_io_i2c_v2(s_i2c_int, &io_cfg, &tp_io);
         if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_tp);
     } else {
         /* TDDI (ST7121/ST7123): poll the shared INT line so touch_read_cb only
@@ -691,9 +683,8 @@ static void bsp_tab5_touch_init(void)
         s_touch_int_gated = true;
 
         esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
-        io_cfg.scl_speed_hz = 0;  /* legacy v1 i2c-lcd IO rejects a nonzero value */
-        ret = esp_lcd_new_panel_io_i2c_v1((esp_lcd_i2c_bus_handle_t)(uint32_t)TAB5_INTERNAL_I2C_PORT,
-                                          &io_cfg, &tp_io);
+        io_cfg.scl_speed_hz = 400000;   /* required by the i2c_master panel IO */
+        ret = esp_lcd_new_panel_io_i2c_v2(s_i2c_int, &io_cfg, &tp_io);
         if (ret == ESP_OK) ret = esp_lcd_touch_new_i2c_st7123(tp_io, &tp_cfg, &s_tp);
     }
 
@@ -898,32 +889,54 @@ static esp_err_t bsp_display_init(void)
 }
 #endif /* ESP_PLATFORM */
 
+void *bsp_tab5_i2c_bus_internal(void)
+{
+#ifdef ESP_PLATFORM
+    return s_i2c_int;
+#else
+    return NULL;
+#endif
+}
+
+void *bsp_tab5_i2c_bus_external(void)
+{
+#ifdef ESP_PLATFORM
+    return s_i2c_ext;
+#else
+    return NULL;
+#endif
+}
+
 bool bsp_tab5_init(void)
 {
 #ifdef ESP_PLATFORM
-    /* 1. Initialize External I2C Bus for Keyboard (Port 0: GPIO 0 SDA, GPIO 1 SCL) */
-    i2c_config_t ext_i2c_conf = {
-        .mode = I2C_MODE_MASTER,
+    /* 1. External I2C bus for the keyboard (Port 0: GPIO 0 SDA, GPIO 1 SCL)
+     * 2. Internal I2C bus (Port 1: GPIO 31 SDA, GPIO 32 SCL) */
+    s_i2c_dev_mx = xSemaphoreCreateMutex();
+    i2c_master_bus_config_t ext_cfg = {
+        .i2c_port = TAB5_I2C_PORT,
         .sda_io_num = TAB5_PIN_I2C_SDA,
         .scl_io_num = TAB5_PIN_I2C_SCL,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    i2c_param_config(TAB5_I2C_PORT, &ext_i2c_conf);
-    i2c_driver_install(TAB5_I2C_PORT, ext_i2c_conf.mode, 0, 0, 0);
-
-    /* 2. Initialize Internal I2C Bus (Port 1: GPIO 31 SDA, GPIO 32 SCL) */
-    i2c_config_t int_i2c_conf = {
-        .mode = I2C_MODE_MASTER,
+    if (i2c_new_master_bus(&ext_cfg, &s_i2c_ext) != ESP_OK) {
+        ESP_LOGE(TAG, "external I2C bus (keyboard) failed");
+        s_i2c_ext = NULL;
+    }
+    i2c_master_bus_config_t int_cfg = {
+        .i2c_port = TAB5_INTERNAL_I2C_PORT,
         .sda_io_num = TAB5_PIN_INTERNAL_I2C_SDA,
         .scl_io_num = TAB5_PIN_INTERNAL_I2C_SCL,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = 400000,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
-    i2c_param_config(TAB5_INTERNAL_I2C_PORT, &int_i2c_conf);
-    i2c_driver_install(TAB5_INTERNAL_I2C_PORT, int_i2c_conf.mode, 0, 0, 0);
+    if (i2c_new_master_bus(&int_cfg, &s_i2c_int) != ESP_OK) {
+        ESP_LOGE(TAG, "internal I2C bus failed");
+        s_i2c_int = NULL;
+    }
 
     /* 3. Initialize IO Expanders & Release Screen Reset */
     bsp_io_expanders_init();
