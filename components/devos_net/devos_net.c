@@ -1041,6 +1041,83 @@ bool devos_net_is_tailnet_target(const char *host_or_ip)
     return false;
 }
 
+/* host.local: one-shot mDNS A query (lwIP's resolver doesn't do mDNS).
+ * Sent from an ephemeral port, so responders answer us directly
+ * (RFC 6762 legacy unicast); on the device it goes out of the Wi-Fi netif. */
+static int mdns_resolve(const char *name, char *out_ip, size_t out_len, int timeout_ms)
+{
+    uint8_t q[300];
+    size_t o = 12;
+    memset(q, 0, 12);
+    q[0] = 0x4d;
+    q[1] = 0x44;
+    q[5] = 1;                                           /* one question */
+    for (const char *p = name; *p;) {
+        const char *dot = strchr(p, '.');
+        size_t l = dot ? (size_t)(dot - p) : strlen(p);
+        if (!l || l > 63 || o + l + 6 > sizeof(q)) return -1;
+        q[o++] = (uint8_t)l;
+        memcpy(q + o, p, l);
+        o += l;
+        p += l;
+        if (*p == '.') p++;
+    }
+    q[o++] = 0;
+    q[o++] = 0; q[o++] = 1;                             /* A */
+    q[o++] = 0; q[o++] = 1;                             /* IN */
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return -1;
+#ifdef ESP_PLATFORM
+    lock();
+    struct in_addr ifa = { 0 };
+    bool have_if = s_st.connected && inet_aton(s_st.ip, &ifa);
+    unlock();
+    if (have_if) setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, &ifa, sizeof(ifa));
+#else
+    const char *sim_if = getenv("DEVOS_SIM_MDNS_IF");    /* same knob as the Network app */
+    struct in_addr ifa;
+    if (sim_if && inet_aton(sim_if, &ifa)) setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, &ifa, sizeof(ifa));
+#endif
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof(to));
+    to.sin_family = AF_INET;
+    to.sin_port = htons(5353);
+    to.sin_addr.s_addr = inet_addr("224.0.0.251");
+    int rc = -1;
+    for (int attempt = 0; attempt < 2 && rc; attempt++) {
+        sendto(s, q, o, 0, (struct sockaddr *)&to, sizeof(to));
+        int wait = timeout_ms / 2;
+        while (rc) {
+            fd_set r;
+            FD_ZERO(&r);
+            FD_SET(s, &r);
+            struct timeval tv = { .tv_sec = wait / 1000, .tv_usec = (wait % 1000) * 1000 };
+            if (select(s + 1, &r, NULL, NULL, &tv) <= 0) break;
+            uint8_t m[512];
+            int n = (int)recv(s, m, sizeof(m), 0);
+            if (n < 12 || !(m[2] & 0x80)) continue;
+            int an = m[6] << 8 | m[7], off = 12;
+            int qd = m[4] << 8 | m[5];
+            /* skip the questions, then look for an A answer */
+            for (int i = 0; i < qd + an && off < n && rc; i++) {
+                while (off < n && m[off] && (m[off] & 0xc0) != 0xc0) off += m[off] + 1;
+                off += off < n && (m[off] & 0xc0) == 0xc0 ? 2 : 1;
+                if (i < qd) { off += 4; continue; }
+                if (off + 10 > n) break;
+                int type = m[off] << 8 | m[off + 1], rdlen = m[off + 8] << 8 | m[off + 9];
+                off += 10;
+                if (type == 1 && rdlen == 4 && off + 4 <= n) {
+                    snprintf(out_ip, out_len, "%u.%u.%u.%u", m[off], m[off + 1], m[off + 2], m[off + 3]);
+                    rc = 0;
+                }
+                off += rdlen;
+            }
+        }
+    }
+    close(s);
+    return rc;
+}
+
 int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
 {
     if (!hostname || !out_ip || out_len < 16) return -1;
@@ -1058,7 +1135,13 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
         return 0;
     }
 
-    /* 3. Fall back to standard DNS resolution */
+    /* 3. host.local over mDNS */
+    size_t hl = strlen(hostname);
+    if (hl > 6 && !strcasecmp(hostname + hl - 6, ".local") && mdns_resolve(hostname, out_ip, out_len, 1500) == 0) {
+        return 0;
+    }
+
+    /* 4. Fall back to standard DNS resolution */
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;

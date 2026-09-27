@@ -357,17 +357,25 @@ int devos_w_draw_text(lv_layer_t *layer, const lv_font_t *font, int x, int y, in
     lv_draw_label_dsc_init(&ld);
     ld.font = font ? font : &lv_font_nimbus_mono_14;
     ld.color = color;
+    ld.flag = LV_TEXT_FLAG_EXPAND;              /* one line, never wrapped */
+    char buf[256];
+    size_t len = strlen(text);
+    int tw = lv_text_get_width(text, len, ld.font, 0);
+    if (w > 0 && tw > w) {
+        /* too wide: cut it and end with an ellipsis */
+        int ew = lv_text_get_width("...", 3, ld.font, 0);
+        size_t n = len < sizeof(buf) - 4 ? len : sizeof(buf) - 4;
+        while (n > 0 && lv_text_get_width(text, n, ld.font, 0) + ew > w) n--;
+        while (n > 0 && (text[n] & 0xc0) == 0x80) n--;      /* not mid UTF-8 character */
+        memcpy(buf, text, n);
+        memcpy(buf + n, "...", 4);
+        text = buf;
+        tw = lv_text_get_width(buf, strlen(buf), ld.font, 0);
+    }
     ld.text = text;
     ld.text_local = 1;
-    int tw = lv_text_get_width(text, strlen(text), ld.font, 0);
-    if (w > 0 && tw > w) {
-        ld.flag = LV_TEXT_FLAG_NONE;
-        tw = w;
-    } else {
-        ld.flag = LV_TEXT_FLAG_EXPAND;
-    }
     int h = lv_font_get_line_height(ld.font);
-    lv_area_t a = { x, y, x + (w > 0 ? w : tw + 8) - 1, y + h - 1 };
+    lv_area_t a = { x, y, x + tw + 2, y + h - 1 };
     lv_draw_label(layer, &ld, &a);
     return x + tw;
 }
