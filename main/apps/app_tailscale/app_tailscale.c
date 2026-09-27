@@ -16,6 +16,7 @@
  */
 #include "app_tailscale.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_tailnet.h"
 #include "devos_wireguard.h"
 #include "devos_theme.h"
@@ -897,6 +898,7 @@ devos_app_descriptor_t *app_tailscale_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_TAILSCALE;
     app_descriptor.uid = "tailscale";
     app_descriptor.icon = LV_SYMBOL_LOOP;
+    app_descriptor.draw_icon = devos_icon_tailscale;
     app_descriptor.category = "network";
     app_descriptor.name = "Tailscale";
     app_descriptor.title = "Tailscale";

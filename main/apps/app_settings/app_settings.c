@@ -24,6 +24,7 @@
 #include "app_settings.h"
 #include "devos_config.h"
 #include "devos_focus.h"
+#include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_power.h"
 #include "devos_ota.h"
@@ -1729,13 +1730,14 @@ static void build_app_rows(void)
             focus_add(SEC_APPS, &s_pf[SEC_APPS], r->sw);
         }
 
-        char name[64];
-        snprintf(name, sizeof(name), "%s%s%s", app->icon ? app->icon : "", app->icon ? "  " : "",
-                 app->name ? app->name : app->uid);
-        lv_obj_t *l = mk_label(row, &st_text, name);
-        lv_obj_set_pos(l, 64, 2);
+        lv_obj_t *ic = devos_icon_create(row, 18);
+        lv_obj_add_style(ic, &st_text, 0);
+        lv_obj_set_pos(ic, 62, 2);
+        devos_icon_set_app(ic, app);
+        lv_obj_t *l = mk_label(row, &st_text, app->name ? app->name : app->uid);
+        lv_obj_set_pos(l, 88, 2);
         l = mk_label(row, &st_muted, app->subtitle ? app->subtitle : "");
-        lv_obj_set_pos(l, 64, 24);
+        lv_obj_set_pos(l, 88, 24);
         lv_obj_set_width(l, 480);
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
 

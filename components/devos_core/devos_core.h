@@ -43,6 +43,9 @@ typedef struct {
     bool (*handle_key)(uint32_t key, uint8_t modifiers);
     /* Live tile lines; NULL = static subtitle fallback. Return count. */
     int (*get_telemetry_lines)(char lines[3][64]);
+    /* Optional vector icon (see devos_icons.h) drawn to fit `area` in `color`
+     * (brand marks keep their own colours). NULL = the `icon` symbol. */
+    void (*draw_icon)(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 } devos_app_descriptor_t;
 
 typedef struct {

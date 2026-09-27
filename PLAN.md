@@ -441,6 +441,10 @@ services in the REST client).
     queued Core 0 worker the UI polls. The simulator does HTTPS when built against mbedTLS headers.
 *   `devos_widgets` (devos_ui): pre-styled buttons, fields, dropdowns, panels, dialogs, key
     footer and a virtual list, all restyled on theme change - new apps need no apply_theme().
+*   `devos_icons` (devos_ui): vector app icons drawn with LVGL primitives on a 20 x 20 grid, so
+    one design serves the 22 px launcher tiles, Settings > Apps and the 16 px top bar marks, in
+    the theme colour (WireGuard keeps its red roundel). An app sets `draw_icon` in its
+    descriptor; without one its LV symbol is shown.
 *   `devos_net_resolve()` answers `name.local` with a one-shot mDNS query (lwIP's resolver
     can't), so homeassistant.local / piaware.local / raspberrypi.local work in every app.
 *   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something

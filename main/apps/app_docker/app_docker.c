@@ -11,6 +11,7 @@
  */
 #include "app_docker.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_core.h"
 #include "devos_focus.h"
 #include "devos_theme.h"
@@ -624,6 +625,7 @@ devos_app_descriptor_t *app_docker_get_descriptor(void)
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
     s_desc.uid = "docker";
     s_desc.icon = LV_SYMBOL_DRIVE;
+    s_desc.draw_icon = devos_icon_docker;
     s_desc.category = "network";
     s_desc.name = "Docker";
     s_desc.title = "Docker";

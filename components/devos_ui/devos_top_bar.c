@@ -1,5 +1,6 @@
 #include "devos_top_bar.h"
 #include "devos_theme.h"
+#include "devos_icons.h"
 #include "devos_core.h"
 #include "devos_config.h"
 #include <stdio.h>
@@ -39,79 +40,20 @@ static void wireguard_icon_click_cb(lv_event_t *e)
     devos_core_switch_app(DEVOS_APP_WIREGUARD);
 }
 
-/* WireGuard mark (16x16): a red roundel with the white curled dragon,
- * reduced to a hooked stroke and an eye. */
+/* The Tailscale / WireGuard marks next to the IP (devos_icons, as on the
+ * launcher tiles). */
 static void wireguard_icon_draw_cb(lv_event_t *e)
 {
-    lv_layer_t *layer = lv_event_get_layer(e);
-    lv_obj_t *obj = lv_event_get_current_target(e);
     lv_area_t c;
-    lv_obj_get_coords(obj, &c);
-
-    lv_draw_rect_dsc_t disc;
-    lv_draw_rect_dsc_init(&disc);
-    disc.radius = LV_RADIUS_CIRCLE;
-    disc.bg_color = lv_color_hex(0xC4262E);
-    disc.bg_opa = LV_OPA_COVER;
-    lv_draw_rect(layer, &disc, &c);
-
-    lv_draw_arc_dsc_t arc;
-    lv_draw_arc_dsc_init(&arc);
-    arc.color = lv_color_white();
-    arc.width = 2;
-    arc.rounded = 1;
-    arc.center.x = c.x1 + 7;
-    arc.center.y = c.y1 + 9;
-    arc.radius = 4;
-    arc.start_angle = 180;          /* left, over the top, round to the lower right */
-    arc.end_angle = 60;
-    lv_draw_arc(layer, &arc);
-
-    lv_draw_rect_dsc_t eye;
-    lv_draw_rect_dsc_init(&eye);
-    eye.radius = LV_RADIUS_CIRCLE;
-    eye.bg_color = lv_color_white();
-    eye.bg_opa = LV_OPA_COVER;
-    lv_area_t ea = { c.x1 + 10, c.y1 + 3, c.x1 + 12, c.y1 + 5 };
-    lv_draw_rect(layer, &eye, &ea);
+    lv_obj_get_coords(lv_event_get_current_target(e), &c);
+    devos_icon_wireguard(lv_event_get_layer(e), &c, lv_color_white());
 }
 
 static void tailscale_icon_draw_cb(lv_event_t *e)
 {
-    lv_layer_t *layer = lv_event_get_layer(e);
-    lv_obj_t *obj = lv_event_get_current_target(e);
-    lv_area_t coords;
-    lv_obj_get_coords(obj, &coords);
-
-    const devos_palette_t *p = devos_theme_get();
-
-    /* Tailscale 3x3 dot matrix logo (16x16 area):
-     * Active dots (solid): middle row (r=1) and bottom center (r=2, c=1)
-     * Inactive dots (faint): remainder of 3x3 grid
-     */
-    const int dot_size = 4;
-    const int step = 6;
-
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) {
-            bool active = (r == 1) || (r == 2 && c == 1);
-
-            lv_draw_rect_dsc_t rect_dsc;
-            lv_draw_rect_dsc_init(&rect_dsc);
-            rect_dsc.radius = LV_RADIUS_CIRCLE;
-            rect_dsc.bg_color = active ? p->accent_secondary : p->text_muted;
-            rect_dsc.bg_opa = active ? LV_OPA_COVER : LV_OPA_40;
-            rect_dsc.border_width = 0;
-
-            lv_area_t dot_area;
-            dot_area.x1 = coords.x1 + c * step;
-            dot_area.y1 = coords.y1 + r * step;
-            dot_area.x2 = dot_area.x1 + dot_size - 1;
-            dot_area.y2 = dot_area.y1 + dot_size - 1;
-
-            lv_draw_rect(layer, &rect_dsc, &dot_area);
-        }
-    }
+    lv_area_t c;
+    lv_obj_get_coords(lv_event_get_current_target(e), &c);
+    devos_icon_tailscale(lv_event_get_layer(e), &c, devos_theme_get()->accent_secondary);
 }
 
 static void on_theme_change(const devos_palette_t *p, void *user_data)

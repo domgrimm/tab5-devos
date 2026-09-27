@@ -29,6 +29,7 @@
  */
 #include "app_terminal.h"
 #include "devos_config.h"
+#include "devos_icons.h"
 #include "devos_focus.h"
 #include "devos_theme.h"
 #include "devos_vterm.h"
@@ -2114,6 +2115,7 @@ devos_app_descriptor_t *app_terminal_get_descriptor(void)
     app_descriptor.id = DEVOS_APP_TERMINAL;
     app_descriptor.uid = "terminal";
     app_descriptor.icon = LV_SYMBOL_POWER;
+    app_descriptor.draw_icon = devos_icon_terminal;
     app_descriptor.category = "systems";
     app_descriptor.name = "Terminal";
     app_descriptor.title = "Terminal / SSH";
