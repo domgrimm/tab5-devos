@@ -19,3 +19,6 @@ __pycache__/
 *.py[cod]
 .venv/
 ota_out/
+
+# LVGL (tools/fetch_lvgl.sh)
+components/lvgl/

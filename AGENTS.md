@@ -2,7 +2,7 @@
 
 Welcome, coding agent. This document serves as the operational handbook, architectural guide, and rulebook for implementing **`devOS`**—the custom operating system and firmware for the **M5Stack Tab5** with **A164 70-Key Physical Keyboard**.
 
-Always cross-reference [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md) for detailed feature specifications and system state.
+Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications and system state.
 
 ---
 
@@ -216,7 +216,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 
 ## 6. Implementation Workflow for Agents
 
-When implementing tasks from [PLAN.md](file:///home/dom/dev/tab5-devos/PLAN.md):
+When implementing tasks from [PLAN.md](PLAN.md):
 
 1. **Pick one atomic phase/component at a time** (e.g. Phase 0 Hardware Spike, Phase 1 Home Screen, Phase 3 Terminal).
 2. **Review dependencies first**—ensure required hardware pins, FreeRTOS queues, and header interfaces exist before writing high-level app logic.
