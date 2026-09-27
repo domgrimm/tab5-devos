@@ -248,6 +248,17 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
     *   **Saving:** Safe saves (written to a temp file, then renamed over the original); autosave after 30 s idle and when leaving the app. Save failures show in the status line.
     *   **Session Memory:** Last folder, file, view mode and hidden-files setting are kept in `/sdcard/.devos/editor.json`; the first run opens `notes/welcome.md`.
     *   **View Modes:** `Ctrl+P` cycles Edit → Split → Preview; the preview re-renders about 350 ms after typing stops.
+    *   **Scratchpad & Voice Memos (merged in instead of a separate app):** `Ctrl + J` opens
+        `/notes/scratchpad.md`; `Ctrl + T` appends `- HH:MM ` under today's `## <date>` heading
+        (added when the day changes); `Ctrl + R` records a voice memo into `memos/` next to the
+        note (ES7210 front mics mixed to mono, 16 kHz 16-bit WAV, written while recording) and
+        puts `[voice memo 0:23](memos/memo-....wav)` at the cursor; `Ctrl + L` plays the memo on
+        the cursor's line; `Ctrl + M` lists the folder's memos (play, transcribe, insert link,
+        delete, settings: mic gain, speaker volume, transcription). `.wav` files play from the file
+        list. Optional transcription posts the WAV to an OpenAI-compatible
+        `/v1/audio/transcriptions` endpoint (OpenAI, faster-whisper, whisper.cpp; key in NVS) and
+        puts `  > transcript` under its link. Audio engine: `devos_audio` (esp_codec_dev ES7210 +
+        ES8388 on I2S1, full duplex at 48 kHz, as M5Stack's BSP).
     *   **Markdown Renderer (shared `devos_mdview`, spangroup-based blocks):** H1–H6 (distinct size/color ladder), fenced code (single padded Nimbus Mono 14 block), GFM tables with/without outer pipes (`+---+` grid, header separator, `:--`/`:--:`/`--:` alignment, shrink-to-fit), `---`/`***`/`___` rules, blockquotes, ul/ol (renumbered)/task lists, paragraphs.
     *   **Inline:** `**bold**` (underline — only a regular font exists), `*italic*` (secondary color), `~~strike~~` (decor), `` `code` ``, `[t](u)` (URL kept visible; balanced parens, `<dest>`, titles), `![a](s)`, `<autolink>`, backslash escapes, `*`/`_` flanking rules.
     *   **Renderer Limits (documented in code):** setext headings, reference links, nested-bracket links, indented code blocks, bare-URL linking, `\|` table escapes, CJK column widths.
@@ -625,6 +636,7 @@ tab5-devos/
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
 │   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
 │   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
+│   ├── devos_audio/               # ES7210 / ES8388 voice memos (record + play WAV)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer

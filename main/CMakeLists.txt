@@ -3,6 +3,7 @@ set(APP_SRCS
     "apps/app_launcher/app_launcher.c"
     "apps/app_terminal/app_terminal.c"
     "apps/app_editor/app_editor.c"
+    "apps/app_editor/ed_voice.c"
     "apps/app_tailscale/app_tailscale.c"
     "apps/app_mqtt/app_mqtt.c"
     "apps/app_wireguard/app_wireguard.c"
@@ -58,6 +59,7 @@ idf_component_register(
         devos_adsb
         devos_totp
         devos_crypto
+        devos_audio
         lvgl
         nvs_flash
 )

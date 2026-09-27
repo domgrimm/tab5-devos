@@ -121,13 +121,14 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
         if (mod & KMOD_SHIFT) devos_mods |= DEVOS_MOD_SHIFT;
         if (mod & KMOD_ALT) devos_mods |= DEVOS_MOD_ALT;
 
-        /* Map F-keys or Alt/Ctrl keys as Fn */
-        if (sym == SDLK_F1 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_t)) {
+        /* F-keys stand in for Sym shortcuts. (Ctrl+T / F / E used to as well, but
+         * they are real app shortcuts: editor find, timestamp ...) */
+        if (sym == SDLK_F1) {
             /* Simulate Fn + T */
             devos_core_dispatch_key('t', DEVOS_MOD_FN);
             return 0;
         }
-        if (sym == SDLK_F2 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_f)) {
+        if (sym == SDLK_F2) {
             /* Simulate Fn + F */
             devos_core_dispatch_key('f', DEVOS_MOD_FN);
             return 0;
@@ -142,7 +143,7 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key('r', DEVOS_MOD_FN);
             return 0;
         }
-        if (sym == SDLK_F5 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_e)) {
+        if (sym == SDLK_F5) {
             /* Simulate Fn + E (Arrange Mode) */
             devos_core_dispatch_key('e', DEVOS_MOD_FN);
             return 0;

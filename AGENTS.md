@@ -103,6 +103,7 @@ tab5-devos/
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
 │   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
 │   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
+│   ├── devos_audio/               # ES7210 / ES8388 voice memos (record + play WAV)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
@@ -118,7 +119,7 @@ tab5-devos/
 │   ├── apps/
 │   │   ├── app_launcher/          # Home Screen dashboard & live app tiles
 │   │   ├── app_terminal/          # Multi-session SSH client (collapsible panel)
-│   │   ├── app_editor/            # SD card file browser, Markdown & text editor
+│   │   ├── app_editor/            # SD card file browser, Markdown & text editor, scratchpad + voice memos
 │   │   ├── app_tailscale/         # Tailnet status & peer list
 │   │   ├── app_wireguard/         # WireGuard tunnels from wg-quick configs
 │   │   ├── app_mqtt/              # MQTT monitor & publisher
