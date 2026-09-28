@@ -41,6 +41,7 @@ idf_component_register(
         devos_ui
         devos_config
         devos_storage
+        devos_fileshare
         devos_power
         devos_ota
         bsp_tab5

@@ -68,6 +68,7 @@ static const char *WELCOME_MD_CONTENT =
 "### Features\n\n"
 "- [x] Multi-session SSH terminal\n"
 "- [x] Markdown editor and SD card file browser\n"
+"- [x] File sharing: add and remove files on the SD card from a browser (Settings > File Sharing)\n"
 "- [x] Tailscale and WireGuard (put wg-quick .conf files in /wireguard, or press Q to scan a QR code)\n"
 "- [x] MQTT monitor & publisher\n"
 "- [x] Network tools (ping, DNS, port scan, Wi-Fi survey, mDNS) and a REST / webhook client\n"

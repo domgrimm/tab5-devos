@@ -3,6 +3,7 @@
 #include "devos_icons.h"
 #include "devos_core.h"
 #include "devos_config.h"
+#include "devos_fileshare.h"
 #include <stdio.h>
 
 static lv_obj_t *top_bar_container = NULL;
@@ -14,6 +15,7 @@ static lv_obj_t *icon_tailscale = NULL;
 static lv_obj_t *icon_wireguard = NULL;
 static lv_obj_t *lbl_ip = NULL;
 static lv_obj_t *lbl_battery = NULL;
+static lv_obj_t *lbl_share = NULL;         /* the SD card is shared (Settings > File Sharing) */
 static lv_obj_t *lbl_clock = NULL;
 
 static void home_btn_cb(lv_event_t *e)
@@ -76,6 +78,7 @@ static void on_theme_change(const devos_palette_t *p, void *user_data)
 
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_color(lbl_clock, p->text_primary, 0);
+    lv_obj_set_style_text_color(lbl_share, p->accent_warning, 0);
 }
 
 lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
@@ -194,6 +197,15 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_battery, &lv_font_montserrat_14, 0);
 
+    /* 6. File sharing on: amber SD card left of the battery; tap for Settings */
+    lbl_share = lv_label_create(top_bar_container);
+    lv_label_set_text(lbl_share, LV_SYMBOL_SD_CARD " Shared");
+    lv_obj_set_style_text_color(lbl_share, p->accent_warning, 0);
+    lv_obj_set_style_text_font(lbl_share, &lv_font_montserrat_14, 0);
+    lv_obj_add_flag(lbl_share, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_ext_click_area(lbl_share, 16);
+    lv_obj_add_event_cb(lbl_share, wifi_label_click_cb, LV_EVENT_CLICKED, NULL);
+
     /* Register theme listener */
     devos_theme_add_listener(on_theme_change, NULL);
 
@@ -289,4 +301,11 @@ void devos_top_bar_update(void)
     lv_label_set_text(lbl_clock, buf);
     /* Battery sits left of the clock; re-anchor as both widths change. */
     lv_obj_align_to(lbl_battery, lbl_clock, LV_ALIGN_OUT_LEFT_MID, -22, 0);
+
+    if (devos_fileshare_running()) {
+        lv_obj_remove_flag(lbl_share, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align_to(lbl_share, lbl_battery, LV_ALIGN_OUT_LEFT_MID, -22, 0);
+    } else {
+        lv_obj_add_flag(lbl_share, LV_OBJ_FLAG_HIDDEN);
+    }
 }

@@ -1415,3 +1415,62 @@ int devos_net_socket_connect_wait(int sock, int timeout_ms)
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tio, sizeof(tio));
     return 0;
 }
+
+static void set_io_timeouts(int sock, int timeout_ms)
+{
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+int devos_net_socket_listen(int port, int backlog)
+{
+    if (port <= 0 || port > 65535) return -1;
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+#ifndef ESP_PLATFORM
+    /* the simulator forks ssh: don't hand it the port */
+    fcntl(sock, F_SETFD, FD_CLOEXEC);
+#endif
+    int one = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in me;
+    memset(&me, 0, sizeof(me));
+    me.sin_family = AF_INET;
+    me.sin_port = htons((uint16_t)port);
+    me.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, (struct sockaddr *)&me, sizeof(me)) != 0 || listen(sock, backlog) != 0) {
+        close(sock);
+        return -1;
+    }
+    return sock;
+}
+
+int devos_net_socket_accept(int listen_sock, int wait_ms, int io_timeout_ms, char *peer, size_t peer_cap)
+{
+    if (listen_sock < 0) return -1;
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(listen_sock, &rfds);
+    struct timeval tv;
+    tv.tv_sec = wait_ms / 1000;
+    tv.tv_usec = (wait_ms % 1000) * 1000;
+    int rc = select(listen_sock + 1, &rfds, NULL, NULL, &tv);
+    if (rc == 0 || (rc < 0 && errno == EINTR)) return -2;
+    if (rc < 0) return -1;
+
+    struct sockaddr_in from;
+    socklen_t flen = sizeof(from);
+    int sock = accept(listen_sock, (struct sockaddr *)&from, &flen);
+    if (sock < 0) return (errno == EAGAIN || errno == EINTR) ? -2 : -1;
+#ifndef ESP_PLATFORM
+    fcntl(sock, F_SETFD, FD_CLOEXEC);
+#endif
+    set_io_timeouts(sock, io_timeout_ms);
+    if (peer && peer_cap) {
+        if (!inet_ntop(AF_INET, &from.sin_addr, peer, (socklen_t)peer_cap)) peer[0] = '\0';
+    }
+    return sock;
+}

@@ -118,6 +118,13 @@ void devos_net_socket_route(int sock, uint32_t dest_ip);
 int devos_net_socket_connect_start(const char *host, int port);
 int devos_net_socket_connect_wait(int sock, int timeout_ms);
 
+/* Servers: a TCP socket listening on every interface (Wi-Fi and any VPN
+ * tunnel), or -1. accept waits up to wait_ms for a client: returns its fd
+ * (with io_timeout_ms send / receive timeouts) and, if peer is given, its
+ * address; -2 if nobody came in time, -1 on error. */
+int devos_net_socket_listen(int port, int backlog);
+int devos_net_socket_accept(int listen_sock, int wait_ms, int io_timeout_ms, char *peer, size_t peer_cap);
+
 /* One-shot HTTP/1.1 GET (blocking, bounded by timeout_ms). Returns 0 with
  * status + body shifted to resp[0], -1 on transport error. UI actions only. */
 int devos_net_http_get(const char *host, int port, const char *path,

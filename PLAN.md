@@ -433,6 +433,26 @@ services in the REST client).
     a key held before it attaches). The choices are in NVS, so they survive OTA updates.
     `tools/apps_mask_test.c` covers the mask, rollback and safe start.
 
+### 3.17 File Sharing (Settings > File Sharing, `devos_fileshare`)
+
+*   The SD card as a web page: a Core 0 listener on port 80 (8080 in the simulator) on every
+    interface, so Wi-Fi, Tailscale and WireGuard all reach it; each connection gets a short-lived
+    worker (at most 3 at once, the rest wait in the backlog), one request per connection, file
+    data in 16 KB PSRAM chunks.
+*   Off at every boot. Switching it on makes a new 8-character password (HTTP Basic, any user
+    name; a wrong one costs a 1 s wait). Every change (PUT upload, DELETE, POST mkdir / rename)
+    also needs an `X-Devos: 1` header so a page on another site can't use a logged-in browser
+    (CSRF). Paths are card-relative; `..`, control characters and FAT-illegal characters are
+    refused. Files are served with `Content-Security-Policy: sandbox` and HTML / SVG as text.
+*   Uploads go to `<name>.part~` and replace the old file only once complete; missing folders
+    are made (folder upload). Folder deletes need `recursive=1` (the page asks first).
+*   The page (`fileshare_page.c`, plain HTML + JS, no external files): breadcrumbs, upload
+    files / folders by button or drag and drop with progress, download, rename, new folder,
+    delete, hidden-file toggle, free space; follows the browser's light / dark setting.
+*   Settings shows the address (Wi-Fi, else a tunnel address), the password, a curl example,
+    live activity and free space; the top bar shows an amber **Shared** mark while it's on.
+    `tools/fileshare_test.c` drives the server end to end over loopback sockets.
+
 ### 3.11 Shared building blocks
 
 *   `devos_http`: HTTP/1.1 client over the devos_net sockets, HTTPS through mbedTLS (IDF CA
@@ -581,6 +601,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >    whole BSP moved off the legacy I2C driver); `esp_cam_sensor` is pinned to 0.9.0 because 1.x
 >    needs esp-idf-kconfig >= 2.5. Preview verified on hardware; QR decoding reworked after the
 >    first hardware test found nothing and a second launch got no frames.
+> 8. File sharing (v0.3.0, 2026-09-28): host end-to-end test + simulator + headless-browser
+>    checks pass; not yet run on hardware (SD throughput and lwIP socket limits to confirm).
 
 ### Phase 0: Foundation & Hardware Validation (Spike)
 - [x] Configure ESP-IDF v5.4.x development environment for target `esp32p4`.
@@ -652,6 +674,7 @@ tab5-devos/
 │   ├── devos_ui/                  # LVGL v9 themes, widgets, top bar, code viewer (devos_codeview)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP routing, virtual transport
 │   ├── devos_storage/             # MicroSD mount, auto-scaffolding bootstrap
+│   ├── devos_fileshare/           # SD card as a web page: HTTP server + page (Settings > File Sharing)
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
@@ -702,6 +725,7 @@ tab5-devos/
 │   ├── md_preview_test.c          # Host-side unit test for the Markdown renderer
 │   ├── modular_launcher_test.c    # Host-side unit test for modular app registry & pagination
 │   ├── ota_test.c                 # Host-side unit test for the OTA manifest check & power states
+│   ├── fileshare_test.c           # Host-side end-to-end test of the file-sharing server
 │   └── vterm_test.c               # Host-side unit test for the terminal emulator
 ```
 
