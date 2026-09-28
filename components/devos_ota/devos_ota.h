@@ -31,7 +31,8 @@ typedef enum {
     DEVOS_OTA_UP_TO_DATE,
     DEVOS_OTA_AVAILABLE,        /* newer version found: devos_ota_apply() */
     DEVOS_OTA_DOWNLOADING,      /* see devos_ota_progress() */
-    DEVOS_OTA_VERIFYING,
+    DEVOS_OTA_VERIFYING,        /* checking the downloaded image */
+    DEVOS_OTA_WRITING,          /* writing it to the OTA slot (progress) */
     DEVOS_OTA_REBOOTING,
     DEVOS_OTA_FAILED,           /* see devos_ota_update_text() */
 } devos_ota_state_t;
@@ -44,7 +45,7 @@ int devos_ota_apply(void);
 bool devos_ota_busy(void);
 bool devos_ota_has_update(void);
 devos_ota_state_t devos_ota_state(void);
-/* Download progress 0..100 (-1 when not downloading). */
+/* Download / install progress 0..100 (-1 otherwise). */
 int devos_ota_progress(void);
 /* One-line human status ("Up to date (v0.1.0)", "Downloading 42%"...). */
 const char *devos_ota_update_text(void);
