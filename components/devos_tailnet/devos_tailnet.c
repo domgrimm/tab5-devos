@@ -328,6 +328,7 @@ static void snapshot(void)
     else s_info.ip[0] = '\0';
     if (domain[0]) snprintf(s_info.domain, sizeof(s_info.domain), "%s", domain);
     snprintf(s_info.derp, sizeof(s_info.derp), "%s", derp);
+    s_info.derp_ms = region && region == ml->derp_measured_region ? ml->derp_measured_ms : 0;
     s_info.derp_connected = (xEventGroupGetBits(ml->events) & ML_EVT_DERP_CONNECTED) != 0;
     s_info.key_expiry = ml->key_expiry_epoch;
     s_info.key_expired = ml->key_expired;

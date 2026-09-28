@@ -169,6 +169,8 @@ static void set_state(devos_wifi_state_t st, const char *ssid, const char *err)
     if (err) snprintf(s_st.last_error, sizeof(s_st.last_error), "%s", err);
     if (st != DEVOS_WIFI_STATE_CONNECTED) {
         s_st.ip[0] = s_st.gateway[0] = s_st.netmask[0] = s_st.dns[0] = '\0';
+        s_st.bssid[0] = '\0';
+        s_st.channel = 0;
         s_st.rssi = 0;
     }
     unlock();
@@ -526,6 +528,14 @@ static void on_disconnected(uint8_t reason)
     if (saved_count() > 0) schedule(CMD_AUTO, backoff_next());
 }
 
+/* BSSID and channel of the access point (under the lock). */
+static void ap_details(const wifi_ap_record_t *ap)
+{
+    const uint8_t *b = ap->bssid;
+    snprintf(s_st.bssid, sizeof(s_st.bssid), "%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
+    s_st.channel = ap->primary;
+}
+
 static void on_got_ip(const esp_netif_ip_info_t *ip)
 {
     wifi_ap_record_t ap;
@@ -538,7 +548,10 @@ static void on_got_ip(const esp_netif_ip_info_t *ip)
     if (esp_netif_get_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
         esp_ip4addr_ntoa(&dns.ip.u_addr.ip4, s_st.dns, sizeof(s_st.dns));
     }
-    if (have_ap) s_st.rssi = ap.rssi;
+    if (have_ap) {
+        s_st.rssi = ap.rssi;
+        ap_details(&ap);
+    }
     s_st.state = DEVOS_WIFI_STATE_CONNECTED;
     s_st.connected = true;
     snprintf(s_st.ssid, sizeof(s_st.ssid), "%s", s_target_ssid);
@@ -725,7 +738,10 @@ void devos_net_wifi_refresh_rssi(void)
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
         lock();
-        if (s_st.state == DEVOS_WIFI_STATE_CONNECTED) s_st.rssi = ap.rssi;
+        if (s_st.state == DEVOS_WIFI_STATE_CONNECTED) {
+            s_st.rssi = ap.rssi;
+            ap_details(&ap);    /* roaming changes it */
+        }
         unlock();
     }
 }
@@ -908,6 +924,8 @@ static void sim_tick(void)
         s_st.state = DEVOS_WIFI_STATE_CONNECTED;
         s_st.connected = true;
         s_st.rssi = -60;
+        snprintf(s_st.bssid, sizeof(s_st.bssid), "a4:2b:b0:5e:10:c2");
+        s_st.channel = 6;
         snprintf(s_st.ip, sizeof(s_st.ip), "192.168.1.150");
         snprintf(s_st.gateway, sizeof(s_st.gateway), "192.168.1.1");
         snprintf(s_st.netmask, sizeof(s_st.netmask), "255.255.255.0");
@@ -928,6 +946,8 @@ int devos_net_init(void)
     s_st.connected = true;
     snprintf(s_st.ssid, sizeof(s_st.ssid), "HomeWiFi");
     s_st.rssi = -58;
+    snprintf(s_st.bssid, sizeof(s_st.bssid), "a4:2b:b0:5e:10:c2");
+    s_st.channel = 6;
     snprintf(s_st.ip, sizeof(s_st.ip), "192.168.1.150");
     snprintf(s_st.gateway, sizeof(s_st.gateway), "192.168.1.1");
     snprintf(s_st.netmask, sizeof(s_st.netmask), "255.255.255.0");

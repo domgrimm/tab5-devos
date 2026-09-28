@@ -27,6 +27,7 @@
 #include "devos_core.h"
 #include "devos_mdview.h"
 #include "devos_codeview.h"
+#include "devos_cmdpal.h"
 #include "ed_voice.h"
 #include <stdio.h>
 #include <time.h>
@@ -1862,9 +1863,21 @@ static lv_obj_t *mk_btn(lv_obj_t *parent, const char *text, int w, lv_event_cb_t
     return b;
 }
 
+static void scratchpad_cmd(void *ud)
+{
+    LV_UNUSED(ud);
+    devos_core_open_with("editor", "scratchpad", NULL);
+}
+
+static const devos_command_t s_scratchpad_cmd = {
+    .title = "Open the scratchpad", .keywords = "scratch scratchpad notes journal log memo jot",
+    .hint = "Editor", .icon = LV_SYMBOL_EDIT, .run = scratchpad_cmd,
+};
+
 static void editor_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
+    devos_cmdpal_add(&s_scratchpad_cmd);
 
     screen = lv_obj_create(lv_screen_active());
     app_descriptor.screen = screen;
@@ -2128,6 +2141,11 @@ static void editor_show(void)
     }
     apply_layout();
     refresh_status();
+
+    char action[16];
+    if (devos_core_take_intent("editor", action, sizeof(action), NULL, 0) && !strcmp(action, "scratchpad")) {
+        open_scratchpad();
+    }
 }
 
 static void editor_hide(void)

@@ -353,10 +353,33 @@ void devos_core_set_restart_cb(devos_restart_fn cb) { s_restart_cb = cb; }
 
 void devos_core_restart(void)
 {
+    /* Leave the current app first: apps finish up in hide() (the editor
+     * saves its file, recordings stop). */
+    devos_app_descriptor_t *cur = devos_core_get_app(devos_core_get_current_app());
+    if (cur && cur->hide) cur->hide();
     printf("[devOS] Restarting\n");
     fflush(stdout);
     if (s_restart_cb) s_restart_cb();
 #ifdef ESP_PLATFORM
     esp_restart();
 #endif
+}
+
+static devos_restart_check_fn s_restart_checks[8];
+static int s_restart_check_count;
+
+void devos_core_add_restart_check(devos_restart_check_fn fn)
+{
+    if (fn && s_restart_check_count < (int)(sizeof(s_restart_checks) / sizeof(s_restart_checks[0]))) {
+        s_restart_checks[s_restart_check_count++] = fn;
+    }
+}
+
+const char *devos_core_restart_check(void)
+{
+    for (int i = 0; i < s_restart_check_count; i++) {
+        const char *why = s_restart_checks[i]();
+        if (why && *why) return why;
+    }
+    return NULL;
 }
