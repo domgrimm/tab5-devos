@@ -1,8 +1,5 @@
 {
   "version": "0.4.1",
-  "url": "tab5-devos-0.4.1.bin",
-  "size": 2525296,
-  "sha256": "aa4cef5ae81f8757d10f0f0227d509dec378eedda565bab4fde8a7b158d074ed",
-  "build": "064b7e453182e7bbfef429a8fd99ee74183ffef9b861a8b618f150f94212e99f",
+  "built": "Sep 28 2026 22:54:31",
   "notes": "Fixes updates over Wi-Fi stopping with a watchdog reset while the new image was written. A Tab5 on 0.3.3 or 0.4.0 still updates with its old installer: install 0.4.1 once by cable from this "
 }

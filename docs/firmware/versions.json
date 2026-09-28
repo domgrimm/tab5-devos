@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.4.1",
+    "built": "Sep 28 2026 22:54:31",
+    "notes": "Fixes updates over Wi-Fi stopping with a watchdog reset while the new image was written. A Tab5 on 0.3.3 or 0.4.0 still updates with its old installer: install 0.4.1 once by cable from this "
+  },
+  {
     "version": "0.4.0",
     "built": "Sep 28 2026 21:55:47",
     "notes": "Command palette: Sym+Space finds any app or command. Sym+I shows battery, memory, network and CPU over any app. Tapping Wi-Fi, battery or the clock in the top bar opens that part of Settings"
