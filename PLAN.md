@@ -609,7 +609,9 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >    image header, build id) and only then written to the spare slot with no network running;
 >    newer versions or other builds of the same one; bootloader rollback; the next boot says
 >    whether it took, rolled back, or stopped halfway. Publish with tools/publish_pages.py.
->    Images are not signed yet.
+>    Images are not signed yet. From 0.4.1 the slot is erased sector by sector as it is written
+>    (`OTA_WITH_SEQUENTIAL_WRITES`), with logging off and the task watchdog ignoring the idle
+>    tasks meanwhile: 0.3.3 / 0.4.0 installs reset on a watchdog during the up-front 2.5 MB erase.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
 > 6. Missing: audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep. (Command palette:
 >    done in v0.4.0.)

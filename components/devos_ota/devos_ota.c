@@ -119,6 +119,8 @@ typedef enum { JOB_CHECK, JOB_INSTALL } ota_job_t;
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
+#include "sdkconfig.h"
 #include "nvs.h"
 
 static const char *TAG = "ota";
@@ -183,9 +185,13 @@ static size_t slot_size(void)
     return s_target ? s_target->size : 0;
 }
 
+/* Erase as we go, one 4 KB sector before each write, rather than the whole
+ * image up front: a 2.5 MB erase is ~40 block erases of 64 KB, each holding
+ * the other core in the flash driver's spin loop, for seconds on end. */
 static int slot_begin(size_t len, char *err, size_t cap)
 {
-    esp_err_t e = esp_ota_begin(s_target, len, &s_ota);
+    (void)len;
+    esp_err_t e = esp_ota_begin(s_target, OTA_WITH_SEQUENTIAL_WRITES, &s_ota);
     if (e != ESP_OK) snprintf(err, cap, "Could not prepare %s: %s", s_target->label, esp_err_to_name(e));
     return e == ESP_OK ? 0 : -1;
 }
@@ -197,7 +203,48 @@ static int slot_write(const uint8_t *d, size_t n, char *err, size_t cap)
         snprintf(err, cap, "Flash write failed: %s", esp_err_to_name(e));
         esp_ota_abort(s_ota);
     }
+    vTaskDelay(1);                      /* a breather for the UI and the idle tasks */
     return e == ESP_OK ? 0 : -1;
+}
+
+/* While the image is written. Every flash operation stalls the other core
+ * and holds off interrupts that aren't in IRAM - the display's end-of-frame
+ * one among them, which then logs "underrun" from its ISR - and a long run of
+ * them starves the idle tasks until the task watchdog prints backtraces, also
+ * from an ISR. Printing from interrupts to a USB console nobody is reading
+ * can stall past the 300 ms interrupt watchdog, the likely reset that stopped
+ * 0.3.3 -> 0.4.0 installs "while writing". So: no logging, and the task
+ * watchdog leaves the idle tasks alone, until the write is done. */
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
+#define TWDT_IDLE_CPU0 1
+#else
+#define TWDT_IDLE_CPU0 0
+#endif
+#if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+#define TWDT_IDLE_CPU1 2
+#else
+#define TWDT_IDLE_CPU1 0
+#endif
+#if CONFIG_ESP_TASK_WDT_PANIC
+#define TWDT_PANIC true
+#else
+#define TWDT_PANIC false
+#endif
+
+static void quiet_while_writing(bool quiet)
+{
+    static esp_log_level_t level = ESP_LOG_INFO;
+    if (quiet) {
+        level = esp_log_get_default_level();
+        esp_log_level_set("*", ESP_LOG_NONE);
+    }
+    esp_task_wdt_config_t c = {
+        .timeout_ms = quiet ? 120000 : CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000,
+        .idle_core_mask = quiet ? 0 : (TWDT_IDLE_CPU0 | TWDT_IDLE_CPU1),
+        .trigger_panic = TWDT_PANIC,
+    };
+    esp_task_wdt_reconfigure(&c);
+    if (!quiet) esp_log_level_set("*", level);
 }
 
 static int slot_finish(char *err, size_t cap)
@@ -263,9 +310,9 @@ static const char *reset_text(void)
 {
     switch (esp_reset_reason()) {
     case ESP_RST_PANIC:    return "it crashed";
-    case ESP_RST_INT_WDT:
-    case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT:      return "a watchdog fired";
+    case ESP_RST_INT_WDT:  return "the interrupt watchdog fired";
+    case ESP_RST_TASK_WDT: return "the task watchdog fired";
+    case ESP_RST_WDT:      return "a hardware watchdog fired";
     case ESP_RST_BROWNOUT: return "the power dipped";
     case ESP_RST_POWERON:  return "it was switched off";
     case ESP_RST_SW:       return "it was restarted";
@@ -370,6 +417,8 @@ static int slot_write(const uint8_t *d, size_t n, char *err, size_t cap)
     s_slot = NULL;
     return -1;
 }
+
+static void quiet_while_writing(bool quiet) { (void)quiet; }
 
 static int slot_finish(char *err, size_t cap)
 {
@@ -545,6 +594,7 @@ static void install_worker(void)
     kv_set("stage", "writing");
     s_state = DEVOS_OTA_WRITING;
     s_progress = 0;
+    snprintf(s_report, sizeof(s_report), "Installing %.20s: 0%% - the screen flickers while flash is written", s_ver);
     enum { CHUNK = 4096 };
 #ifdef ESP_PLATFORM
     uint8_t *bounce = heap_caps_malloc(CHUNK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -557,10 +607,12 @@ static void install_worker(void)
         fail(bounce ? why : "Out of memory");
         return;
     }
+    quiet_while_writing(true);
     for (size_t off = 0; off < n; off += CHUNK) {
         size_t k = n - off < CHUNK ? n - off : CHUNK;
         memcpy(bounce, img + off, k);
         if (slot_write(bounce, k, why, sizeof(why)) != 0) {
+            quiet_while_writing(false);
             free(bounce);
             devos_http_resp_free(&r);
             fail(why);
@@ -572,7 +624,9 @@ static void install_worker(void)
     }
     free(bounce);
     devos_http_resp_free(&r);
-    if (slot_finish(why, sizeof(why)) != 0) {
+    int done = slot_finish(why, sizeof(why));
+    quiet_while_writing(false);
+    if (done != 0) {
         fail(why);
         return;
     }
