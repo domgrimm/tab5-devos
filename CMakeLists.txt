@@ -45,6 +45,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_fileshare
         ${CMAKE_CURRENT_SOURCE_DIR}/components/bsp_tab5
         ${CMAKE_CURRENT_SOURCE_DIR}/components/tab5_keyboard
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_tailnet
@@ -106,6 +107,8 @@ else()
         components/devos_ui/devos_icons.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
+        components/devos_fileshare/devos_fileshare.c
+        components/devos_fileshare/fileshare_page.c
         components/bsp_tab5/bsp_tab5.c
         components/tab5_keyboard/tab5_keyboard.c
         components/devos_tailnet/devos_tailnet.c

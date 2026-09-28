@@ -35,7 +35,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
 7. **Shared Engines, Never Forked Renderers or Parsers:**
    * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview and any future rich-text view. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
    * One JSON reader (`components/devos_json/`), used today by `devos_ota`. Same rule: extend, don't duplicate.
-   * One socket helper layer (`devos_net_socket_*`, incl. `send_all` and non-blocking `connect_start/wait`): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send.
+   * One socket helper layer (`devos_net_socket_*`, incl. `send_all`, non-blocking `connect_start/wait`, and `listen` / `accept` for servers): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send.
    * One HTTP(S) client (`components/devos_http/`): REST calls, APIs and webhooks go through it (never `esp_http_client`, which bypasses the socket layer).
    * One set of screen building blocks (`devos_widgets.h` in `devos_ui`): new apps build buttons, fields, dialogs and lists with it so theming and focus behave the same everywhere.
 
@@ -96,6 +96,7 @@ tab5-devos/
 │   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
+│   ├── devos_fileshare/           # SD card as a password-protected web page (no LVGL; Settings > File Sharing)
 │   ├── devos_json/                # Shared minimal JSON reader + pretty-printer (OTA, MQTT)
 │   ├── devos_mqtt/                # MQTT 3.1.1 client engine (no LVGL)
 │   ├── devos_wireguard/           # wg-quick parser, tunnel storage, WireGuard tunnel
@@ -133,12 +134,12 @@ tab5-devos/
 │   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json) + OSM underlay (adsb_map.c)
 │   │   ├── app_cricket/           # Cricket: live scores, results by date, scorecards
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
-│   │   ├── app_settings/          # Wi-Fi setup, display, power, system telemetry
+│   │   ├── app_settings/          # Wi-Fi setup, file sharing, display, power, system telemetry
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, ota, vterm, crypto, cricket).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, ota, vterm, crypto, cricket, fileshare).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.
