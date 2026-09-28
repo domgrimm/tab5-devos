@@ -62,7 +62,7 @@ typedef struct {
     char keypath[SSH_MAX_PATH_LEN];
 } term_sess_t;
 
-static term_sess_t s_ts[SSH_MAX_SESSIONS];
+static EXT_RAM_BSS_ATTR term_sess_t s_ts[SSH_MAX_SESSIONS];
 
 static devos_app_descriptor_t app_descriptor;
 static lv_obj_t *screen = NULL;
@@ -449,7 +449,7 @@ static void on_state_change(int id, term_sess_t *t, ssh_session_t *s)
 static void poll_cb(lv_timer_t *tm)
 {
     LV_UNUSED(tm);
-    static char buf[4096];
+    static EXT_RAM_BSS_ATTR char buf[4096];
     bool visible = screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN);
     bool states_changed = false;
 

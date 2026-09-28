@@ -220,6 +220,15 @@ static void restart_into_update(void)
     esp_restart();
 }
 
+/* Why a worker task couldn't start: its stack comes from internal RAM. */
+static const char *low_ram_note(void)
+{
+    static char t[64];
+    snprintf(t, sizeof(t), " (internal RAM low: largest free block %u KB)",
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
+    return t;
+}
+
 static void check_worker(void);
 static void install_worker(void);
 
@@ -378,6 +387,8 @@ static void restart_into_update(void)
     s_state = DEVOS_OTA_UP_TO_DATE;
     s_progress = -1;
 }
+
+static const char *low_ram_note(void) { return ""; }
 
 static void check_worker(void);
 static void install_worker(void);
@@ -584,7 +595,7 @@ int devos_ota_check(void)
     s_state = DEVOS_OTA_CHECKING;
     snprintf(s_report, sizeof(s_report), "Checking %.150s ...", s_feed);
     if (start_job(JOB_CHECK) != 0) {
-        snprintf(s_report, sizeof(s_report), "Could not start the update check");
+        snprintf(s_report, sizeof(s_report), "Could not start the update check%s", low_ram_note());
         s_state = DEVOS_OTA_FAILED;
         return -1;
     }
@@ -598,7 +609,7 @@ int devos_ota_apply(void)
     s_progress = 0;
     snprintf(s_report, sizeof(s_report), "Starting download of %.20s ...", s_ver);
     if (start_job(JOB_INSTALL) != 0) {
-        snprintf(s_report, sizeof(s_report), "Could not start the installer");
+        snprintf(s_report, sizeof(s_report), "Could not start the installer%s", low_ram_note());
         s_state = DEVOS_OTA_AVAILABLE;
         s_progress = -1;
         return -1;

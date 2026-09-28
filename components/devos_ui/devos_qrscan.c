@@ -32,7 +32,7 @@ static void tick_cb(lv_timer_t *t)
     }
     devos_qr_state_t st = devos_qr_state();
     if (st == DEVOS_QR_FOUND) {
-        static char text[DEVOS_QR_TEXT_MAX];
+        static EXT_RAM_BSS_ATTR char text[DEVOS_QR_TEXT_MAX];
         if (devos_qr_take_result(text, sizeof(text))) {
             char msg[160] = "";
             bool done = s->cb ? s->cb(text, msg, sizeof(msg)) : true;

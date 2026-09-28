@@ -151,6 +151,10 @@ CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_POLY1305_C=y
 CONFIG_MBEDTLS_CHACHAPOLY_C=y
 CONFIG_MBEDTLS_HKDF_C=y
+# mbedTLS allocates from PSRAM: every TLS session (REST, OTA, maps, Cricket,
+# Tailscale control / DERP) otherwise holds ~20 KB of record buffers in
+# internal RAM, which ran out (tasks failed to start, TLS and SSH timed out).
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_LWIP_SO_RCVBUF=y
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
