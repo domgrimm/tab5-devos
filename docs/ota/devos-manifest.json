@@ -1,8 +1,8 @@
 {
-  "version": "0.3.2",
-  "url": "tab5-devos-0.3.2.bin",
-  "size": 2509728,
-  "sha256": "4b4f1e8821b30ebc65bd3b15dd52238a67ad32d33cad0d84e63dfe909279587a",
-  "build": "efcbf5dc965c51a9e6732058a2136345e262f306c137f096cb1a9527b5f5798a",
-  "notes": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again."
+  "version": "0.3.3",
+  "url": "tab5-devos-0.3.3.bin",
+  "size": 2509360,
+  "sha256": "c2e013c7501c70c6f3a5dc4df7d14d9460ac857a84e825ba3cc78d91a4cbce82",
+  "build": "43e07d3dd5df2d6da1c31b64abd67653cdee433e654617506eb96199eb2d5bee",
+  "notes": "The camera works again (WireGuard and 2FA QR codes)."
 }

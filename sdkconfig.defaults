@@ -28,13 +28,14 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=n
 
-# Keep the display scanning out while flash is written (OTA, NVS saves). The
-# DPI driver restarts its framebuffer DMA from an interrupt at the end of
-# every frame; while the cache is off for a flash write, non-IRAM interrupts
-# wait, the DMA stops and the panel shows a blank light-blue screen until the
-# write ends (flashing during OTA). IRAM-safe, the ISR keeps running. Our
-# on_refresh_done callback is IRAM_ATTR for it (bsp_tab5.c).
-CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
+# NOT CONFIG_LCD_DSI_ISR_IRAM_SAFE. It would keep the display scanning out
+# while flash is written (the DPI driver restarts its framebuffer DMA from an
+# end-of-frame interrupt, held off while the cache is off, so the panel shows
+# a blank light-blue screen during OTA writes and NVS saves). But it makes the
+# shared DW-GDMA interrupt IRAM-only, which can't then share a line with the
+# ordinary handlers on the core that starts the camera: the camera receiver
+# failed with ESP_ERR_NOT_FOUND (0.2.1 - 0.3.2). A working camera beats a
+# steady screen during an update.
 
 # WireGuard (normal mode) runs its handshakes, rekeys and packet crypto on the
 # lwIP tcpip thread (timer + UDP receive callback); 3 KB is too tight for
