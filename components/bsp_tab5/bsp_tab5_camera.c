@@ -3,11 +3,12 @@
 #include "bsp_tab5.h"
 #include "devos_config.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char s_err[96];
+static char s_err[168];
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c_master.h"
@@ -74,9 +75,37 @@ static bool IRAM_ATTR on_trans_done(esp_cam_ctlr_handle_t h, esp_cam_ctlr_trans_
     return woken == pdTRUE;
 }
 
+/* The drivers say why in their own error log line ("intr_alloc: No free
+ * interrupt inputs ...") - keep the last one printed while the camera is
+ * being set up, so the message on screen names the real cause. Only for that
+ * short window: the hook formats on the logging task's stack. */
+static vprintf_like_t s_prev_log;
+static char s_idf_err[112];
+
+static int log_hook(const char *fmt, va_list ap)
+{
+    const char *p = fmt;
+    if (*p == '\033' && (p = strchr(p, 'm')) != NULL) p++;           /* colour code */
+    if (p && p[0] == 'E' && p[1] == ' ' && p[2] == '(') {
+        va_list cp;
+        va_copy(cp, ap);
+        char line[160];
+        vsnprintf(line, sizeof(line), fmt, cp);
+        va_end(cp);
+        const char *m = strstr(line, ") ");                             /* past "E (1234) " */
+        m = m ? m + 2 : line;
+        size_t n = strcspn(m, "\033\r\n");
+        if (n >= sizeof(s_idf_err)) n = sizeof(s_idf_err) - 1;
+        memcpy(s_idf_err, m, n);
+        s_idf_err[n] = '\0';
+    }
+    return s_prev_log ? s_prev_log(fmt, ap) : vprintf(fmt, ap);
+}
+
 static void fail(const char *what, esp_err_t e)
 {
-    snprintf(s_err, sizeof(s_err), "%s (%s)", what, esp_err_to_name(e));
+    if (s_idf_err[0]) snprintf(s_err, sizeof(s_err), "%s (%s): %.60s", what, esp_err_to_name(e), s_idf_err);
+    else snprintf(s_err, sizeof(s_err), "%s (%s)", what, esp_err_to_name(e));
     ESP_LOGE(TAG, "%s", s_err);
 }
 
@@ -274,7 +303,11 @@ bool bsp_tab5_camera_start(void)
     s_err[0] = '\0';
     if (s_streaming) return true;
     if (!s_ready_hw) {
-        if (!hw_init()) {
+        s_idf_err[0] = '\0';
+        s_prev_log = esp_log_set_vprintf(log_hook);
+        bool ok = hw_init();
+        esp_log_set_vprintf(s_prev_log);
+        if (!ok) {
             teardown();
             return false;
         }
