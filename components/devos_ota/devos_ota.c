@@ -567,7 +567,8 @@ static void install_worker(void)
             return;
         }
         s_progress = (int)((off + k) * 100 / n);
-        snprintf(s_report, sizeof(s_report), "Installing %.20s: %d%%", s_ver, s_progress);
+        snprintf(s_report, sizeof(s_report), "Installing %.20s: %d%% - the screen flickers while flash is written",
+                 s_ver, s_progress);
     }
     free(bounce);
     devos_http_resp_free(&r);
