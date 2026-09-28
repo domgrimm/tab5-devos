@@ -1,5 +1,11 @@
 /* devos_mdview: shared CommonMark-subset renderer. See devos_mdview.h. */
 #include "devos_mdview.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
 #include "devos_theme.h"
 #include <stdio.h>
 #include <string.h>
@@ -421,7 +427,7 @@ static lv_obj_t *md_new_block(lv_obj_t *parent, int y)
 }
 
 /* Fence accumulation: one contiguous block, not striped per-line boxes */
-static char s_codebuf[8192];
+static EXT_RAM_BSS_ATTR char s_codebuf[8192];
 static size_t s_codelen = 0;
 static bool s_codedrop = false;
 
@@ -499,8 +505,8 @@ static bool md_is_delim_cell(const char *cell, int *align)
 /* Whole-line delimiter check (for pipe-less GFM table lookahead) */
 static bool md_is_delim_line(const char *s)
 {
-    static char tmp[MD_LINE_MAX];
-    static char cells[MD_TABLE_COLS][MD_CELL_MAX + 1];
+    static EXT_RAM_BSS_ATTR char tmp[MD_LINE_MAX];
+    static EXT_RAM_BSS_ATTR char cells[MD_TABLE_COLS][MD_CELL_MAX + 1];
     size_t n = strlen(s);
     if (n > sizeof(tmp) - 1) n = sizeof(tmp) - 1;
     memcpy(tmp, s, n);
@@ -552,10 +558,10 @@ int devos_md_render(lv_obj_t *parent, const char *text)
     s_codedrop = false;
     if (!text) text = "";
 
-    static char line[MD_LINE_MAX];
-    static char tline[MD_LINE_MAX];
-    static char rowbuf[MD_LINE_MAX];
-    static char cells[MD_TABLE_ROWS][MD_TABLE_COLS][MD_CELL_MAX + 1];
+    static EXT_RAM_BSS_ATTR char line[MD_LINE_MAX];
+    static EXT_RAM_BSS_ATTR char tline[MD_LINE_MAX];
+    static EXT_RAM_BSS_ATTR char rowbuf[MD_LINE_MAX];
+    static EXT_RAM_BSS_ATTR char cells[MD_TABLE_ROWS][MD_TABLE_COLS][MD_CELL_MAX + 1];
 
     bool in_code = false;
     bool in_ol = false;
@@ -643,7 +649,7 @@ int devos_md_render(lv_obj_t *parent, const char *text)
             if (level <= 6 && (t[level] == ' ' || t[level] == '\t' || t[level] == '\0')) {
                 const char *c = t + level;
                 while (*c == ' ' || *c == '\t') c++;
-                static char head[MD_LINE_MAX];
+                static EXT_RAM_BSS_ATTR char head[MD_LINE_MAX];
                 size_t hlen = strlen(c);
                 if (hlen > sizeof(head) - 1) hlen = devos_md_trunc_ok(c, sizeof(head) - 1);
                 memcpy(head, c, hlen);

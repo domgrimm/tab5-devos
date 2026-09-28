@@ -528,7 +528,7 @@ static void log_append(const char *line, size_t n, bool err)
 static void log_ingest(const char *b, size_t n)
 {
     bool mux = n >= 8 && (b[0] == 0 || b[0] == 1 || b[0] == 2) && !b[1] && !b[2] && !b[3];
-    static char part[2][2048];
+    static EXT_RAM_BSS_ATTR char part[2][2048];
     static size_t plen[2];
     plen[0] = plen[1] = 0;
     size_t i = 0;

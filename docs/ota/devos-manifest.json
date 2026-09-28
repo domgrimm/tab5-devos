@@ -1,8 +1,8 @@
 {
-  "version": "0.3.1",
-  "url": "tab5-devos-0.3.1.bin",
-  "size": 2509680,
-  "sha256": "4999817d783870a76fbe2ef7337981630ea1ab545539df93a561c9121f9d02ed",
-  "build": "4a2e8c106f31c1edf00ef269199615e2cfb6ff7f0ebb7800134bf777f8397ee1",
-  "notes": "Updates over Wi-Fi install reliably: downloaded and checked before anything is written. WireGuard no longer restarts the Tab5 on connect."
+  "version": "0.3.2",
+  "url": "tab5-devos-0.3.2.bin",
+  "size": 2509728,
+  "sha256": "4b4f1e8821b30ebc65bd3b15dd52238a67ad32d33cad0d84e63dfe909279587a",
+  "build": "efcbf5dc965c51a9e6732058a2136345e262f306c137f096cb1a9527b5f5798a",
+  "notes": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again."
 }

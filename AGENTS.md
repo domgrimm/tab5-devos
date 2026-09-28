@@ -17,6 +17,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
    * The ESP32-P4 has **32 MB external PSRAM** and ~768 KB internal SRAM.
    * *Allocate in PSRAM (`MALLOC_CAP_SPIRAM`):* LVGL draw buffers, terminal scrollback buffer (up to 10,000 lines), diff text buffers, session caches, and markdown AST nodes.
    * *Reserve Internal SRAM (`MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA`):* Keep at least **120 KB contiguous internal SRAM free** for mbedTLS / SSH handshakes, Wi-Fi SDIO DMA descriptors, and FreeRTOS task stacks.
+   * Static buffers of 1 KB or more that only tasks touch (not ISRs, DMA or code running during flash writes) are `EXT_RAM_BSS_ATTR`: plain `static` arrays land in internal RAM. mbedTLS allocates from PSRAM (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`). After adding an app, check `idf.py size`: DIRAM at 60% (0.3.1) left too little at runtime - tasks failed to start and TLS / SSH timed out.
 
 3. **Collapsible Side Panels:**
    * The editor's file list and the terminal's connections panel are 260px left panels (`DEVOS_PANE_LEFT_WIDTH`). `Sym + L` shows / hides them (the terminal's first press opens the panel and moves keyboard focus into it, a second press hides it; `Esc` there returns to the shell); `Sym + F` also hides the editor's file list. An app that adds a side panel uses the same width and the same key.

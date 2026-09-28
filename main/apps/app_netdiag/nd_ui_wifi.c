@@ -3,6 +3,12 @@
  * over time. Rescans every 3 s while shown (Space pauses). SNR is estimated
  * against a nominal -95 dBm noise floor: the radio doesn't report noise. */
 #include "app_netdiag_int.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
 #include "devos_net.h"
 
 #include <stdio.h>
@@ -15,7 +21,7 @@
 
 static lv_obj_t *lbl_info, *graph, *wf, *btn_pause, *lbl_pause, *btn_sort, *lbl_sort, *btn_now;
 static devos_vlist_t s_list;
-static devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
+static EXT_RAM_BSS_ATTR devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
 static int s_n, s_order[DEVOS_WIFI_MAX_BSS];
 static int8_t s_wf[WF_ROWS][14];
 static int s_wf_n, s_wf_head;

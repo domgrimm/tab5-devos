@@ -1,5 +1,11 @@
 /* devos_netdiag: DNS lookups and mDNS / DNS-SD browsing (one DNS codec). */
 #include "nd_int.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
 #include "devos_net.h"
 
 #include <ctype.h>
@@ -221,7 +227,9 @@ const char *devos_dns_rcode_name(int rc)
 }
 
 /* ------------------------------------------------------------------ unicast lookup */
-static struct {
+/* The big engine state lives in PSRAM (task-only data): internal RAM is for
+ * stacks, DMA, TLS and Wi-Fi. */
+static EXT_RAM_BSS_ATTR struct {
     nd_mutex_t mx;
     devos_dns_result_t res;
     uint32_t gen;
@@ -455,7 +463,7 @@ const char *devos_mdns_type_label(const char *type)
     return NULL;
 }
 
-static struct {
+static EXT_RAM_BSS_ATTR struct {
     nd_mutex_t mx;
     devos_mdns_svc_t *svc;              /* DEVOS_MDNS_MAX, PSRAM */
     int n;
@@ -701,12 +709,12 @@ static void mdns_task(void *arg)
              * for instances missing their SRV / TXT and hosts missing an address */
             const char *names[96];
             uint16_t types[96];
-            static char fulls[48][112];
+            static EXT_RAM_BSS_ATTR char fulls[48][112];
             int n = 0, nf = 0;
             nd_lock(&M.mx);
             names[n] = "_services._dns-sd._udp.local";
             types[n++] = DEVOS_DNS_PTR;
-            static char tq[MAX_TYPES][48];
+            static EXT_RAM_BSS_ATTR char tq[MAX_TYPES][48];
             for (int i = 0; i < M.ntypes && n < 60; i++) {
                 if (M.type_asked[i] >= 2) continue;
                 M.type_asked[i]++;
