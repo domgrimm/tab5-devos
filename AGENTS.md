@@ -44,6 +44,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
    * Adding a new application must never require modifying the Home Screen (`app_launcher.c`) or hardcoding app IDs into closed enums. Use `main/apps/app_template/` as the canonical reference.
    * An app's icon is its descriptor's `draw_icon` (a vector icon from `components/devos_ui/devos_icons.c`; add yours there, on its 20 x 20 grid) or, failing that, its `icon` LV symbol. The launcher tiles, Settings > Apps and the top bar all draw icons through `devos_icon_create()`, so they match everywhere.
+   * An app's commands for the `Sym + Space` palette are added with `devos_cmdpal_add()` (`components/devos_ui/devos_cmdpal.h`) from its `init()`, so a switched-off app's commands vanish with it; the palette already lists every app itself. An action another app or the palette should trigger is an intent handled in `show()` (e.g. Settings' "section", the Editor's "scratchpad"). Anything a restart would lose goes through `devos_core_add_restart_check()`; `devos_core_restart()` hides the current app first, so save in `hide()`.
    * Apps can be switched off in Settings > Apps (a boot mask in devos_core, applied on restart). Always call `devos_core_register_app()`: it skips a switched-off app. Start an app's engine in `main.c` with `START_ENGINE(uid, init())`, and make the engine's status getters return "off" when its init never ran, so other code can call them without checks. Never look up another app by id; use its uid, and handle `devos_core_open_with()` returning false.
 
 9. **Keyboard First, Touch Second:**
@@ -56,7 +57,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
      * `Left` / `Right` change the focused value (slider, dropdown, switch).
      * `Esc` backs out one level: close the dialog, then leave the field or panel, then (unhandled) go to the Home Screen.
      * Frequent actions get a letter shortcut.
-     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel).
+     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel). `Sym + Space` (command palette) and `Sym + I` (system info) are taken by system overlays that see keys before the app.
    * **Visible focus:** whatever the next key will act on is always highlighted: the accent focus ring from `devos_focus`, an app's selection border, or a text cursor.
    * **Discoverable:** every screen shows its keys (a hint line or footer); the welcome note lists the global ones.
    * **Dialogs** take keyboard focus when they open (first field or default button) and give it back when they close; `Enter` confirms, `Esc` cancels.
@@ -94,7 +95,7 @@ tab5-devos/
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher, app on/off boot mask
-│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons
+│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons, devos_cmdpal (Sym+Space), devos_hud (Sym+I)
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
 │   ├── devos_fileshare/           # SD card as a password-protected web page (no LVGL; Settings > File Sharing)
@@ -140,7 +141,7 @@ tab5-devos/
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, ota, vterm, crypto, cricket, fileshare).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, palette, ota, vterm, crypto, cricket, fileshare).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.
@@ -168,7 +169,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T`, `Sym + L`, `Sym + 1..6`).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T` = F1, `Sym + L` = F3, `Sym + 1..6` = Ctrl + 1..6, `Sym + Space` = F6 or Ctrl + Space, `Sym + I` = F7).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target

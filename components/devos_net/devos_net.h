@@ -30,6 +30,8 @@ typedef struct {
     bool connected;
     char ssid[33];                /* connected / connecting network */
     int8_t rssi;
+    char bssid[18];               /* the access point, "aa:bb:cc:dd:ee:ff" ("" = none) */
+    uint8_t channel;
     char ip[16];
     char gateway[16];
     char netmask[16];

@@ -82,7 +82,7 @@ static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
 #define HINT_NORMAL \
     "[Arrows/Tab] Move  |  [Enter/Tap] Launch  |  [1-8] Launch tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN \
-    "] Page  |  [E] Arrange  |  [Sym+T] Theme  |  [Sym+H] Home from any app"
+    "] Page  |  [E] Arrange  |  [Sym+Space] Commands  |  [Sym+I] Info  |  [Sym+T] Theme"
 #define HINT_ARRANGE \
     "[Arrows/Tab] Move  |  [Enter/Tap] Pick up / drop  |  [1-8] Pick / swap slot  |  [H] Hide / show  |  " \
     "[R] Defaults  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page  |  [Esc] Cancel / done"

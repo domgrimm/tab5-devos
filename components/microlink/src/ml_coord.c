@@ -2325,6 +2325,7 @@ void ml_coord_task(void *arg) {
                 uint16_t nearest = ml_stun_pick_derp_region(ml, 1500, &ms);
                 if (nearest) {
                     ml->derp_measured_region = nearest;
+                    ml->derp_measured_ms = ms;
                     ml->derp_home_region = nearest;
                     ESP_LOGI(TAG, "Home DERP region: %d (nearest, %d ms); coord stack free %u",
                              nearest, ms, (unsigned)uxTaskGetStackHighWaterMark(NULL));

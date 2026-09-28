@@ -105,6 +105,9 @@ else()
         components/devos_ui/devos_widgets.c
         components/devos_ui/devos_qrscan.c
         components/devos_ui/devos_icons.c
+        components/devos_ui/devos_match.c
+        components/devos_ui/devos_cmdpal.c
+        components/devos_ui/devos_hud.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/devos_fileshare/devos_fileshare.c

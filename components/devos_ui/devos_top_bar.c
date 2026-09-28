@@ -24,10 +24,11 @@ static void home_btn_cb(lv_event_t *e)
     devos_core_switch_app(DEVOS_APP_LAUNCHER);
 }
 
-static void wifi_label_click_cb(lv_event_t *e)
+/* Wi-Fi, File Sharing, battery and clock open their Settings section
+ * (user data: the section's intent name). */
+static void settings_section_click_cb(lv_event_t *e)
 {
-    LV_UNUSED(e);
-    devos_core_switch_app(DEVOS_APP_SETTINGS);
+    devos_core_open_with("settings", "section", (const char *)lv_event_get_user_data(e));
 }
 
 static void tailscale_icon_click_cb(lv_event_t *e)
@@ -131,7 +132,7 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(lbl_wifi, &lv_font_montserrat_12, 0);
     lv_obj_add_flag(lbl_wifi, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(lbl_wifi, 16);
-    lv_obj_add_event_cb(lbl_wifi, wifi_label_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(lbl_wifi, settings_section_click_cb, LV_EVENT_CLICKED, (void *)"wifi");
 
     /* 3. Local Network IP + Optional Tailscale Status Icon */
     box_ip = lv_obj_create(top_bar_container);
@@ -189,6 +190,9 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_align(lbl_clock, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_text_color(lbl_clock, p->text_primary, 0);
     lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_14, 0);
+    lv_obj_add_flag(lbl_clock, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(lbl_clock, 16);
+    lv_obj_add_event_cb(lbl_clock, settings_section_click_cb, LV_EVENT_CLICKED, (void *)"time");
 
     /* 5. Battery Status */
     lbl_battery = lv_label_create(top_bar_container);
@@ -196,15 +200,18 @@ lv_obj_t *devos_top_bar_create(lv_obj_t *parent)
     lv_obj_align_to(lbl_battery, lbl_clock, LV_ALIGN_OUT_LEFT_MID, -22, 0);
     lv_obj_set_style_text_color(lbl_battery, p->accent_secondary, 0);
     lv_obj_set_style_text_font(lbl_battery, &lv_font_montserrat_14, 0);
+    lv_obj_add_flag(lbl_battery, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(lbl_battery, 16);
+    lv_obj_add_event_cb(lbl_battery, settings_section_click_cb, LV_EVENT_CLICKED, (void *)"power");
 
-    /* 6. File sharing on: amber SD card left of the battery; tap for Settings */
+    /* 6. File sharing on: amber SD card left of the battery; tap for its Settings */
     lbl_share = lv_label_create(top_bar_container);
     lv_label_set_text(lbl_share, LV_SYMBOL_SD_CARD " Shared");
     lv_obj_set_style_text_color(lbl_share, p->accent_warning, 0);
     lv_obj_set_style_text_font(lbl_share, &lv_font_montserrat_14, 0);
     lv_obj_add_flag(lbl_share, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_ext_click_area(lbl_share, 16);
-    lv_obj_add_event_cb(lbl_share, wifi_label_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(lbl_share, settings_section_click_cb, LV_EVENT_CLICKED, (void *)"share");
 
     /* Register theme listener */
     devos_theme_add_listener(on_theme_change, NULL);

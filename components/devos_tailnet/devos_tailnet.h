@@ -39,6 +39,7 @@ typedef struct {
     char ip[16];                            /* our 100.x address ("" if none) */
     char domain[64];                        /* MagicDNS suffix, e.g. tail1234.ts.net */
     char derp[24];                          /* home relay, e.g. "syd (region 19)" */
+    int  derp_ms;                           /* its measured round trip (STUN), 0 = not measured */
     bool derp_connected;
     int  peer_count;
     int  peers_direct;                      /* peers reached without a relay */

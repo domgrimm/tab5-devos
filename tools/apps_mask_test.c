@@ -23,6 +23,10 @@
 
 #include "devos_core.h"
 
+/* devos_core.c isn't linked; devos_core_restart() asks it for the current app */
+devos_app_id_t devos_core_get_current_app(void) { return DEVOS_APP_NONE; }
+devos_app_descriptor_t *devos_core_get_app(devos_app_id_t id) { (void)id; return NULL; }
+
 typedef void (*boot_fn)(void);
 
 /* One boot in a child; asserts there fail the test. */
