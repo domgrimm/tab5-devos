@@ -131,7 +131,7 @@ static esp_netif_t       *s_sta_netif = NULL;
 static devos_wifi_status_t s_st;
 static devos_wifi_ap_t     s_scan[DEVOS_WIFI_MAX_SCAN];
 static int                 s_scan_count = 0;
-static devos_wifi_bss_t    s_bss[DEVOS_WIFI_MAX_BSS];
+static EXT_RAM_BSS_ATTR devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
 static int                 s_bss_count = 0;
 static uint32_t            s_scan_gen = 0;
 static saved_blob_t        s_saved;
@@ -428,7 +428,7 @@ static void on_scan_done(void)
         s_scan_gen++;
         unlock();
     } else if (recs && raw && esp_wifi_scan_get_ap_records(&n, recs) == ESP_OK) {
-        static devos_wifi_bss_t bss[DEVOS_WIFI_MAX_BSS];
+        static EXT_RAM_BSS_ATTR devos_wifi_bss_t bss[DEVOS_WIFI_MAX_BSS];
         for (int i = 0; i < n; i++) {
             snprintf(raw[i].ssid, sizeof(raw[i].ssid), "%s", (const char *)recs[i].ssid);
             raw[i].rssi = recs[i].rssi;
@@ -833,7 +833,7 @@ int devos_net_wifi_forget(const char *ssid)
 static devos_wifi_status_t s_st;
 static devos_wifi_ap_t s_scan[DEVOS_WIFI_MAX_SCAN];
 static int s_scan_count = 0;
-static devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
+static EXT_RAM_BSS_ATTR devos_wifi_bss_t s_bss[DEVOS_WIFI_MAX_BSS];
 static int s_bss_count = 0;
 static uint32_t s_scan_gen = 0;
 static bool s_scan_busy = false;

@@ -2,6 +2,12 @@
  * type, with the selected service's details. Enter opens it: SSH services in
  * the terminal, web services in the REST client. */
 #include "app_netdiag_int.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +25,7 @@ static lv_obj_t *btn_browse, *lbl_browse, *lbl_status, *detail, *lbl_d_title, *l
 static devos_vlist_t s_list;
 static devos_mdns_svc_t *s_svc;                 /* DEVOS_MDNS_MAX, PSRAM */
 static int s_nsvc;
-static row_t s_rows[DEVOS_MDNS_MAX * 2];
+static EXT_RAM_BSS_ATTR row_t s_rows[DEVOS_MDNS_MAX * 2];
 static int s_nrows;
 static uint32_t s_gen = 0xffffffff;
 static bool s_browsed;

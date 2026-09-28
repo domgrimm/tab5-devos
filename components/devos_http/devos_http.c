@@ -862,7 +862,7 @@ typedef struct {
     devos_http_resp_t resp;
 } job_t;
 
-static job_t s_jobs[JOBS];
+static EXT_RAM_BSS_ATTR job_t s_jobs[JOBS];
 static int s_next_id = 1;
 static uint32_t s_order;
 static bool s_worker;

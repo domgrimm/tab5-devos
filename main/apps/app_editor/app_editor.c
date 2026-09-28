@@ -465,7 +465,7 @@ static void open_path(const char *rel)
         return;
     }
     /* sniff first: s_buf may still be on screen in the viewer */
-    static char probe[4096];
+    static EXT_RAM_BSS_ATTR char probe[4096];
     size_t pn = fread(probe, 1, sizeof(probe), f);
     if (memchr(probe, '\0', pn)) {
         fclose(f);
