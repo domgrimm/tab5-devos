@@ -3,14 +3,19 @@
 
 The output folder holds only what installing and updating the firmware needs:
 
-    index.html                  "Install devOS" page (ESP Web Tools, Chrome / Edge)
-    firmware/manifest.json      ESP Web Tools manifest (bootloader, partitions, app, otadata)
-    firmware/*.bin
+    index.html                  "Install devOS" page (ESP Web Tools, Chrome / Edge), with a
+                                version picker
+    firmware/<version>/         each release offered: ESP Web Tools manifest.json, release.json
+                                (date, notes) and the bootloader / partitions / otadata / app
+    firmware/versions.json      the releases offered, newest first
+    firmware/manifest.json      the latest release (old links)
     ota/devos-manifest.json     OTA feed the Tab5 checks (Settings > System)
     ota/tab5-devos-<ver>.bin
     .nojekyll
 
-Nothing else from this repository is copied. Before writing, every file is
+Releases already in <out>/firmware stay on the page; --add-old adds an
+older release's app image (e.g. from its GitHub release). Nothing else from
+this repository is copied. Before writing, every file is
 scanned for identifying strings (home paths, e-mail addresses, and the
 strings in ~/.config/devos/publish-deny.txt or --deny); a hit aborts the publish.
 
@@ -66,8 +71,47 @@ def scan(path, deny):
     return hits
 
 
-def page(version, notes):
-    notes_html = "<p class=notes>%s</p>" % html.escape(notes) if notes else ""
+def vkey(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def write_release(out, version, parts, app_src, notes, built):
+    """firmware/<version>/: an ESP Web Tools manifest and every part it flashes.
+    Older releases reuse this build's bootloader, partition table and otadata
+    (the flash layout hasn't changed) with their own app image."""
+    d = os.path.join(out, "firmware", version)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    manifest = {"name": "devOS", "version": version, "new_install_prompt_erase": True,
+                "builds": [{"chipFamily": "ESP32-P4", "parts": []}]}
+    for off, p in sorted(parts):
+        name = os.path.basename(p)
+        shutil.copyfile(app_src if name == "tab5-devos.bin" else p, os.path.join(d, name))
+        manifest["builds"][0]["parts"].append({"path": name, "offset": off})
+    with open(os.path.join(d, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+    with open(os.path.join(d, "release.json"), "w") as f:
+        json.dump({"version": version, "built": built, "notes": notes[:190]}, f, indent=2)
+        f.write("\n")
+
+
+def releases(out):
+    rel = []
+    root = os.path.join(out, "firmware")
+    for name in os.listdir(root):
+        info = os.path.join(root, name, "release.json")
+        if re.fullmatch(r"\d+\.\d+\.\d+", name) and os.path.exists(info):
+            rel.append(json.load(open(info)))
+    return sorted(rel, key=lambda r: vkey(r["version"]), reverse=True)
+
+
+def page(rel):
+    latest = rel[0]
+    opts = "\n".join('    <option value="%s">%s%s</option>' % (html.escape(r["version"]), html.escape(r["version"]),
+                                                              " (latest)" if r is latest else "")
+                     for r in rel)
+    data = json.dumps([{"v": r["version"], "n": r.get("notes", ""), "b": r.get("built", "")} for r in rel])
     return """<!doctype html>
 <html lang="en">
 <head>
@@ -82,14 +126,22 @@ def page(version, notes):
   esp-web-install-button button { font: inherit; font-weight: 600; padding: .7rem 1.4rem;
     border: 0; border-radius: .5rem; background: var(--acc); color: #002; cursor: pointer; }
   code { background: rgba(127,127,127,.18); padding: .1rem .3rem; border-radius: .25rem; }
-  li { margin: .3rem 0; } .notes { opacity: .8; }
+  li { margin: .3rem 0; } .notes { opacity: .8; min-height: 1.5em; }
+  .pick { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .3rem; }
+  select { font: inherit; padding: .3rem .5rem; border-radius: .4rem; }
 </style>
 </head>
 <body>
 <h1>devOS for M5Stack Tab5</h1>
-<p class=ver>Version %(ver)s</p>
-%(notes)s
-<esp-web-install-button manifest="firmware/manifest.json">
+<p class=ver>Latest version %(ver)s</p>
+<div class=pick>
+  <label for=ver>Version to install</label>
+  <select id=ver>
+%(opts)s
+  </select>
+</div>
+<p class=notes id=notes></p>
+<esp-web-install-button id=install manifest="firmware/%(ver)s/manifest.json">
   <button slot="activate">Install devOS</button>
   <span slot="unsupported">Your browser can't flash over USB. Use Chrome or Edge on a desktop.</span>
   <span slot="not-allowed">Flashing needs a secure (https) page.</span>
@@ -97,19 +149,32 @@ def page(version, notes):
 <h2>Install</h2>
 <ol>
   <li>Connect the Tab5 to this computer with a USB-C data cable.</li>
-  <li>Click <b>Install devOS</b> and pick the Tab5's serial port
-      (<i>USB JTAG/serial debug unit</i>).</li>
+  <li>Pick a version (the latest, unless you are going back to an older one), click
+      <b>Install devOS</b> and pick the Tab5's serial port (<i>USB JTAG/serial debug unit</i>).</li>
   <li>Choose <b>Erase device</b> for a first install. Settings, Wi-Fi and keys are
-      kept in flash, so skip the erase when reinstalling.</li>
+      kept in flash, so skip the erase when reinstalling or changing versions.</li>
   <li>When it finishes, the Tab5 restarts into devOS.</li>
 </ol>
 <p>If the port doesn't show up, hold the Tab5's BOOT button while you plug it in, then try again.</p>
 <h2>Updates</h2>
-<p>Once installed, the Tab5 updates itself over Wi-Fi: <b>Settings &gt; System &gt; Check for updates</b>.
-The feed is <code>ota/devos-manifest.json</code> on this site.</p>
+<p>Once installed, the Tab5 updates itself over Wi-Fi to the latest version: <b>Settings &gt; System &gt;
+Check for updates</b>. The feed is <code>ota/devos-manifest.json</code> on this site.</p>
+<script>
+  const R = %(data)s;
+  const sel = document.getElementById("ver"), btn = document.getElementById("install"),
+        notes = document.getElementById("notes");
+  function pick() {
+    const r = R[sel.selectedIndex], m = "firmware/" + r.v + "/manifest.json";
+    btn.setAttribute("manifest", m);
+    btn.manifest = m;
+    notes.textContent = (r.n || "") + (r.b ? "  (built " + r.b + ")" : "");
+  }
+  sel.addEventListener("change", pick);
+  pick();
+</script>
 </body>
 </html>
-""" % {"ewt": ESP_WEB_TOOLS, "ver": html.escape(version), "notes": notes_html}
+""" % {"ewt": ESP_WEB_TOOLS, "ver": html.escape(latest["version"]), "opts": opts, "data": data}
 
 
 def main():
@@ -117,6 +182,10 @@ def main():
     ap.add_argument("--build", default=os.path.join(ROOT, "build"), help="IDF build folder (default: build/)")
     ap.add_argument("--out", required=True, help="Pages folder (docs/ in the public repo)")
     ap.add_argument("--notes", default="", help="short release notes (page + OTA)")
+    ap.add_argument("--app", help="publish this app image instead of the build's (e.g. to redo the page "
+                                  "without changing a released image)")
+    ap.add_argument("--add-old", action="append", default=[], metavar="VERSION=APP.bin[=NOTES]",
+                    help="also offer an older release's app image on the install page (repeatable)")
     ap.add_argument("--deny", action="append", default=[],
                     help="extra string that must not appear (repeatable; e.g. your name)")
     args = ap.parse_args()
@@ -135,32 +204,57 @@ def main():
     app = os.path.join(b, "tab5-devos.bin")
     if not any(p == app for _, p in parts):
         sys.exit("flash_args has no tab5-devos.bin")
+    if args.app:
+        if (b"devOS v" + read_version().encode() + b"\0") not in open(args.app, "rb").read():
+            sys.exit("%s is not devOS %s" % (args.app, read_version()))
+        app = args.app
+
+    old = []                                            # (version, app image, notes)
+    for spec in args.add_old:
+        bits = spec.split("=", 2)
+        if len(bits) < 2 or not re.fullmatch(r"\d+\.\d+\.\d+", bits[0]) or not os.path.exists(bits[1]):
+            sys.exit("--add-old wants VERSION=APP.bin[=NOTES], got %r" % spec)
+        img = open(bits[1], "rb").read()
+        if (b"devOS v" + bits[0].encode() + b"\0") not in img:
+            sys.exit("%s is not devOS %s (its version string doesn't match)" % (bits[1], bits[0]))
+        old.append((bits[0], bits[1], bits[2] if len(bits) > 2 else ""))
 
     hits = []
-    for _, p in parts:
+    for p in [p for _, p in parts] + [app] + [o[1] for o in old]:
         hits += scan(p, args.deny)
     if hits:
         sys.exit("identifying strings in the firmware, not publishing:\n  " + "\n  ".join(sorted(set(hits))))
 
     version = read_version()
     out = args.out
-    os.makedirs(out, exist_ok=True)
-    for sub in ("firmware", "ota"):                     # only the current release is kept
-        shutil.rmtree(os.path.join(out, sub), ignore_errors=True)
-        os.makedirs(os.path.join(out, sub))
-
-    manifest = {"name": "devOS", "version": version, "new_install_prompt_erase": True,
-                "builds": [{"chipFamily": "ESP32-P4", "parts": []}]}
-    for off, p in sorted(parts):
-        name = os.path.basename(p)
-        shutil.copyfile(p, os.path.join(out, "firmware", name))
-        manifest["builds"][0]["parts"].append({"path": name, "offset": off})
-    with open(os.path.join(out, "firmware", "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-        f.write("\n")
+    fw = os.path.join(out, "firmware")
+    os.makedirs(fw, exist_ok=True)
+    for name in os.listdir(fw):                         # the old single-release layout
+        if os.path.isfile(os.path.join(fw, name)):
+            os.remove(os.path.join(fw, name))
+    shutil.rmtree(os.path.join(out, "ota"), ignore_errors=True)
+    os.makedirs(os.path.join(out, "ota"))
 
     data = open(app, "rb").read()
     build, built = image_info(data)
+    write_release(out, version, parts, app, args.notes, built)
+    for ver, img, notes in old:
+        write_release(out, ver, parts, img, notes, image_info(open(img, "rb").read())[1])
+
+    rel = releases(out)
+    if rel[0]["version"] != version:
+        sys.exit("firmware/ has %s, newer than this build (%s)" % (rel[0]["version"], version))
+    with open(os.path.join(fw, "versions.json"), "w") as f:
+        json.dump(rel, f, indent=2)
+        f.write("\n")
+    # the latest also at the old path, for links to firmware/manifest.json
+    latest = json.load(open(os.path.join(fw, version, "manifest.json")))
+    for part in latest["builds"][0]["parts"]:
+        part["path"] = version + "/" + part["path"]
+    with open(os.path.join(fw, "manifest.json"), "w") as f:
+        json.dump(latest, f, indent=2)
+        f.write("\n")
+
     ota_name = "tab5-devos-%s.bin" % version
     shutil.copyfile(app, os.path.join(out, "ota", ota_name))
     with open(os.path.join(out, "ota", "devos-manifest.json"), "w") as f:
@@ -170,7 +264,7 @@ def main():
         f.write("\n")
 
     with open(os.path.join(out, "index.html"), "w") as f:
-        f.write(page(version, args.notes))
+        f.write(page(rel))
     open(os.path.join(out, ".nojekyll"), "w").close()
 
     for dirpath, _, files in os.walk(out):              # final check over everything written
@@ -180,7 +274,8 @@ def main():
             hits += scan(os.path.join(dirpath, fn), args.deny)
     if hits:
         sys.exit("identifying strings in %s:\n  %s" % (out, "\n  ".join(sorted(set(hits)))))
-    print("published devOS %s, build %s (%s), %d KB app -> %s" % (version, build[:8], built, len(data) // 1024, out))
+    print("published devOS %s, build %s (%s), %d KB app -> %s; install page offers %s" %
+          (version, build[:8], built, len(data) // 1024, out, ", ".join(r["version"] for r in rel)))
 
 
 if __name__ == "__main__":
