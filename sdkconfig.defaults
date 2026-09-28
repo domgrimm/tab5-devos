@@ -36,6 +36,11 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=n
 # on_refresh_done callback is IRAM_ATTR for it (bsp_tab5.c).
 CONFIG_LCD_DSI_ISR_IRAM_SAFE=y
 
+# WireGuard (normal mode) runs its handshakes, rekeys and packet crypto on the
+# lwIP tcpip thread (timer + UDP receive callback); 3 KB is too tight for
+# X25519 / BLAKE2s on top of the Wi-Fi transmit path.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=5120
+
 # FAT long filenames. Without these only 8.3 names work on the SD card, so
 # bookmarks.json, known_hosts, untitled-N.md, *.diff etc. fail with
 # FR_INVALID_NAME and directory listings come back as upper-case short names.

@@ -507,12 +507,14 @@ static int rd_read(rd_t *r, void *out, size_t n)
 typedef struct {
     devos_http_resp_t *r;
     size_t cap, max;
+    volatile size_t *progress;
 } sink_t;
 
 static void sink_put(sink_t *s, const void *d, size_t n)
 {
     devos_http_resp_t *r = s->r;
     r->body_total += n;
+    if (s->progress) *s->progress = r->body_total;
     if (r->body_len >= s->max) {
         r->truncated = true;
         return;
@@ -697,7 +699,7 @@ static int exchange(const devos_http_req_t *q, const char *url, const char *meth
     r->status = status;
     char val[64];
     if (location && devos_http_header(r, "Location", location, loc_cap)) { /* caller decides */ }
-    sink_t sk = { r, 0, q->max_body ? q->max_body : DEVOS_HTTP_DEFAULT_MAX_BODY };
+    sink_t sk = { r, 0, q->max_body ? q->max_body : DEVOS_HTTP_DEFAULT_MAX_BODY, q->progress };
     bool no_body = !strcasecmp(method, "HEAD") || status == 204 || status == 304 || (status >= 100 && status < 200);
     if (!no_body) {
         unsigned char chunk[1024];

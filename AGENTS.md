@@ -35,7 +35,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
 7. **Shared Engines, Never Forked Renderers or Parsers:**
    * One CommonMark-subset renderer (`components/devos_mdview/`, `devos_md_render()`) serves the editor preview and any future rich-text view. Never copy it into an app — extend the component and its unit test (`tools/md_preview_test.c`).
    * One JSON reader (`components/devos_json/`), used today by `devos_ota`. Same rule: extend, don't duplicate.
-   * One socket helper layer (`devos_net_socket_*`, incl. `send_all`, non-blocking `connect_start/wait`, and `listen` / `accept` for servers): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send.
+   * One socket helper layer (`devos_net_socket_*`, incl. `send_all`, non-blocking `connect_start/wait`, and `listen` / `accept` for servers): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send. A custom lwIP netif (the WireGuard tunnel) is added with no address and its address fields are set directly: `netif_add()` with an address or `netif_set_addr()` fires esp_netif's callback, which reads `netif->state` of any netif as its own `esp_netif_t` (this build has no `LWIP_ESP_NETIF_DATA`) and crashes.
    * One HTTP(S) client (`components/devos_http/`): REST calls, APIs and webhooks go through it (never `esp_http_client`, which bypasses the socket layer).
    * One set of screen building blocks (`devos_widgets.h` in `devos_ui`): new apps build buttons, fields, dialogs and lists with it so theming and focus behave the same everywhere.
 
@@ -112,7 +112,7 @@ tab5-devos/
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
-│   ├── devos_ota/                 # OTA manifest check + target flash path
+│   ├── devos_ota/                 # OTA: manifest check, download-verify-then-write install, boot report
 │   ├── devos_sysmon/              # 1 Hz system telemetry (battery, Wi-Fi, SD, heap, CPU, clock)
 │   ├── devos_tailnet/             # Tailscale client on top of MicroLink
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator (no LVGL)

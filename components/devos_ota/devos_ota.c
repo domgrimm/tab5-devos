@@ -1,6 +1,8 @@
 /* devos_ota: see devos_ota.h. */
 #include "devos_ota.h"
 #include "devos_json.h"
+#include "devos_http.h"
+#include "devos_crypto.h"
 #include "devos_config.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -21,6 +23,7 @@ static char s_build[65] = "";               /* the manifest's "build": its image
 static long s_size = 0;
 static volatile devos_ota_state_t s_state = DEVOS_OTA_IDLE;
 static volatile int s_progress = -1;
+static volatile size_t s_got;               /* bytes downloaded so far (devos_http counts) */
 
 static const char *own_build(void);
 
@@ -96,22 +99,31 @@ static int handle_manifest(const char *json)
     return 0;
 }
 
-#ifdef ESP_PLATFORM
 /* ========================================================================
- * Device
+ * Platform: storage, the OTA slot, restarting
+ *
+ * An update is downloaded whole into RAM (PSRAM on the Tab5), checked
+ * (size, SHA-256, image header, build id), and only then written to the
+ * flash slot in one pass with no network running. A dropped connection can
+ * never leave a half-written slot, and the flash writes (which stall Wi-Fi)
+ * don't overlap the download. Each stage is recorded, so a restart halfway
+ * is reported at the next boot.
  * ======================================================================== */
+typedef enum { JOB_CHECK, JOB_INSTALL } ota_job_t;
+
+#ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
-#include "esp_http_client.h"
-#include "esp_crt_bundle.h"
 #include "esp_system.h"
-#include "mbedtls/sha256.h"
 #include "nvs.h"
 
 static const char *TAG = "ota";
+static const esp_partition_t *s_target;
+static esp_ota_handle_t s_ota;
 
 /* The ELF SHA-256 esptool stamps into every image: unique per build. */
 static const char *own_build(void)
@@ -134,217 +146,82 @@ const char *devos_ota_build_text(void)
     return t;
 }
 
-static void persist(void)
+static void kv_set(const char *key, const char *val)
 {
     nvs_handle_t h;
-    if (nvs_open("ota", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "feed", s_feed);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+    if (nvs_open("ota", NVS_READWRITE, &h) != ESP_OK) return;
+    if (val) nvs_set_str(h, key, val);
+    else nvs_erase_key(h, key);
+    nvs_commit(h);
+    nvs_close(h);
 }
+
+static bool kv_get(const char *key, char *out, size_t cap)
+{
+    nvs_handle_t h;
+    out[0] = '\0';
+    if (nvs_open("ota", NVS_READONLY, &h) != ESP_OK) return false;
+    size_t l = cap;
+    bool ok = nvs_get_str(h, key, out, &l) == ESP_OK;
+    nvs_close(h);
+    if (!ok) out[0] = '\0';
+    return ok;
+}
+
+static void persist(void) { kv_set("feed", s_feed); }
 
 static void load(void)
 {
-    nvs_handle_t h;
-    if (nvs_open("ota", NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(s_feed);
-        if (nvs_get_str(h, "feed", s_feed, &len) != ESP_OK) s_feed[0] = '\0';
-        nvs_close(h);
-    }
+    if (!kv_get("feed", s_feed, sizeof(s_feed))) s_feed[0] = '\0';
     if (!s_feed[0]) snprintf(s_feed, sizeof(s_feed), "%s", DEVOS_OTA_DEFAULT_FEED);
 }
 
-/* GET with redirects; returns an open client positioned at the body. */
-static esp_http_client_handle_t http_open(const char *url, int64_t *content_len, char *err, size_t errlen)
+/* The largest image the slot takes (0: no slot). */
+static size_t slot_size(void)
 {
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = 15000,
-        .buffer_size = 4096,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) { snprintf(err, errlen, "Out of memory"); return NULL; }
-    for (int hop = 0; hop < 5; hop++) {
-        if (esp_http_client_open(c, 0) != ESP_OK) {
-            snprintf(err, errlen, "Could not connect to %.120s", url);
-            break;
-        }
-        int64_t len = esp_http_client_fetch_headers(c);
-        int st = esp_http_client_get_status_code(c);
-        if (st == 301 || st == 302 || st == 303 || st == 307 || st == 308) {
-            esp_http_client_set_redirection(c);
-            esp_http_client_close(c);
-            continue;
-        }
-        if (st != 200) {
-            snprintf(err, errlen, "HTTP %d from %.120s", st, url);
-            esp_http_client_close(c);
-            break;
-        }
-        *content_len = len;
-        return c;
-    }
-    esp_http_client_cleanup(c);
-    return NULL;
+    s_target = esp_ota_get_next_update_partition(NULL);
+    return s_target ? s_target->size : 0;
 }
 
-static void check_worker(void)
+static int slot_begin(size_t len, char *err, size_t cap)
 {
-    char err[160] = "";
-    int64_t len = 0;
-    esp_http_client_handle_t c = http_open(s_feed, &len, err, sizeof(err));
-    if (!c) {
-        snprintf(s_report, sizeof(s_report), "Update feed unreachable: %s", err);
-        s_state = DEVOS_OTA_FAILED;
-        return;
-    }
-    char *buf = calloc(1, MANIFEST_MAX);
-    int total = 0;
-    while (buf && total < MANIFEST_MAX - 1) {
-        int r = esp_http_client_read(c, buf + total, MANIFEST_MAX - 1 - total);
-        if (r <= 0) break;
-        total += r;
-    }
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-    if (!buf || total == 0) {
-        free(buf);
-        snprintf(s_report, sizeof(s_report), "Update feed returned nothing");
-        s_state = DEVOS_OTA_FAILED;
-        return;
-    }
-    int rc = handle_manifest(buf);
-    free(buf);
-    s_state = rc > 0 ? DEVOS_OTA_AVAILABLE : rc == 0 ? DEVOS_OTA_UP_TO_DATE : DEVOS_OTA_FAILED;
+    esp_err_t e = esp_ota_begin(s_target, len, &s_ota);
+    if (e != ESP_OK) snprintf(err, cap, "Could not prepare %s: %s", s_target->label, esp_err_to_name(e));
+    return e == ESP_OK ? 0 : -1;
 }
 
-static void hex32(const unsigned char *d, char *out)
+static int slot_write(const uint8_t *d, size_t n, char *err, size_t cap)
 {
-    for (int i = 0; i < 32; i++) sprintf(out + i * 2, "%02x", d[i]);
-    out[64] = '\0';
-}
-
-static void install_worker(void)
-{
-    const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
-    if (!target) {
-        snprintf(s_report, sizeof(s_report), "No OTA partition to write to (check partitions.csv)");
-        s_state = DEVOS_OTA_FAILED;
-        return;
-    }
-    char err[160] = "";
-    int64_t len = 0;
-    esp_http_client_handle_t c = http_open(s_url, &len, err, sizeof(err));
-    if (!c) {
-        snprintf(s_report, sizeof(s_report), "Download failed: %s", err);
-        s_state = DEVOS_OTA_FAILED;
-        return;
-    }
-    long expect = s_size > 0 ? s_size : (long)len;
-    if (expect > (long)target->size) {
-        snprintf(s_report, sizeof(s_report), "Image (%ld KB) is larger than the OTA slot (%lu KB)",
-                 expect / 1024, (unsigned long)(target->size / 1024));
-        esp_http_client_close(c);
-        esp_http_client_cleanup(c);
-        s_state = DEVOS_OTA_FAILED;
-        return;
-    }
-
-    esp_ota_handle_t ota = 0;
-    /* Erase as we go (not the whole image up front) so the UI keeps running. */
-    esp_err_t e = esp_ota_begin(target, OTA_WITH_SEQUENTIAL_WRITES, &ota);
+    esp_err_t e = esp_ota_write(s_ota, d, n);
     if (e != ESP_OK) {
-        snprintf(s_report, sizeof(s_report), "Could not prepare %s: %s", target->label, esp_err_to_name(e));
-        esp_http_client_close(c);
-        esp_http_client_cleanup(c);
-        s_state = DEVOS_OTA_FAILED;
-        return;
+        snprintf(err, cap, "Flash write failed: %s", esp_err_to_name(e));
+        esp_ota_abort(s_ota);
     }
-    ESP_LOGI(TAG, "writing %s (%ld bytes) to %s", s_url, expect, target->label);
+    return e == ESP_OK ? 0 : -1;
+}
 
-    mbedtls_sha256_context sha;
-    mbedtls_sha256_init(&sha);
-    mbedtls_sha256_starts(&sha, 0);
-    char *buf = malloc(4096);
-    long got = 0;
-    bool ok = buf != NULL;
-    while (ok) {
-        int r = esp_http_client_read(c, buf, 4096);
-        if (r < 0) { snprintf(s_report, sizeof(s_report), "Download interrupted"); ok = false; break; }
-        if (r == 0) {
-            if (esp_http_client_is_complete_data_received(c) || (expect > 0 && got >= expect)) break;
-            snprintf(s_report, sizeof(s_report), "Download ended early (%ld of %ld KB)", got / 1024, expect / 1024);
-            ok = false;
-            break;
-        }
-        mbedtls_sha256_update(&sha, (const unsigned char *)buf, (size_t)r);
-        e = esp_ota_write(ota, buf, (size_t)r);
-        if (e != ESP_OK) {
-            snprintf(s_report, sizeof(s_report), "Flash write failed: %s", esp_err_to_name(e));
-            ok = false;
-            break;
-        }
-        got += r;
-        if (expect > 0) {
-            s_progress = (int)((got * 100) / expect);
-            snprintf(s_report, sizeof(s_report), "Downloading %.20s: %d%% (%ld of %ld KB)", s_ver, s_progress,
-                     got / 1024, expect / 1024);
-        } else {
-            snprintf(s_report, sizeof(s_report), "Downloading %.20s: %ld KB", s_ver, got / 1024);
-        }
-    }
-    free(buf);
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-    unsigned char digest[32];
-    mbedtls_sha256_finish(&sha, digest);
-    mbedtls_sha256_free(&sha);
+static int slot_finish(char *err, size_t cap)
+{
+    esp_err_t e = esp_ota_end(s_ota);                   /* validates the image */
+    if (e == ESP_OK) e = esp_ota_set_boot_partition(s_target);
+    if (e != ESP_OK) snprintf(err, cap, "Image rejected: %s", esp_err_to_name(e));
+    return e == ESP_OK ? 0 : -1;
+}
 
-    if (ok && expect > 0 && got != expect) {
-        snprintf(s_report, sizeof(s_report), "Size mismatch: got %ld bytes, manifest says %ld", got, expect);
-        ok = false;
-    }
-    if (ok) {
-        s_state = DEVOS_OTA_VERIFYING;
-        char hex[65];
-        hex32(digest, hex);
-        if (s_sha[0] && strcasecmp(hex, s_sha) != 0) {
-            snprintf(s_report, sizeof(s_report), "Checksum mismatch: the download is not the published image");
-            ok = false;
-        }
-    }
-    if (!ok) {
-        esp_ota_abort(ota);
-        s_state = DEVOS_OTA_FAILED;
-        s_progress = -1;
-        return;
-    }
-    e = esp_ota_end(ota);                           /* validates the image */
-    if (e == ESP_OK) e = esp_ota_set_boot_partition(target);
-    if (e != ESP_OK) {
-        snprintf(s_report, sizeof(s_report), "Image rejected: %s", esp_err_to_name(e));
-        s_state = DEVOS_OTA_FAILED;
-        s_progress = -1;
-        return;
-    }
-    /* After the restart devos_ota_init() says whether it took (or was rolled back). */
-    nvs_handle_t h;
-    if (nvs_open("ota", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_str(h, "want_part", target->label);
-        nvs_set_str(h, "want_ver", s_ver);
-        nvs_commit(h);
-        nvs_close(h);
-    }
+static void restart_into_update(void)
+{
+    kv_set("want_part", s_target->label);   /* devos_ota_init says whether it took */
+    kv_set("want_ver", s_ver);
+    kv_set("stage", NULL);
     snprintf(s_report, sizeof(s_report), "Installed %.20s. Restarting...", s_ver);
     s_state = DEVOS_OTA_REBOOTING;
-    ESP_LOGI(TAG, "update installed to %s, restarting", target->label);
+    ESP_LOGI(TAG, "update %s written to %s, restarting", s_ver, s_target->label);
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 }
 
-typedef enum { JOB_CHECK, JOB_INSTALL } ota_job_t;
+static void check_worker(void);
+static void install_worker(void);
 
 static void ota_task(void *arg)
 {
@@ -355,8 +232,9 @@ static void ota_task(void *arg)
 
 static int start_job(ota_job_t job)
 {
-    /* Internal-RAM stack: esp_ota_write writes flash. */
-    return xTaskCreatePinnedToCore(ota_task, "ota", 8192, (void *)(intptr_t)job, 4, NULL, DEVOS_CORE_NET_CRYPTO) ==
+    /* Internal-RAM stack (esp_ota_write writes flash), big enough for a TLS
+     * handshake like the devos_http worker's. */
+    return xTaskCreatePinnedToCore(ota_task, "ota", 12288, (void *)(intptr_t)job, 4, NULL, DEVOS_CORE_NET_CRYPTO) ==
                    pdPASS
                ? 0
                : -1;
@@ -372,20 +250,33 @@ void devos_ota_mark_boot_ok(void)
     }
 }
 
+static const char *reset_text(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_PANIC:    return "it crashed";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      return "a watchdog fired";
+    case ESP_RST_BROWNOUT: return "the power dipped";
+    case ESP_RST_POWERON:  return "it was switched off";
+    case ESP_RST_SW:       return "it was restarted";
+    default:               return "it restarted";
+    }
+}
+
 void devos_ota_init(void)
 {
     load();
     const esp_partition_t *run = esp_ota_get_running_partition();
     if (run) ESP_LOGI(TAG, "running from %s (%s), feed %s", run->label, devos_ota_build_text(), s_feed);
+    if (!run) return;
 
     /* Did the last install take? It restarted into want_part; the bootloader
-     * rolls back to the old slot if the new image never confirmed itself. */
-    nvs_handle_t h;
-    char part[20] = "", ver[32] = "";
-    size_t l1 = sizeof(part), l2 = sizeof(ver);
-    if (!run || nvs_open("ota", NVS_READWRITE, &h) != ESP_OK) return;
-    if (nvs_get_str(h, "want_part", part, &l1) == ESP_OK) {
-        if (nvs_get_str(h, "want_ver", ver, &l2) != ESP_OK) ver[0] = '\0';
+     * rolls back to the old slot if the new image never confirmed itself.
+     * A stage left behind means the Tab5 restarted halfway through. */
+    char part[20], ver[32], stage[16];
+    if (kv_get("want_part", part, sizeof(part))) {
+        kv_get("want_ver", ver, sizeof(ver));
         if (strcmp(part, run->label) == 0) {
             snprintf(s_report, sizeof(s_report), "Updated to %.20s (%s)", ver, devos_ota_build_text());
         } else {
@@ -394,20 +285,41 @@ void devos_ota_init(void)
             s_state = DEVOS_OTA_FAILED;
         }
         ESP_LOGW(TAG, "%s", s_report);
-        nvs_erase_key(h, "want_part");
-        nvs_erase_key(h, "want_ver");
-        nvs_commit(h);
+        kv_set("want_part", NULL);
+        kv_set("want_ver", NULL);
+    } else if (kv_get("stage", stage, sizeof(stage))) {
+        kv_get("stage_ver", ver, sizeof(ver));
+        snprintf(s_report, sizeof(s_report), "The update to %.20s stopped while %s: %s. The firmware is "
+                 "unchanged - try again", ver, stage, reset_text());
+        s_state = DEVOS_OTA_FAILED;
+        ESP_LOGW(TAG, "%s", s_report);
     }
-    nvs_close(h);
+    kv_set("stage", NULL);
+    kv_set("stage_ver", NULL);
 }
 
 #else
-/* ========================================================================
- * Simulator: check only (curl), installing is a dry run
- * ======================================================================== */
+/* ------------------------------------------------------------------ simulator */
 #include <pthread.h>
 
 #define DEVOS_OTA_NVS_FILE TAB5_SD_MOUNT_POINT "/.devos/ota_nvs.json"
+#define SIM_SLOT_FILE      TAB5_SD_MOUNT_POINT "/.devos/ota_slot.bin"
+#define SIM_SLOT_SIZE      (4 * 1024 * 1024)
+static FILE *s_slot;
+
+/* Tests can pretend to be a build (DEVOS_SIM_BUILD); otherwise versions decide. */
+static const char *own_build(void)
+{
+    const char *b = getenv("DEVOS_SIM_BUILD");
+    return b ? b : "";
+}
+
+const char *devos_ota_build_text(void)
+{
+    return "simulator build, " __DATE__;
+}
+
+static void kv_set(const char *key, const char *val) { (void)key; (void)val; }
 
 static void persist(void)
 {
@@ -431,58 +343,61 @@ static void load(void)
     if (!s_feed[0]) snprintf(s_feed, sizeof(s_feed), "%s", DEVOS_OTA_DEFAULT_FEED);
 }
 
-static void *sim_check(void *arg)
+static size_t slot_size(void) { return SIM_SLOT_SIZE; }
+
+static int slot_begin(size_t len, char *err, size_t cap)
 {
-    (void)arg;
-    char cmd[DEVOS_OTA_FEED_MAX + 64];
-    snprintf(cmd, sizeof(cmd), "curl -fsSL --max-time 6 '%s' 2>/dev/null", s_feed);
-    static char buf[MANIFEST_MAX];
-    size_t total = 0;
-    FILE *p = popen(cmd, "r");
-    if (p) {
-        total = fread(buf, 1, sizeof(buf) - 1, p);
-        pclose(p);
-    }
-    buf[total] = '\0';
-    if (total == 0) {
-        snprintf(s_report, sizeof(s_report), "Update feed unreachable: %.120s", s_feed);
-        s_state = DEVOS_OTA_FAILED;
-        return NULL;
-    }
-    int rc = handle_manifest(buf);
-    s_state = rc > 0 ? DEVOS_OTA_AVAILABLE : rc == 0 ? DEVOS_OTA_UP_TO_DATE : DEVOS_OTA_FAILED;
+    (void)len;
+    s_slot = fopen(SIM_SLOT_FILE, "wb");
+    if (!s_slot) snprintf(err, cap, "Could not open %s", SIM_SLOT_FILE);
+    return s_slot ? 0 : -1;
+}
+
+static int slot_write(const uint8_t *d, size_t n, char *err, size_t cap)
+{
+    if (fwrite(d, 1, n, s_slot) == n) return 0;
+    snprintf(err, cap, "Could not write %s", SIM_SLOT_FILE);
+    fclose(s_slot);
+    s_slot = NULL;
+    return -1;
+}
+
+static int slot_finish(char *err, size_t cap)
+{
+    int bad = fclose(s_slot);
+    s_slot = NULL;
+    if (bad) snprintf(err, cap, "Could not write %s", SIM_SLOT_FILE);
+    return bad ? -1 : 0;
+}
+
+/* The simulator stops where a Tab5 would restart. */
+static void restart_into_update(void)
+{
+    snprintf(s_report, sizeof(s_report), "Simulator: %.20s verified and written to .devos/ota_slot.bin "
+             "(a Tab5 restarts into it now)", s_ver);
+    s_state = DEVOS_OTA_UP_TO_DATE;
+    s_progress = -1;
+}
+
+static void check_worker(void);
+static void install_worker(void);
+
+static void *ota_thread(void *arg)
+{
+    if ((ota_job_t)(intptr_t)arg == JOB_CHECK) check_worker();
+    else install_worker();
     return NULL;
 }
 
-static int start_job(int install)
+static int start_job(ota_job_t job)
 {
-    if (install) {
-        snprintf(s_report, sizeof(s_report), "Simulator dry run: would install %.20s from %.100s", s_ver, s_url);
-        s_state = DEVOS_OTA_AVAILABLE;
-        return 0;
-    }
     pthread_t th;
-    if (pthread_create(&th, NULL, sim_check, NULL) != 0) return -1;
+    if (pthread_create(&th, NULL, ota_thread, (void *)(intptr_t)job) != 0) return -1;
     pthread_detach(th);
     return 0;
 }
 
-#define JOB_CHECK   0
-#define JOB_INSTALL 1
-
 void devos_ota_mark_boot_ok(void) {}
-
-/* Tests can pretend to be a build (DEVOS_SIM_BUILD); otherwise versions decide. */
-static const char *own_build(void)
-{
-    const char *b = getenv("DEVOS_SIM_BUILD");
-    return b ? b : "";
-}
-
-const char *devos_ota_build_text(void)
-{
-    return "simulator build, " __DATE__;
-}
 
 void devos_ota_init(void)
 {
@@ -490,10 +405,172 @@ void devos_ota_init(void)
 }
 #endif
 
+/* ========================================================================
+ * Workers (their own task / thread)
+ * ======================================================================== */
+static void fail(const char *why)
+{
+    snprintf(s_report, sizeof(s_report), "%s", why);
+    s_state = DEVOS_OTA_FAILED;
+    s_progress = -1;
+    kv_set("stage", NULL);
+}
+
+static void check_worker(void)
+{
+    devos_http_req_t q = { .url = s_feed, .timeout_ms = 15000, .max_redirects = 5, .max_body = MANIFEST_MAX };
+    devos_http_resp_t r;
+    char why[200];
+    if (devos_http_request(&q, &r) != 0 || r.status != 200 || !r.body_len) {
+        if (!r.status) snprintf(why, sizeof(why), "Update feed unreachable: %.150s", r.error);
+        else snprintf(why, sizeof(why), "Update feed: HTTP %d from %.150s", r.status, s_feed);
+        devos_http_resp_free(&r);
+        fail(why);
+        return;
+    }
+    int rc = handle_manifest(r.body);
+    devos_http_resp_free(&r);
+    s_state = rc > 0 ? DEVOS_OTA_AVAILABLE : rc == 0 ? DEVOS_OTA_UP_TO_DATE : DEVOS_OTA_FAILED;
+}
+
+static void hex32(const uint8_t *d, char *out)
+{
+    for (int i = 0; i < 32; i++) sprintf(out + i * 2, "%02x", d[i]);
+    out[64] = '\0';
+}
+
+/* The image's own checks: ESP app image magic, app description, and the build
+ * id the manifest promised. */
+static bool image_ok(const uint8_t *d, size_t n, char *why, size_t cap)
+{
+    if (n < 32 + 176 || d[0] != 0xE9) {
+        snprintf(why, cap, "The download is not a firmware image");
+        return false;
+    }
+    uint32_t magic = (uint32_t)d[32] | (uint32_t)d[33] << 8 | (uint32_t)d[34] << 16 | (uint32_t)d[35] << 24;
+    if (magic != 0xABCD5432u) {
+        snprintf(why, cap, "The download has no app description (not a devOS image?)");
+        return false;
+    }
+    if (strlen(s_build) >= 8) {
+        char hex[65];
+        hex32(d + 32 + 144, hex);
+        if (strncasecmp(hex, s_build, strlen(s_build)) != 0) {
+            snprintf(why, cap, "The download is a different build (%.8s) from the one the feed lists (%.8s)", hex,
+                     s_build);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void install_worker(void)
+{
+    char why[200];
+    size_t room = slot_size();
+    if (!room) {
+        fail("No OTA partition to write to (check partitions.csv)");
+        return;
+    }
+    if (s_size > 0 && (size_t)s_size > room) {
+        snprintf(why, sizeof(why), "Image (%ld KB) is larger than the OTA slot (%lu KB)", s_size / 1024,
+                 (unsigned long)(room / 1024));
+        fail(why);
+        return;
+    }
+    kv_set("stage_ver", s_ver);
+    kv_set("stage", "downloading");
+
+    /* 1. download, whole */
+    s_got = 0;
+    devos_http_req_t q = { .url = s_url, .timeout_ms = 20000, .max_redirects = 5, .max_body = room,
+                           .progress = &s_got };
+    devos_http_resp_t r;
+    memset(&r, 0, sizeof(r));
+    s_progress = 0;
+    snprintf(s_report, sizeof(s_report), "Downloading %.20s...", s_ver);
+    /* the request runs on this task; progress is read by the UI meanwhile */
+    int rc = devos_http_request(&q, &r);
+    size_t n = r.body_len;
+    if (rc != 0 || r.status != 200) {
+        if (!r.status) snprintf(why, sizeof(why), "Download failed: %.150s", r.error);
+        else snprintf(why, sizeof(why), "Download failed: HTTP %d", r.status);
+    } else if (r.truncated) {
+        snprintf(why, sizeof(why), "The image is larger than the OTA slot (%lu KB)", (unsigned long)(room / 1024));
+    } else if (r.error[0]) {
+        snprintf(why, sizeof(why), "Download ended early (%lu of %ld KB): %.80s", (unsigned long)(n / 1024),
+                 s_size / 1024, r.error);
+    } else if (s_size > 0 && n != (size_t)s_size) {
+        snprintf(why, sizeof(why), "Size mismatch: got %lu bytes, the feed says %ld", (unsigned long)n, s_size);
+    } else {
+        why[0] = '\0';
+    }
+    if (why[0]) {
+        devos_http_resp_free(&r);
+        fail(why);
+        return;
+    }
+
+    /* 2. verify */
+    s_state = DEVOS_OTA_VERIFYING;
+    snprintf(s_report, sizeof(s_report), "Checking %.20s...", s_ver);
+    const uint8_t *img = (const uint8_t *)r.body;
+    uint8_t digest[32];
+    char hex[65];
+    devos_hash(DEVOS_HASH_SHA256, img, n, digest);
+    hex32(digest, hex);
+    if (s_sha[0] && strcasecmp(hex, s_sha) != 0) {
+        devos_http_resp_free(&r);
+        fail("Checksum mismatch: the download is not the published image");
+        return;
+    }
+    if (!image_ok(img, n, why, sizeof(why))) {
+        devos_http_resp_free(&r);
+        fail(why);
+        return;
+    }
+
+    /* 3. write, in one pass, from a small internal-RAM bounce buffer */
+    kv_set("stage", "writing");
+    s_state = DEVOS_OTA_WRITING;
+    s_progress = 0;
+    enum { CHUNK = 4096 };
+#ifdef ESP_PLATFORM
+    uint8_t *bounce = heap_caps_malloc(CHUNK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+    uint8_t *bounce = malloc(CHUNK);
+#endif
+    if (!bounce || slot_begin(n, why, sizeof(why)) != 0) {
+        free(bounce);
+        devos_http_resp_free(&r);
+        fail(bounce ? why : "Out of memory");
+        return;
+    }
+    for (size_t off = 0; off < n; off += CHUNK) {
+        size_t k = n - off < CHUNK ? n - off : CHUNK;
+        memcpy(bounce, img + off, k);
+        if (slot_write(bounce, k, why, sizeof(why)) != 0) {
+            free(bounce);
+            devos_http_resp_free(&r);
+            fail(why);
+            return;
+        }
+        s_progress = (int)((off + k) * 100 / n);
+        snprintf(s_report, sizeof(s_report), "Installing %.20s: %d%%", s_ver, s_progress);
+    }
+    free(bounce);
+    devos_http_resp_free(&r);
+    if (slot_finish(why, sizeof(why)) != 0) {
+        fail(why);
+        return;
+    }
+    restart_into_update();
+}
+
 bool devos_ota_busy(void)
 {
     return s_state == DEVOS_OTA_CHECKING || s_state == DEVOS_OTA_DOWNLOADING || s_state == DEVOS_OTA_VERIFYING ||
-           s_state == DEVOS_OTA_REBOOTING;
+           s_state == DEVOS_OTA_WRITING || s_state == DEVOS_OTA_REBOOTING;
 }
 
 int devos_ota_check(void)
@@ -531,8 +608,23 @@ int devos_ota_apply(void)
 
 bool devos_ota_has_update(void) { return s_state == DEVOS_OTA_AVAILABLE; }
 devos_ota_state_t devos_ota_state(void) { return s_state; }
-int devos_ota_progress(void) { return s_state == DEVOS_OTA_DOWNLOADING ? s_progress : -1; }
-const char *devos_ota_update_text(void) { return s_report; }
+int devos_ota_progress(void)
+{
+    if (s_state == DEVOS_OTA_DOWNLOADING) return s_size > 0 ? (int)((uint64_t)s_got * 100 / (uint64_t)s_size) : 0;
+    return s_state == DEVOS_OTA_WRITING ? s_progress : -1;
+}
+
+const char *devos_ota_update_text(void)
+{
+    if (s_state != DEVOS_OTA_DOWNLOADING) return s_report;
+    static char t[96];                          /* the UI's task only */
+    size_t got = s_got;
+    if (s_size > 0)
+        snprintf(t, sizeof(t), "Downloading %.20s: %d%% (%lu of %ld KB)", s_ver, devos_ota_progress(),
+                 (unsigned long)(got / 1024), s_size / 1024);
+    else snprintf(t, sizeof(t), "Downloading %.20s: %lu KB", s_ver, (unsigned long)(got / 1024));
+    return t;
+}
 const char *devos_ota_available_version(void) { return s_state == DEVOS_OTA_AVAILABLE ? s_ver : ""; }
 const char *devos_ota_notes(void) { return s_notes; }
 

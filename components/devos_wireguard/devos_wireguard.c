@@ -474,10 +474,18 @@ static esp_err_t tun_up_cb(void *ctx)
         .listen_port = (u16_t)c->listen_port,
         .bind_netif = sta ? (struct netif *)esp_netif_get_netif_impl(sta) : NULL,
     };
-    ip4_addr_t ip = { c->address.ip }, mask = { c->address.mask }, gw = { 0 };
     wireguardif_enable_socket_bind();
-    if (!netif_add(&s_netif, &ip, &mask, &gw, &wid, wireguardif_init, ip_input)) return ESP_FAIL;
+    /* Added without an address, which is then set directly. Not via
+     * netif_add(addr) / netif_set_addr(): they fire lwIP's address-changed
+     * callback, and esp_netif (no LWIP_ESP_NETIF_DATA in this build) reads
+     * netif->state of *every* netif as its own esp_netif_t. Ours is the
+     * WireGuard init data, later the device, so it dereferenced garbage and
+     * the Tab5 rebooted on connect. MicroLink sets its address the same way. */
+    if (!netif_add(&s_netif, NULL, NULL, NULL, &wid, wireguardif_init, ip_input)) return ESP_FAIL;
     s_netif_added = true;
+    ip4_addr_set_u32(ip_2_ip4(&s_netif.ip_addr), c->address.ip);
+    ip4_addr_set_u32(ip_2_ip4(&s_netif.netmask), c->address.mask);
+    ip4_addr_set_u32(ip_2_ip4(&s_netif.gw), 0);
     if (c->mtu) s_netif.mtu = (u16_t)c->mtu;
     netif_set_up(&s_netif);
     for (int i = 0; i < c->peer_n; i++) {

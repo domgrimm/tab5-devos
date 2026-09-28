@@ -1,8 +1,8 @@
 {
-  "version": "0.3.0",
-  "url": "tab5-devos-0.3.0.bin",
-  "size": 2561360,
-  "sha256": "d170c3fe4d8d12a8b24a1469164c0fb72f08f7718da441bb8658373085fb29b5",
-  "build": "5a0af71b358aaaa4ce48b42a4e774cd6cde547bcf1416974f5f6f41826731f72",
-  "notes": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing)"
+  "version": "0.3.1",
+  "url": "tab5-devos-0.3.1.bin",
+  "size": 2509680,
+  "sha256": "4999817d783870a76fbe2ef7337981630ea1ab545539df93a561c9121f9d02ed",
+  "build": "4a2e8c106f31c1edf00ef269199615e2cfb6ff7f0ebb7800134bf777f8397ee1",
+  "notes": "Updates over Wi-Fi install reliably: downloaded and checked before anything is written. WireGuard no longer restarts the Tab5 on connect."
 }
