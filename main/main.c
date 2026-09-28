@@ -3,6 +3,8 @@
 #include "devos_theme.h"
 #include "devos_core.h"
 #include "devos_top_bar.h"
+#include "devos_cmdpal.h"
+#include "devos_hud.h"
 #include "devos_storage.h"
 #include "devos_fileshare.h"
 #include "devos_power.h"
@@ -152,6 +154,16 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
         if (sym == SDLK_F5) {
             /* Simulate Fn + E (Arrange Mode) */
             devos_core_dispatch_key('e', DEVOS_MOD_FN);
+            return 0;
+        }
+        if (sym == SDLK_F6 || ((devos_mods & DEVOS_MOD_CTRL) && sym == SDLK_SPACE)) {
+            /* Sym + Space (command palette) */
+            devos_core_dispatch_key(' ', DEVOS_MOD_FN);
+            return 0;
+        }
+        if (sym == SDLK_F7) {
+            /* Sym + I (system info) */
+            devos_core_dispatch_key('i', DEVOS_MOD_FN);
             return 0;
         }
         if (sym == SDLK_ESCAPE || sym == SDLK_HOME) {
@@ -430,6 +442,9 @@ static void devos_system_bringup(void)
     /* Create persistent Top Status Bar */
     printf("[devOS] Creating Top Bar...\n");
     devos_top_bar_create(lv_layer_top());
+    /* Sym + Space command palette and Sym + I info panel, over any app */
+    devos_cmdpal_init();
+    devos_hud_init();
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif

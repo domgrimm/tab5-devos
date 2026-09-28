@@ -28,17 +28,23 @@ static devos_telemetry_t telemetry_data = {
     .wifi_state             = 3,
     .wifi_ssid              = "HomeWiFi",
     .wifi_rssi              = -58,
+    .wifi_bssid             = "a4:2b:b0:5e:10:c2",
+    .wifi_channel           = 6,
     .local_ip               = "192.168.1.50",
     .tailscale_online       = true,
     .tailscale_ip           = "100.64.0.10",
     .tailscale_peers_online = 6,
-    .tailscale_derp         = "Nearest (18ms)",
+    .tailscale_derp         = "syd (region 19)",
+    .tailscale_derp_ms      = 18,
 
     .sd_mounted             = true,
     .sd_total_mb            = 31200,
     .sd_free_mb             = 29412,
     .free_psram_kb          = 28416,
     .free_sram_kb           = 428,
+    .psram_total_kb         = 32768,
+    .sram_min_free_kb       = 391,
+    .sram_largest_kb        = 212,
 
     .cpu_load_core0         = 4,
     .cpu_load_core1         = 18,
@@ -312,10 +318,26 @@ void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb)
     s_brightness_step_cb = cb;
 }
 
+static devos_key_hook_fn s_key_hooks[4];
+static int s_key_hook_count = 0;
+
+void devos_core_add_key_hook(devos_key_hook_fn fn)
+{
+    if (fn && s_key_hook_count < (int)(sizeof(s_key_hooks) / sizeof(s_key_hooks[0]))) {
+        s_key_hooks[s_key_hook_count++] = fn;
+    }
+}
+
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
 {
     /* Any keypress is activity: wakes from dim/sleep, resets idle. */
     devos_power_activity();
+
+    /* 0. System overlays: the command palette (Sym + Space) and the info
+     * panel (Sym + I) */
+    for (int i = 0; i < s_key_hook_count; i++) {
+        if (s_key_hooks[i](key, modifiers)) return true;
+    }
 
     /* 1. Global Hotkey: Home Screen Return (Sym + H) */
     if ((modifiers & DEVOS_MOD_FN) && (key == 'h' || key == 'H')) {

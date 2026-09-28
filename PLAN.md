@@ -135,7 +135,7 @@ graph TD
 The Home Screen serves as the operational dashboard and application launcher for `devOS`.
 
 *   **Visual Layout & Scalable Grid (1280×720):**
-    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Sym + T`; the top bar carries no theme button.)
+    *   **Top Bar (Persistent across all apps):** Displays devOS logo/home trigger, current Wi-Fi SSID with signal strength (dBm), **Local Network IP (`IP: 10.x.y.z` or `192.168.x.y`, always shown whether Tailscale is connected or not) alongside an authentic Tailscale 3×3 dot matrix icon displayed next to the IP if Tailscale is connected**, battery percentage, and RTC clock. (Theme control lives in Settings + `Sym + T`; the top bar carries no theme button.) Tapping the Wi-Fi label, the battery, the clock or the Shared mark opens Settings at Wi-Fi, Power, Date & Time or File Sharing (the "section" intent, `devos_core_open_with("settings", "section", "power")`).
     *   **Telemetry Strip:** Shows real-time battery voltage, power consumption (Watts), estimated remaining battery runtime from the INA226, **Tailscale IP (shown in the info panel *if and only if* Tailscale is active and connected)**, free PSRAM/SRAM, and per-core CPU load. When Tailscale is disconnected, no Tailscale IP or status appears in the info panel.
     *   **Modular App Registry Architecture:** Rather than a closed hardcoded set of 6 apps, `devOS` uses an extensible dynamic app registry (`components/devos_core/`). Apps define a standardized descriptor (`devos_app_descriptor_t`) with cold init, show, hide, key handler, and live tile telemetry callbacks (`get_telemetry_lines()`). New apps in `main/apps/app_*` simply self-register at boot time (`devos_core_register_app()`) without modifying the launcher or core OS logic.
     *   **Compact Scalable App Grid (4×2 per Page with Pagination):**
@@ -468,7 +468,8 @@ services in the REST client).
 *   `devos_net_resolve()` answers `name.local` with a one-shot mDNS query (lwIP's resolver
     can't), so homeassistant.local / piaware.local / raspberrypi.local work in every app.
 *   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something
-    ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network).
+    ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network, "section"
+    in Settings, "scratchpad" in the Editor).
 
 ---
 
@@ -529,7 +530,18 @@ The Tab5 physical keyboard is the primary input surface for `devOS` (see §4.0).
     *   `Sym + Up/Down`: Page up / down (launcher pages, editor, terminal scrollback).
     *   `Alt + 1` .. `Alt + 8`: Instant switch between active concurrent SSH sessions in Terminal.
     *   `Alt + Tab`: Switch to the previous app.
-    *   Planned, not built: `Sym + Space` command palette.
+    *   `Sym + Space`: **Command palette** (`devos_cmdpal`, v0.4.0). A search box over any app:
+        every switched-on app, the system commands (theme, system info, screen off, restart,
+        which asks first and leaves the current app so it can save) and the commands apps add
+        with `devos_cmdpal_add()` (Settings: each section, File Sharing on / off, check for
+        updates; Editor: open the scratchpad). Search is `devos_match` (word starts, then
+        substrings, then letters in order; `tools/palette_test.c`). Up / Down / Tab pick, Enter
+        runs, Esc closes; a tap runs a row.
+    *   `Sym + I`: **System info** (`devos_hud`, v0.4.0) over the current app, updated every
+        second: battery V / mA / W / time left, internal RAM free / low-water / largest block,
+        PSRAM, SD, Wi-Fi SSID / RSSI / channel / BSSID, IP, Tailscale IP + DERP relay and its
+        latency, WireGuard, per-core CPU load, uptime, clock. Esc / Enter / Sym + I close it;
+        keys don't reach the app underneath meanwhile (Sym shortcuts still work).
 
 ### 4.2 Display & Graphics Pipeline
 
@@ -599,7 +611,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >    whether it took, rolled back, or stopped halfway. Publish with tools/publish_pages.py.
 >    Images are not signed yet.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
-> 6. Missing: command palette, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
+> 6. Missing: audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep. (Command palette:
+>    done in v0.4.0.)
 > 7. Camera (2026-09-27): driver + WireGuard QR import built on the new `i2c_master` driver (the
 >    whole BSP moved off the legacy I2C driver); `esp_cam_sensor` is pinned to 0.9.0 because 1.x
 >    needs esp-idf-kconfig >= 2.5. Preview verified on hardware; QR decoding reworked after the

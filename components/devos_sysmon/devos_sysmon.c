@@ -144,6 +144,7 @@ typedef struct {
     char     ts_ip[20];
     uint8_t  ts_peers;
     char     ts_derp[20];
+    int16_t  ts_derp_ms;
 
     bool     wg_online;
     char     wg_ip[20];
@@ -156,6 +157,7 @@ typedef struct {
     uint32_t psram_total_kb;
     uint32_t sram_free_kb;
     uint32_t sram_min_kb;
+    uint32_t sram_largest_kb;
     uint8_t  cpu[2];
     uint32_t uptime_s;
 } snapshot_t;
@@ -263,9 +265,11 @@ static void sample(snapshot_t *n, uint32_t tick)
     if (n->ts_online) {
         snprintf(n->ts_ip, sizeof(n->ts_ip), "%.19s", ts.ip);
         snprintf(n->ts_derp, sizeof(n->ts_derp), "%.19s", ts.derp);
+        n->ts_derp_ms = (int16_t)(ts.derp_ms > 9999 ? 9999 : ts.derp_ms);
         n->ts_peers = (uint8_t)devos_tailnet_peer_count();
     } else {
         n->ts_ip[0] = n->ts_derp[0] = '\0';
+        n->ts_derp_ms = 0;
         n->ts_peers = 0;
     }
     static devos_wg_info_t wg;             /* sysmon task only */
@@ -284,6 +288,7 @@ static void sample(snapshot_t *n, uint32_t tick)
     n->psram_total_kb = (uint32_t)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024);
     n->sram_free_kb = (uint32_t)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
     n->sram_min_kb = (uint32_t)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    n->sram_largest_kb = (uint32_t)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
     sample_cpu(n);
     n->uptime_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
 }
@@ -375,11 +380,14 @@ void devos_sysmon_apply(void)
     t.wifi_connected = n.wifi.state == DEVOS_WIFI_STATE_CONNECTED;
     snprintf(t.wifi_ssid, sizeof(t.wifi_ssid), "%s", n.wifi.ssid);
     t.wifi_rssi = n.wifi.rssi;
+    snprintf(t.wifi_bssid, sizeof(t.wifi_bssid), "%s", t.wifi_connected ? n.wifi.bssid : "");
+    t.wifi_channel = t.wifi_connected ? n.wifi.channel : 0;
     snprintf(t.local_ip, sizeof(t.local_ip), "%s", t.wifi_connected ? n.wifi.ip : "");
 
     t.tailscale_online = n.ts_online;
     snprintf(t.tailscale_ip, sizeof(t.tailscale_ip), "%s", n.ts_ip);
     snprintf(t.tailscale_derp, sizeof(t.tailscale_derp), "%s", n.ts_derp);
+    t.tailscale_derp_ms = n.ts_derp_ms;
     t.tailscale_peers_online = n.ts_peers;
     t.wireguard_online = n.wg_online;
     snprintf(t.wireguard_ip, sizeof(t.wireguard_ip), "%s", n.wg_ip);
@@ -391,6 +399,7 @@ void devos_sysmon_apply(void)
     t.psram_total_kb = n.psram_total_kb;
     t.free_sram_kb = n.sram_free_kb;
     t.sram_min_free_kb = n.sram_min_kb;
+    t.sram_largest_kb = n.sram_largest_kb;
     t.cpu_load_core0 = n.cpu[0];
     t.cpu_load_core1 = n.cpu[1];
     t.uptime_s = n.uptime_s;
@@ -421,11 +430,14 @@ void devos_sysmon_apply(void)
     t.wifi_connected = w.state == DEVOS_WIFI_STATE_CONNECTED;
     snprintf(t.wifi_ssid, sizeof(t.wifi_ssid), "%s", w.ssid);
     t.wifi_rssi = w.rssi;
+    snprintf(t.wifi_bssid, sizeof(t.wifi_bssid), "%s", t.wifi_connected ? w.bssid : "");
+    t.wifi_channel = t.wifi_connected ? w.channel : 0;
     devos_ts_info_t ts;
     devos_tailnet_get_info(&ts);
     t.tailscale_online = ts.state == DEVOS_TS_CONNECTED && ts.ip[0];
     snprintf(t.tailscale_ip, sizeof(t.tailscale_ip), "%.19s", t.tailscale_online ? ts.ip : "");
     snprintf(t.tailscale_derp, sizeof(t.tailscale_derp), "%.19s", t.tailscale_online ? ts.derp : "");
+    t.tailscale_derp_ms = (int16_t)(t.tailscale_online ? ts.derp_ms : 0);
     t.tailscale_peers_online = t.tailscale_online ? (uint8_t)ts.peer_count : 0;
     devos_wg_info_t wg;
     devos_wg_get_info(&wg);

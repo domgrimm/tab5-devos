@@ -418,6 +418,7 @@ struct microlink_s {
     uint8_t derp_region_count;
     uint16_t derp_home_region;      /* Our PreferredDERP region */
     uint16_t derp_measured_region;  /* devOS: fastest region by STUN (0 = not yet) */
+    int derp_measured_ms;           /* devOS: its STUN round trip */
 
     /* Key expiry (parsed from MapResponse self-node) */
     int64_t key_expiry_epoch;       /* Unix epoch seconds, 0 = no expiry */

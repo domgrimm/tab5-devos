@@ -19,11 +19,12 @@
 </head>
 <body>
 <h1>devOS for M5Stack Tab5</h1>
-<p class=ver>Latest version 0.3.3</p>
+<p class=ver>Latest version 0.4.0</p>
 <div class=pick>
   <label for=ver>Version to install</label>
   <select id=ver>
-    <option value="0.3.3">0.3.3 (latest)</option>
+    <option value="0.4.0">0.4.0 (latest)</option>
+    <option value="0.3.3">0.3.3</option>
     <option value="0.3.2">0.3.2</option>
     <option value="0.3.1">0.3.1</option>
     <option value="0.3.0">0.3.0</option>
@@ -34,7 +35,7 @@
   </select>
 </div>
 <p class=notes id=notes></p>
-<esp-web-install-button id=install manifest="firmware/0.3.3/manifest.json">
+<esp-web-install-button id=install manifest="firmware/0.4.0/manifest.json">
   <button slot="activate">Install devOS</button>
   <span slot="unsupported">Your browser can't flash over USB. Use Chrome or Edge on a desktop.</span>
   <span slot="not-allowed">Flashing needs a secure (https) page.</span>
@@ -53,7 +54,7 @@
 <p>Once installed, the Tab5 updates itself over Wi-Fi to the latest version: <b>Settings &gt; System &gt;
 Check for updates</b>. The feed is <code>ota/devos-manifest.json</code> on this site.</p>
 <script>
-  const R = [{"v": "0.3.3", "n": "The camera works again (WireGuard and 2FA QR codes).", "b": "Sep 28 2026 09:09:56"}, {"v": "0.3.2", "n": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again. Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 28 2026 08:45:11"}, {"v": "0.3.1", "n": "Updates over Wi-Fi install reliably; WireGuard no longer restarts the Tab5 on connect. Known issue: runs out of memory (fixed in 0.3.2).", "b": "Sep 28 2026 08:19:55"}, {"v": "0.3.0", "n": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing). Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 28 2026 07:16:24"}, {"v": "0.2.1", "n": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported. Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 27 2026 12:22:46"}, {"v": "0.2.0", "n": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards.", "b": "Sep 27 2026 12:05:24"}, {"v": "0.1.1", "n": "ADS-B: OpenStreetMap map under the radar (M toggles it).", "b": "Sep 27 2026 11:38:13"}, {"v": "0.1.0", "n": "First public release.", "b": "Sep 27 2026 10:26:57"}];
+  const R = [{"v": "0.4.0", "n": "Command palette: Sym+Space finds any app or command. Sym+I shows battery, memory, network and CPU over any app. Tapping Wi-Fi, battery or the clock in the top bar opens that part of Settings", "b": "Sep 28 2026 21:55:47"}, {"v": "0.3.3", "n": "The camera works again (WireGuard and 2FA QR codes).", "b": "Sep 28 2026 09:09:56"}, {"v": "0.3.2", "n": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again. Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 28 2026 08:45:11"}, {"v": "0.3.1", "n": "Updates over Wi-Fi install reliably; WireGuard no longer restarts the Tab5 on connect. Known issue: runs out of memory (fixed in 0.3.2).", "b": "Sep 28 2026 08:19:55"}, {"v": "0.3.0", "n": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing). Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 28 2026 07:16:24"}, {"v": "0.2.1", "n": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported. Known issue: the camera doesn't start (fixed in 0.3.3).", "b": "Sep 27 2026 12:22:46"}, {"v": "0.2.0", "n": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards.", "b": "Sep 27 2026 12:05:24"}, {"v": "0.1.1", "n": "ADS-B: OpenStreetMap map under the radar (M toggles it).", "b": "Sep 27 2026 11:38:13"}, {"v": "0.1.0", "n": "First public release.", "b": "Sep 27 2026 10:26:57"}];
   const sel = document.getElementById("ver"), btn = document.getElementById("install"),
         notes = document.getElementById("notes");
   function pick() {

@@ -28,6 +28,7 @@
 #include "devos_config.h"
 #include "devos_fileshare.h"
 #include "devos_focus.h"
+#include "devos_cmdpal.h"
 #include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_power.h"
@@ -48,6 +49,12 @@
 #endif
 
 enum { SEC_WIFI = 0, SEC_SHARE, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SYSTEM, SEC_COUNT };
+
+/* Section names for the "section" intent: devos_core_open_with("settings",
+ * "section", "power") opens Settings at Power (the top bar, the palette). */
+static const char *const s_sec_names[SEC_COUNT] = {
+    "wifi", "share", "display", "keyboard", "power", "time", "apps", "system",
+};
 
 static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_WIFI "   Wi-Fi",
@@ -2052,6 +2059,66 @@ static void apply_theme(const devos_palette_t *p, void *user_data)
     refresh_visible();
 }
 
+/* ---- command palette (Sym + Space) ---- */
+static void open_section_cmd(void *ud)
+{
+    devos_core_open_with("settings", "section", (const char *)ud);
+}
+
+static const char *share_label(void *ud)
+{
+    LV_UNUSED(ud);
+    return devos_fileshare_running() ? "Stop sharing the SD card" : "Share the SD card (File Sharing)";
+}
+
+static void share_cmd(void *ud)
+{
+    LV_UNUSED(ud);
+    if (devos_fileshare_running()) {
+        share_toggle(false);
+        return;
+    }
+    share_toggle(true);
+    devos_core_open_with("settings", "section", "share");     /* its address and password */
+}
+
+static void update_cmd(void *ud)
+{
+    LV_UNUSED(ud);
+    if (!devos_ota_busy() && !devos_ota_has_update()) devos_ota_check();
+    devos_core_open_with("settings", "section", "system");
+}
+
+static const devos_command_t s_palette_cmds[] = {
+    { .title = "Wi-Fi settings", .keywords = "wifi wireless network ssid password internet connect",
+      .hint = "Settings", .icon = LV_SYMBOL_WIFI, .run = open_section_cmd, .ud = (void *)"wifi" },
+    { .title = "File Sharing", .keywords = "share sharing sd card files web browser upload download",
+      .hint = "Settings", .icon = LV_SYMBOL_SD_CARD, .label = share_label, .run = share_cmd },
+    { .title = "Display settings", .keywords = "display screen brightness dim sleep timeout theme",
+      .hint = "Settings", .icon = LV_SYMBOL_EYE_OPEN, .run = open_section_cmd, .ud = (void *)"display" },
+    { .title = "Keyboard settings", .keywords = "keyboard lights backlight caps colour color",
+      .hint = "Settings", .icon = LV_SYMBOL_KEYBOARD, .run = open_section_cmd, .ud = (void *)"keyboard" },
+    { .title = "Power and battery", .keywords = "power battery charge charging sleep",
+      .hint = "Settings", .icon = LV_SYMBOL_BATTERY_FULL, .run = open_section_cmd, .ud = (void *)"power" },
+    { .title = "Date and time", .keywords = "date time clock timezone zone ntp rtc",
+      .hint = "Settings", .icon = LV_SYMBOL_BELL, .run = open_section_cmd, .ud = (void *)"time" },
+    { .title = "Switch apps on or off", .keywords = "apps enable disable memory boot mask",
+      .hint = "Settings", .icon = LV_SYMBOL_LIST, .run = open_section_cmd, .ud = (void *)"apps" },
+    { .title = "System and firmware", .keywords = "system about version build firmware device",
+      .hint = "Settings", .icon = LV_SYMBOL_SETTINGS, .run = open_section_cmd, .ud = (void *)"system" },
+    { .title = "Check for updates", .keywords = "update upgrade ota firmware install",
+      .hint = "Settings", .icon = LV_SYMBOL_DOWNLOAD, .run = update_cmd },
+};
+
+/* A restart now would cut an update off halfway. */
+static const char *ota_restart_check(void)
+{
+    devos_ota_state_t st = devos_ota_state();
+    if (st == DEVOS_OTA_DOWNLOADING || st == DEVOS_OTA_VERIFYING) return "An update is downloading";
+    if (st == DEVOS_OTA_WRITING) return "An update is being written to flash";
+    return NULL;
+}
+
 static void settings_init(void)
 {
     styles_init();
@@ -2122,10 +2189,26 @@ static void settings_init(void)
     devos_theme_add_listener(apply_theme, NULL);
     lv_timer_create(settings_timer_cb, 500, NULL);
     select_section(SEC_WIFI);
+
+    for (size_t i = 0; i < sizeof(s_palette_cmds) / sizeof(s_palette_cmds[0]); i++) {
+        devos_cmdpal_add(&s_palette_cmds[i]);
+    }
+    devos_core_add_restart_check(ota_restart_check);
 }
 
 static void settings_show(void)
 {
+    /* "section": open at that section (top bar taps, the command palette) */
+    char action[16], arg[16];
+    if (devos_core_take_intent("settings", action, sizeof(action), arg, sizeof(arg)) && !strcmp(action, "section")) {
+        for (int i = 0; i < SEC_COUNT; i++) {
+            if (!strcmp(arg, s_sec_names[i])) {
+                close_modal();
+                s_section = i;
+                break;
+            }
+        }
+    }
     select_section(s_section);
     devos_focus_set(&s_nav_focus, nav_btns[s_section]);   /* keys start in the section list */
 }

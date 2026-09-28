@@ -7,19 +7,19 @@
       "chipFamily": "ESP32-P4",
       "parts": [
         {
-          "path": "0.4.0/bootloader.bin",
+          "path": "bootloader.bin",
           "offset": 8192
         },
         {
-          "path": "0.4.0/partition-table.bin",
+          "path": "partition-table.bin",
           "offset": 32768
         },
         {
-          "path": "0.4.0/ota_data_initial.bin",
+          "path": "ota_data_initial.bin",
           "offset": 61440
         },
         {
-          "path": "0.4.0/tab5-devos.bin",
+          "path": "tab5-devos.bin",
           "offset": 131072
         }
       ]

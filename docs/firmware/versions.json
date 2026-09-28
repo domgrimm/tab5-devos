@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.4.0",
+    "built": "Sep 28 2026 21:55:47",
+    "notes": "Command palette: Sym+Space finds any app or command. Sym+I shows battery, memory, network and CPU over any app. Tapping Wi-Fi, battery or the clock in the top bar opens that part of Settings"
+  },
+  {
     "version": "0.3.3",
     "built": "Sep 28 2026 09:09:56",
     "notes": "The camera works again (WireGuard and 2FA QR codes)."

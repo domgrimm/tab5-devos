@@ -1,8 +1,5 @@
 {
   "version": "0.4.0",
-  "url": "tab5-devos-0.4.0.bin",
-  "size": 2523504,
-  "sha256": "5c4e5126940a17c18a70eaab9e7d39a6d8fd32b1c2458fe832e75e53a4c2ec66",
-  "build": "e4f621a4862cad3cf291c93387e386c2d83fd5fd7cc94db4701d8ea51d6e3ef6",
+  "built": "Sep 28 2026 21:55:47",
   "notes": "Command palette: Sym+Space finds any app or command. Sym+I shows battery, memory, network and CPU over any app. Tapping Wi-Fi, battery or the clock in the top bar opens that part of Settings"
 }

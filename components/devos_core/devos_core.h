@@ -65,11 +65,14 @@ typedef struct {
     uint8_t  wifi_state;            /* devos_wifi_state_t */
     char     wifi_ssid[33];
     int8_t   wifi_rssi;
+    char     wifi_bssid[18];        /* the access point ("" when not connected) */
+    uint8_t  wifi_channel;
     char     local_ip[20];
     bool     tailscale_online;
     char     tailscale_ip[20];
     uint8_t  tailscale_peers_online;
     char     tailscale_derp[20];
+    int16_t  tailscale_derp_ms;     /* its measured round trip, 0 = not measured */
     bool     wireguard_online;      /* a WireGuard tunnel is up (handshake done) */
     char     wireguard_ip[20];      /* our tunnel address, no prefix */
 
@@ -81,6 +84,7 @@ typedef struct {
     uint32_t free_sram_kb;
     uint32_t psram_total_kb;
     uint32_t sram_min_free_kb;      /* low-water mark since boot */
+    uint32_t sram_largest_kb;       /* largest free internal block (TLS needs ~40 KB) */
     uint32_t uptime_s;
 
     /* CPU Telemetry */
@@ -138,11 +142,19 @@ bool devos_core_app_enabled_next(const char *uid);   /* after the next restart *
 void devos_core_set_app_enabled_next(const char *uid, bool on);
 bool devos_core_apps_restart_pending(void);          /* next boot's switches differ */
 void devos_core_apps_boot_ok(void);                  /* Home Screen up for 15 s */
-/* Restart the device (the simulator re-executes itself through the hook
- * main.c sets). */
+/* Restart the device, after hiding the current app so it can finish up (the
+ * editor saves). The simulator re-executes itself through the hook main.c
+ * sets. */
 typedef void (*devos_restart_fn)(void);
 void devos_core_set_restart_cb(devos_restart_fn cb);
 void devos_core_restart(void);
+/* Restart checks: an app with work a restart would lose (an update being
+ * written) returns a short reason, else NULL. Up to 8.
+ * devos_core_restart_check() gives the first reason (NULL = safe); the
+ * command palette's Restart shows it before going ahead. */
+typedef const char *(*devos_restart_check_fn)(void);
+void devos_core_add_restart_check(devos_restart_check_fn fn);
+const char *devos_core_restart_check(void);
 /* Every app registered, switched-off ones included (registration order). */
 int devos_core_known_app_count(void);
 devos_app_descriptor_t *devos_core_known_app_at(int index);
@@ -176,6 +188,12 @@ void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb);
 typedef void (*devos_theme_toggle_fn)(void);
 void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb);
 bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers);
+/* System overlays (devos_ui's command palette and info panel) see every key
+ * first, before the global shortcuts and the app. A hook returns true when
+ * it used the key; an open overlay takes the keys it wants. Up to 4, called
+ * in the order added. */
+typedef bool (*devos_key_hook_fn)(uint32_t key, uint8_t modifiers);
+void devos_core_add_key_hook(devos_key_hook_fn fn);
 
 #ifdef __cplusplus
 }
