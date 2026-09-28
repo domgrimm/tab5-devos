@@ -4,6 +4,7 @@
 #include "devos_core.h"
 #include "devos_top_bar.h"
 #include "devos_storage.h"
+#include "devos_fileshare.h"
 #include "devos_power.h"
 #include "devos_ota.h"
 #include "bsp_tab5.h"
@@ -336,6 +337,7 @@ static void devos_system_bringup(void)
     /* 6. Network & Transparent Socket Routing bring-up */
     printf("[devOS] 6/8 Initializing Network Stack...\n");
     devos_net_init();
+    devos_fileshare_init();   /* SD card over the network: off until Settings > File Sharing */
 
     /* 6a. Tailscale (MicroLink): connects in the background once Wi-Fi is up
      * if this device is enrolled and auto-connect is on. */

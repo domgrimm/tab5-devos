@@ -1,6 +1,6 @@
 # devOS for the M5Stack Tab5
 
-devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin and network work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics, an ADS-B radar and a TOTP authenticator. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
+devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin and network work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics, an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
 
 **Install it from your browser:** <https://domgrimm.github.io/tab5-devos/> (Chrome or Edge, USB-C cable). After that the Tab5 updates itself over Wi-Fi.
 
@@ -32,11 +32,26 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Cricket** | Live scores, results and full scorecards from ESPNcricinfo, for today or any day back to the first Test in 1877 |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
-| **Settings** | Wi-Fi, display, power, time zone, updates, and switching apps on and off |
+| **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
 Global keys, from any app: **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier.
 
 On first boot with a MicroSD card inserted, devOS creates the folders and starter files it needs (`/notes/`, `/.ssh/`, `/wireguard/`, `/.devos/`, a welcome note that lists the keys). You never have to prepare the card on a computer.
+
+### File sharing
+
+**Settings > File Sharing** turns the SD card into a web page. Switch it on and the panel shows an address (`http://192.168.1.50`) and a password. Open the address in a browser on any computer or phone on the same network (or over Tailscale / WireGuard) to browse the card, upload files and whole folders (button or drag and drop), download, rename, make folders and delete. The Editor sees the changes the next time you open it.
+
+- **A new password every time** sharing starts: eight random characters, any user name. Sharing is always off after a restart, and an amber **Shared** mark sits in the top bar while it's on.
+- **Plain HTTP.** The password keeps others out, but the traffic isn't encrypted: use it on a network you trust, or over Tailscale / WireGuard, which are.
+- **Scriptable.** Everything the page does is a small HTTP API (Basic auth; changes also need an `X-Devos: 1` header, which stops other web pages from using your logged-in browser):
+  ```bash
+  curl -u devos:PASSWORD 'http://192.168.1.50/api/list?path=/notes'
+  curl -u devos:PASSWORD -H 'X-Devos: 1' -T notes.md 'http://192.168.1.50/api/file?path=/notes/notes.md'
+  curl -u devos:PASSWORD -o notes.md 'http://192.168.1.50/api/file?path=/notes/notes.md'
+  curl -u devos:PASSWORD -H 'X-Devos: 1' -X DELETE 'http://192.168.1.50/api/file?path=/notes/notes.md'
+  ```
+  `POST /api/mkdir?path=`, `POST /api/rename?path=&to=` and `DELETE ...&recursive=1` (a folder and its contents) cover the rest; `components/devos_fileshare/devos_fileshare.h` lists it all.
 
 ---
 
@@ -90,14 +105,14 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 | Component | Provides |
 | :--- | :--- |
 | `devos_ui` | Theme engine (dark / high-contrast light, live switching), top bar, `devos_widgets` (buttons, fields, dialogs, virtual lists), `devos_focus` (keyboard focus and focus ring), `devos_icons` (vector icons) |
-| `devos_net` | Wi-Fi manager, DNS + mDNS resolver, and the socket layer every connection goes through. That layer is where VPN routing applies, so a socket opened any other way would bypass the tunnel |
+| `devos_net` | Wi-Fi manager, DNS + mDNS resolver, and the socket layer every connection goes through (outgoing, and listening for the file-sharing server). That layer is where VPN routing applies, so a socket opened any other way would bypass the tunnel |
 | `devos_http` | HTTP/1.1 + HTTPS client on top of the socket layer |
 | `devos_json` | Small JSON reader and pretty-printer |
 | `devos_mdview` | The CommonMark-subset renderer used by the editor preview |
 | `devos_crypto` | SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32 |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 
-The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
+The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
 
 ### Keyboard first
 
@@ -299,7 +314,7 @@ Your keyboard stands in for the Tab5's. `tools/sim/run_web_sim.sh` runs it headl
 
 ### Tests
 
-Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, OTA, terminal emulator, crypto, cricket parsers). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
+Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, OTA, terminal emulator, crypto, cricket parsers, and an end-to-end run of the file-sharing server over real sockets). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
 
 ---
 
@@ -332,6 +347,7 @@ components/
   devos_net/         Wi-Fi, DNS/mDNS, socket layer + VPN routing
   devos_http/        HTTP(S) client
   devos_storage/     MicroSD mount and scaffolding
+  devos_fileshare/   the SD card as a web page (HTTP server + the page itself)
   devos_power/       active / dim / sleep
   devos_ota/         update check and install
   devos_sysmon/      1 Hz telemetry, clock, time zones

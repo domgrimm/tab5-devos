@@ -1,4 +1,5 @@
-/* Settings: Wi-Fi, display, keyboard, power, date & time, apps, system info.
+/* Settings: Wi-Fi, file sharing, display, keyboard, power, date & time, apps,
+ * system info.
  *
  * Every value shown here is live (devos_net, devos_sysmon, devos_power, the
  * BSP); nothing is hard-coded. Layout: a section list on the left, one panel
@@ -16,6 +17,8 @@
  * S scans, A adds a network, X disconnects. In the dialog the physical
  * keyboard types into the focused field, Tab moves, Enter connects / saves,
  * Esc cancels. The on-screen keyboard only appears without a keyboard.
+ * File Sharing: one switch (Space or Enter) for devos_fileshare, the SD card
+ * as a web page; the address and password show while it's on.
  * Apps: one switch per app (devos_core's boot mask) with the memory it took
  * at start; Space switches, Enter restarts to apply, Esc leaves (the changes
  * still apply next start).
@@ -23,17 +26,20 @@
  */
 #include "app_settings.h"
 #include "devos_config.h"
+#include "devos_fileshare.h"
 #include "devos_focus.h"
 #include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_power.h"
 #include "devos_ota.h"
 #include "devos_net.h"
+#include "devos_storage.h"
 #include "devos_sysmon.h"
 #include "bsp_tab5.h"
 #include "tab5_keyboard.h"
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef ESP_PLATFORM
 #include "esp_chip_info.h"
@@ -41,10 +47,11 @@
 #include "sdkconfig.h"
 #endif
 
-enum { SEC_WIFI = 0, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SYSTEM, SEC_COUNT };
+enum { SEC_WIFI = 0, SEC_SHARE, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SYSTEM, SEC_COUNT };
 
 static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_WIFI "   Wi-Fi",
+    LV_SYMBOL_SD_CARD "   File Sharing",
     LV_SYMBOL_EYE_OPEN "   Display",
     LV_SYMBOL_KEYBOARD "   Keyboard",
     LV_SYMBOL_BATTERY_FULL "   Power",
@@ -116,6 +123,9 @@ static lv_obj_t *sw_kbd_custom, *lbl_kbd_state, *card_light[2], *dd_light[2], *s
                 *lbl_light_pct[2], *cb_light_caps[2], *swatch_light[2];
 static lv_obj_t *lbl_bat_pct, *bar_bat, *lbl_bat_status, *lbl_bat_detail, *lbl_pwr_state;
 static lv_obj_t *lbl_clock_big, *lbl_clock_date, *lbl_clock_src, *dd_tz;
+static lv_obj_t *sw_share, *lbl_share_state, *lbl_share_url, *lbl_share_pw, *lbl_share_more, *lbl_share_count,
+                *lbl_share_last, *lbl_share_sd;
+static lv_style_t *s_share_state_style;
 static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, *btn_ota, *bar_ota, *lbl_feed;
 
 /* ---- Apps panel: one row per app, built on first view (the list is
@@ -1852,11 +1862,170 @@ static void apps_restart(void)
 }
 
 /* ======================================================================== */
+/* File Sharing                                                             */
+/* ======================================================================== */
+static void refresh_share(void);
+
+static void share_toggle(bool on)
+{
+    if (on) devos_fileshare_start();
+    else devos_fileshare_stop();
+    refresh_share();
+}
+
+static void share_switch_cb(lv_event_t *e)
+{
+    share_toggle(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
+static void build_share_panel(lv_obj_t *pn)
+{
+    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 318, "SHARE THE SD CARD");
+    lv_obj_t *d = mk_label(c, &st_muted, "Add, download, rename and delete files on the SD card from a browser on "
+                                         "a computer or phone on the same network. It asks for the password below - "
+                                         "a new one each time sharing starts. Sharing is off again after a restart.");
+    lv_obj_set_width(d, PANEL_W - 40);
+    lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(d, 0, 26);
+    sw_share = lv_switch_create(c);
+    lv_obj_set_size(sw_share, 64, 32);
+    lv_obj_set_pos(sw_share, 0, 76);
+    style_switch(sw_share);
+    lv_obj_add_event_cb(sw_share, share_switch_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    focus_add(SEC_SHARE, &s_pf[SEC_SHARE], sw_share);
+    lv_obj_t *l = mk_label(c, &st_text, "Share over the network");
+    lv_obj_set_pos(l, 80, 83);
+    lbl_share_state = mk_label(c, &st_muted, "");
+    lv_obj_align(lbl_share_state, LV_ALIGN_TOP_RIGHT, 0, 83);
+    s_share_state_style = &st_muted;
+
+    lbl_share_url = mk_label(c, &st_title, "");
+    lv_obj_set_style_text_font(lbl_share_url, &lv_font_montserrat_28, 0);
+    lv_obj_set_pos(lbl_share_url, 0, 132);
+    lbl_share_pw = mk_label(c, &st_title, "");
+    lv_obj_set_pos(lbl_share_pw, 0, 180);
+    lbl_share_more = mk_label(c, &st_muted, "");
+    lv_obj_set_width(lbl_share_more, PANEL_W - 40);
+    lv_label_set_long_mode(lbl_share_more, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_line_space(lbl_share_more, 4, 0);
+    lv_obj_set_pos(lbl_share_more, 0, 222);
+
+    c = mk_card(pn, 0, 334, PANEL_W, 116, "ACTIVITY");
+    lbl_share_count = mk_label(c, &st_text, "");
+    lv_obj_set_pos(lbl_share_count, 0, 30);
+    lbl_share_last = mk_label(c, &st_muted, "");
+    lv_obj_set_width(lbl_share_last, PANEL_W - 40);
+    lv_label_set_long_mode(lbl_share_last, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(lbl_share_last, 0, 60);
+
+    c = mk_card(pn, 0, 466, PANEL_W, 84, "SD CARD");
+    lbl_share_sd = mk_label(c, &st_text, "");
+    lv_obj_set_pos(lbl_share_sd, 0, 30);
+}
+
+static void fmt_size64(char *out, size_t cap, uint64_t b)
+{
+    if (b >= 1024ull * 1024 * 1024) snprintf(out, cap, "%.1f GB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024 * 1024) snprintf(out, cap, "%.1f MB", b / (1024.0 * 1024));
+    else snprintf(out, cap, "%llu KB", (unsigned long long)((b + 1023) / 1024));
+}
+
+static void refresh_share(void)
+{
+    devos_fileshare_status_t st;
+    devos_fileshare_status(&st);
+    const devos_telemetry_t *t = devos_telemetry_get();
+    bool on = st.running || st.password[0];         /* switched on (the port may still be opening) */
+    set_checked(sw_share, on);
+
+    char buf[320], port[8] = "";
+    if (st.port != 80) snprintf(port, sizeof(port), ":%d", st.port);
+    lv_style_t *state_style = &st_muted;
+    if (!on && st.error[0]) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "  %s", st.error);
+        state_style = &st_err;
+    } else if (!on) {
+        snprintf(buf, sizeof(buf), "Off");
+    } else if (!st.running) {
+        snprintf(buf, sizeof(buf), "Starting...");
+        state_style = &st_warn;
+    } else if (st.clients > 0) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_UPLOAD "  Sharing - %d connection%s", st.clients, st.clients == 1 ? "" : "s");
+        state_style = &st_ok;
+    } else {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  Sharing");
+        state_style = &st_ok;
+    }
+    set_text(lbl_share_state, buf);
+    swap_style(lbl_share_state, &s_share_state_style, state_style);
+
+    /* where to point the browser: the Wi-Fi address, else a tunnel's */
+    const char *ip = t->local_ip[0] ? t->local_ip
+                   : t->tailscale_online && t->tailscale_ip[0] ? t->tailscale_ip
+                   : t->wireguard_online && t->wireguard_ip[0] ? t->wireguard_ip : NULL;
+    if (!on) {
+        set_text(lbl_share_url, devos_storage_is_mounted() ? "Not sharing" : "No SD card");
+        set_text(lbl_share_pw, "");
+        set_text(lbl_share_more, "Switch it on to see the address and password here.");
+    } else if (!ip) {
+        set_text(lbl_share_url, "Connect to Wi-Fi first");
+        snprintf(buf, sizeof(buf), "Password   %s", st.password);
+        set_text(lbl_share_pw, buf);
+        set_text(lbl_share_more, "The address shows here once the Tab5 is on a network.");
+    } else {
+        snprintf(buf, sizeof(buf), "http://%s%s", ip, port);
+        set_text(lbl_share_url, buf);
+        snprintf(buf, sizeof(buf), "Password   %s      (any user name)", st.password);
+        set_text(lbl_share_pw, buf);
+        char alt[120] = "";
+        size_t n = 0;
+        if (t->tailscale_online && t->tailscale_ip[0] && ip != t->tailscale_ip) {
+            n += (size_t)snprintf(alt + n, sizeof(alt) - n, "Over Tailscale: http://%s%s   ", t->tailscale_ip, port);
+        }
+        if (n < sizeof(alt) && t->wireguard_online && t->wireguard_ip[0] && ip != t->wireguard_ip) {
+            snprintf(alt + n, sizeof(alt) - n, "Over WireGuard: http://%s%s", t->wireguard_ip, port);
+        }
+        snprintf(buf, sizeof(buf), "%s%sFrom a terminal:  curl -u devos:%s 'http://%s%s/api/list?path=/'",
+                 alt, alt[0] ? "\n" : "", st.password, ip, port);
+        set_text(lbl_share_more, buf);
+    }
+
+    char in[16], out[16];
+    fmt_size64(in, sizeof(in), st.bytes_in);
+    fmt_size64(out, sizeof(out), st.bytes_out);
+    snprintf(buf, sizeof(buf), "%u uploaded (%s)     %u downloaded (%s)     %u deleted     %u requests",
+             (unsigned)st.uploads, in, (unsigned)st.downloads, out, (unsigned)st.deletes, (unsigned)st.requests);
+    set_text(lbl_share_count, buf);
+    if (st.last[0]) {
+        long ago = (long)(time(NULL) - st.last_time);
+        char when[24];
+        if (ago < 60) snprintf(when, sizeof(when), "%ld s ago", ago < 0 ? 0 : ago);
+        else if (ago < 3600) snprintf(when, sizeof(when), "%ld min ago", ago / 60);
+        else snprintf(when, sizeof(when), "%ld h ago", ago / 3600);
+        snprintf(buf, sizeof(buf), "Last: %s   from %s, %s", st.last, st.last_client, when);
+    } else {
+        snprintf(buf, sizeof(buf), "Nothing yet");
+    }
+    set_text(lbl_share_last, buf);
+
+    if (!devos_storage_is_mounted()) {
+        snprintf(buf, sizeof(buf), "No SD card: insert one (FAT32) and restart to share it.");
+    } else if (devos_storage_get_total_mb() == 0) {
+        snprintf(buf, sizeof(buf), "Mounted at %s", TAB5_SD_MOUNT_POINT);
+    } else {
+        snprintf(buf, sizeof(buf), "%.1f GB free of %.1f GB", devos_storage_get_free_mb() / 1024.0f,
+                 devos_storage_get_total_mb() / 1024.0f);
+    }
+    set_text(lbl_share_sd, buf);
+}
+
+/* ======================================================================== */
 static void refresh_visible(void)
 {
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
     switch (s_section) {
     case SEC_WIFI:    refresh_wifi(); break;
+    case SEC_SHARE:   refresh_share(); break;
     case SEC_DISPLAY: refresh_display(); break;
     case SEC_KEYBOARD: refresh_keyboard(); break;
     case SEC_POWER:   refresh_power(); break;
@@ -1937,6 +2106,7 @@ static void settings_init(void)
         panels[i] = pn;
     }
     build_wifi_panel(panels[SEC_WIFI]);
+    build_share_panel(panels[SEC_SHARE]);
     build_display_panel(panels[SEC_DISPLAY]);
     build_keyboard_panel(panels[SEC_KEYBOARD]);
     build_power_panel(panels[SEC_POWER]);
@@ -1998,6 +2168,9 @@ static void update_hint(void)
         case SEC_DISPLAY:
         case SEC_KEYBOARD:
             h = "Up / Down  move   Left / Right  change   Space  toggle   Enter  open list   Esc  sections";
+            break;
+        case SEC_SHARE:
+            h = "Space / Enter  share on / off   Esc  sections";
             break;
         case SEC_POWER:
             h = "Enter  sleep now   Esc  sections";
@@ -2194,6 +2367,11 @@ static bool panel_handle_key(uint32_t key, uint8_t mods)
         apps_restart();
         return true;
     }
+    if (s_section == SEC_SHARE && (key == '\r' || key == '\n')) {   /* Enter flips the switch too */
+        devos_focus_set(&s_pf[SEC_SHARE], sw_share);
+        share_toggle(!lv_obj_has_state(sw_share, LV_STATE_CHECKED));
+        return true;
+    }
     if (s_section == SEC_WIFI) {
         if (wifi_handle_key(key, mods)) return true;
     } else {
@@ -2269,7 +2447,8 @@ static int settings_telemetry_lines(char lines[3][64])
         snprintf(lines[1], sizeof(lines[1]), "* Battery %d%%%s", t->battery_percent,
                  t->battery_charging ? " (charging)" : "");
     }
-    snprintf(lines[2], sizeof(lines[2]), "* Theme: %s", devos_theme_is_dark() ? "Dark" : "Light");
+    if (devos_fileshare_running()) snprintf(lines[2], sizeof(lines[2]), "* Sharing the SD card");
+    else snprintf(lines[2], sizeof(lines[2]), "* Theme: %s", devos_theme_is_dark() ? "Dark" : "Light");
     return 3;
 }
 
@@ -2281,7 +2460,7 @@ devos_app_descriptor_t *app_settings_get_descriptor(void)
     app_descriptor.category = "system";
     app_descriptor.name = "Settings";
     app_descriptor.title = "Settings";
-    app_descriptor.subtitle = "Wi-Fi, display, power & system";
+    app_descriptor.subtitle = "Wi-Fi, file sharing, display & system";
     app_descriptor.screen = screen;
     app_descriptor.init = settings_init;
     app_descriptor.show = settings_show;
