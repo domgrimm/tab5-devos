@@ -114,7 +114,7 @@ graph TD
 | **GUI Framework** | LVGL v9.2+ | MIT | - | Rich widget set, PPA 2D hardware blitting, monospace terminal & markdown rendering support |
 | **Tailscale / VPN** | MicroLink v2 | MIT | `trombik/esp_wireguard` | Full `ts2021` Tailscale protocol stack (DERP relays, STUN, DISCO, MagicDNS, WireGuard ChaCha20-Poly1305) |
 | **SSH Client** | `libssh2` (`skuodi/libssh2_esp`) | BSD-3-Clause | `david-cermak/libssh` or `wolfSSH` | Permissive BSD license, supports interactive PTY, password & Ed25519/RSA key auth, proven on ESP32 |
-| **HTTP Client** | `esp_http_client` (OTA manifest + image download) | Apache-2.0 | `devos_net_http_get` (raw-socket GET in `devos_net`) | Built into ESP-IDF; OTA is the only HTTP user |
+| **HTTP Client** | `devos_http` (HTTP/1.1 + mbedTLS over the devos_net sockets): OTA, REST, Docker, ADS-B, maps, Cricket | MIT (ours) | `esp_http_client` | Goes through the socket layer, so VPN routing applies; one client for every app |
 | **JSON Parser** | Minimal shared reader in `devos_json` (strings, arrays, key lookup), used by `devos_ota` | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
 | **Markdown Parser** | Shared CommonMark-subset renderer in `devos_mdview` (LVGL spangroup-based), used by the editor preview | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |
@@ -593,8 +593,11 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 > 2. Tailscale: no interactive (browser) login yet, auth key only; DERP TLS certificates are not
 >    verified by MicroLink (traffic is WireGuard-encrypted end to end regardless).
 > 3. (was: Terminal) done.
-> 4. (was: OTA) done: background download into the spare slot, SHA-256 vs manifest, newer-only,
->    bootloader rollback; publish with tools/make_ota_manifest.py. Images are not signed yet.
+> 4. (was: OTA) done: the image is downloaded whole into PSRAM (devos_http), checked (size, SHA-256,
+>    image header, build id) and only then written to the spare slot with no network running;
+>    newer versions or other builds of the same one; bootloader rollback; the next boot says
+>    whether it took, rolled back, or stopped halfway. Publish with tools/publish_pages.py.
+>    Images are not signed yet.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
 > 6. Missing: command palette, audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep.
 > 7. Camera (2026-09-27): driver + WireGuard QR import built on the new `i2c_master` driver (the
@@ -689,7 +692,7 @@ tab5-devos/
 │   ├── quirc/                     # QR decoder (vendored, ISC)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
-│   ├── devos_ota/                 # OTA manifest check + target flash path
+│   ├── devos_ota/                 # OTA: manifest check, download-verify-then-write install, boot report
 │   ├── devos_sysmon/              # 1 Hz system telemetry
 │   ├── devos_tailnet/             # Tailscale client on top of MicroLink
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator
@@ -724,7 +727,7 @@ tab5-devos/
 │   ├── make_ota_manifest.py       # Publishes an OTA manifest for a built image
 │   ├── md_preview_test.c          # Host-side unit test for the Markdown renderer
 │   ├── modular_launcher_test.c    # Host-side unit test for modular app registry & pagination
-│   ├── ota_test.c                 # Host-side unit test for the OTA manifest check & power states
+│   ├── ota_test.c                 # Host test: OTA check + install over a loopback server, power states
 │   ├── fileshare_test.c           # Host-side end-to-end test of the file-sharing server
 │   └── vterm_test.c               # Host-side unit test for the terminal emulator
 ```

@@ -39,6 +39,7 @@ typedef struct {
     int timeout_ms;             /* connect / each read (0 = 10 s) */
     int max_redirects;          /* 0 = return redirects as they are */
     size_t max_body;            /* response body cap (0 = DEVOS_HTTP_DEFAULT_MAX_BODY) */
+    volatile size_t *progress;  /* optional: body bytes received so far (for a progress bar) */
 } devos_http_req_t;
 
 typedef struct {

@@ -112,7 +112,7 @@ tab5-devos/
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
 │   ├── devos_power/               # Power-mode state machine (active/dim/sleep)
-│   ├── devos_ota/                 # OTA manifest check + target flash path
+│   ├── devos_ota/                 # OTA: manifest check, download-verify-then-write install, boot report
 │   ├── devos_sysmon/              # 1 Hz system telemetry (battery, Wi-Fi, SD, heap, CPU, clock)
 │   ├── devos_tailnet/             # Tailscale client on top of MicroLink
 │   ├── devos_vterm/               # VT100 / xterm terminal emulator (no LVGL)
