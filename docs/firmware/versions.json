@@ -1,0 +1,42 @@
+[
+  {
+    "version": "0.3.3",
+    "built": "Sep 28 2026 09:09:56",
+    "notes": "The camera works again (WireGuard and 2FA QR codes)."
+  },
+  {
+    "version": "0.3.2",
+    "built": "Sep 28 2026 08:45:11",
+    "notes": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again. Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.3.1",
+    "built": "Sep 28 2026 08:19:55",
+    "notes": "Updates over Wi-Fi install reliably; WireGuard no longer restarts the Tab5 on connect. Known issue: runs out of memory (fixed in 0.3.2)."
+  },
+  {
+    "version": "0.3.0",
+    "built": "Sep 28 2026 07:16:24",
+    "notes": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing). Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.2.1",
+    "built": "Sep 27 2026 12:22:46",
+    "notes": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported. Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.2.0",
+    "built": "Sep 27 2026 12:05:24",
+    "notes": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards."
+  },
+  {
+    "version": "0.1.1",
+    "built": "Sep 27 2026 11:38:13",
+    "notes": "ADS-B: OpenStreetMap map under the radar (M toggles it)."
+  },
+  {
+    "version": "0.1.0",
+    "built": "Sep 27 2026 10:26:57",
+    "notes": "First public release."
+  }
+]

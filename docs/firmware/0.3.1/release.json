@@ -1,0 +1,5 @@
+{
+  "version": "0.3.1",
+  "built": "Sep 28 2026 08:19:55",
+  "notes": "Updates over Wi-Fi install reliably; WireGuard no longer restarts the Tab5 on connect. Known issue: runs out of memory (fixed in 0.3.2)."
+}
