@@ -39,6 +39,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
    * One socket helper layer (`devos_net_socket_*`, incl. `send_all`, non-blocking `connect_start/wait`, and `listen` / `accept` for servers): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send. A custom lwIP netif (the WireGuard tunnel) is added with no address and its address fields are set directly: `netif_add()` with an address or `netif_set_addr()` fires esp_netif's callback, which reads `netif->state` of any netif as its own `esp_netif_t` (this build has no `LWIP_ESP_NETIF_DATA`) and crashes.
    * One HTTP(S) client (`components/devos_http/`): REST calls, APIs and webhooks go through it (never `esp_http_client`, which bypasses the socket layer).
    * One set of screen building blocks (`devos_widgets.h` in `devos_ui`): new apps build buttons, fields, dialogs and lists with it so theming and focus behave the same everywhere.
+   * One clipboard (`devos_clipboard_set()` / `_get()` in devos_core): copy puts text there and paste takes it from there; never keep a private clipboard. `devos_focus` already pastes it into text fields on Sym+V / Ctrl+V.
    * One notice channel (`devos_toast.h`): short feedback ("Copied", "Can't open that file", "Wi-Fi connected") goes through `devos_toast_show(msg, type, ms)`, not a private status label. It is safe to call from any task (it queues; the UI task shows it). System events (Wi-Fi, Tailscale, WireGuard, low battery) come from `devos_toast_watch()` in main's 1 Hz loop, so engines stay free of LVGL.
 
 8. **Modular Self-Registering Apps:**
@@ -59,7 +60,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
      * `Left` / `Right` change the focused value (slider, dropdown, switch).
      * `Esc` backs out one level: close the dialog, then leave the field or panel, then (unhandled) go to the Home Screen.
      * Frequent actions get a letter shortcut.
-     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel). `Sym + Space` (command palette), `Sym + I` (system info) and `Sym + S` (shortcut sheet) are taken by system overlays that see keys before the app.
+     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel). `Sym + Space` (command palette), `Sym + I` (system info) and `Sym + S` (shortcut sheet) are taken by system overlays that see keys before the app; `Sym + V` means paste everywhere.
    * **Visible focus:** whatever the next key will act on is always highlighted: the accent focus ring from `devos_focus`, an app's selection border, or a text cursor.
    * **Discoverable:** every screen shows its keys (a hint line or footer); the welcome note lists the global ones.
    * **Dialogs** take keyboard focus when they open (first field or default button) and give it back when they close; `Enter` confirms, `Esc` cancels.
@@ -171,7 +172,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T` = F1, `Sym + L` = F3, `Sym + 1..6` = Ctrl + 1..6, `Sym + Space` = F6 or Ctrl + Space, `Sym + I` = F7, `Sym + S` = F8).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T` = F1, `Sym + L` = F3, `Sym + 1..6` = Ctrl + 1..6, `Sym + Space` = F6 or Ctrl + Space, `Sym + I` = F7, `Sym + S` = F8, `Sym + V` = F9, and Super (Windows / Cmd) + any letter, digit or Space = `Sym` + it).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target

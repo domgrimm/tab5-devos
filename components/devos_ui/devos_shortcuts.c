@@ -29,6 +29,7 @@ static const char *const GLOBAL_KEYS =
     "Sym+Space\tCommand palette: find any app or command\n"
     "Sym+I\tSystem info: power, memory, network, CPU\n"
     DEVOS_SHORTCUTS_KEY_TEXT "\tThis sheet\n"
+    "Sym+V\tPaste the clipboard (text fields, Terminal, Editor)\n"
     "Sym+H\tHome Screen\n"
     "Sym+1 ... 6\tTerminal, Editor, Tailscale, WireGuard, MQTT, Settings\n"
     "Alt+Tab\tThe app before this one\n"
