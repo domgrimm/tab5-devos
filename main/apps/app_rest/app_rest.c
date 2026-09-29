@@ -812,6 +812,7 @@ static bool rest_key(uint32_t key, uint8_t mods)
         if (key == 's' || key == 'S') { save_quick(); return true; }
         if (key == 'n' || key == 'N') { new_req(); return true; }
         if (key == 'k' || key == 'K') { vars_open(); return true; }
+        if (key == 'v' || key == 'V') return devos_focus_key(&s_f, key, mods);     /* paste into the field */
         return false;
     }
     if ((mods & DEVOS_MOD_ALT) && (key == 'h' || key == 'H')) {
