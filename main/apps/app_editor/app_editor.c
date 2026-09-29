@@ -1527,13 +1527,34 @@ static void editor_click_cb(lv_event_t *e)
 }
 
 /* -------------------------------------------------------------------- keys */
-static bool edit_field_key(lv_obj_t *ta, uint32_t key)
+static bool paste_key(uint32_t key, uint8_t mods)
 {
-    if (key == '\b' || key == 0x7F) lv_textarea_delete_char(ta);
+    return (key == 'v' || key == 'V') && (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN)) && !(mods & DEVOS_MOD_ALT);
+}
+
+/* A key that types into one of the editor's one-line fields (file name, find) */
+static bool typing_key(uint32_t key, uint8_t mods)
+{
+    return paste_key(key, mods) || (key >= 32 && key <= 126 && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN | DEVOS_MOD_ALT)));
+}
+
+/* The editor's one-line fields: Sym+V / Ctrl+V paste the clipboard's first
+ * line; other Ctrl / Sym / Alt letters don't type. */
+static bool edit_field_key(lv_obj_t *ta, uint32_t key, uint8_t mods)
+{
+    if (paste_key(key, mods)) {
+        const char *clip = devos_clipboard_get(NULL);
+        char line[ED_PATH_MAX];
+        size_t n = strcspn(clip, "\r\n");
+        if (n >= sizeof(line)) n = sizeof(line) - 1;
+        memcpy(line, clip, n);
+        line[n] = '\0';
+        lv_textarea_add_text(ta, line);
+    } else if (key == '\b' || key == 0x7F) lv_textarea_delete_char(ta);
     else if (key == LV_KEY_DEL) lv_textarea_delete_char_forward(ta);
     else if (key == LV_KEY_LEFT) lv_textarea_cursor_left(ta);
     else if (key == LV_KEY_RIGHT) lv_textarea_cursor_right(ta);
-    else if (key >= 32 && key <= 126) lv_textarea_add_char(ta, (char)key);
+    else if (typing_key(key, mods)) lv_textarea_add_char(ta, (char)key);
     else return false;
     return true;
 }
@@ -1586,9 +1607,9 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
         if (key == LV_KEY_ESC || (s_modal == MODAL_DELETE && (key == 'n' || key == 'N'))) modal_close();
         else if (key == '\r' || key == '\n' || (s_modal == MODAL_DELETE && (key == 'y' || key == 'Y'))) modal_confirm();
         else if (s_modal != MODAL_DELETE) {
-            if (s_modal_fresh && key >= 32 && key <= 126) lv_textarea_set_text(ta_modal, "");
+            if (s_modal_fresh && typing_key(key, mods)) lv_textarea_set_text(ta_modal, "");
             s_modal_fresh = false;
-            edit_field_key(ta_modal, key);
+            edit_field_key(ta_modal, key, mods);
         }
         return true;
     }
@@ -1652,10 +1673,10 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
             find_next();
             return true;
         }
-        if (!(mods & DEVOS_MOD_CTRL)) {
-            if (s_find_fresh && key >= 32 && key <= 126) lv_textarea_set_text(ta_find, "");
+        if (!(mods & DEVOS_MOD_CTRL) || paste_key(key, mods)) {
+            if (s_find_fresh && typing_key(key, mods)) lv_textarea_set_text(ta_find, "");
             s_find_fresh = false;
-            if (edit_field_key(ta_find, key)) return true;
+            if (edit_field_key(ta_find, key, mods)) return true;
         }
     }
 
