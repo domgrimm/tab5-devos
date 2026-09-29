@@ -4,6 +4,8 @@
 #include "devos_config.h"
 #include "devos_core.h"
 
+#include <string.h>
+
 static lv_style_t s_ring, s_ring_out;
 static bool s_ring_ready;
 
@@ -195,8 +197,31 @@ static bool text_key(lv_obj_t *ta, uint32_t key)
     return true;
 }
 
+/* Sym+V / Ctrl+V in a text field: the system clipboard (one-line fields
+ * take its first line). */
+static bool paste_into(lv_obj_t *ta)
+{
+    const char *clip = devos_clipboard_get(NULL);
+    if (!*clip) return true;
+    if (!lv_textarea_get_one_line(ta)) {
+        lv_textarea_add_text(ta, clip);
+        return true;
+    }
+    size_t n = strcspn(clip, "\r\n");
+    char line[256];
+    if (n >= sizeof(line)) n = sizeof(line) - 1;
+    memcpy(line, clip, n);
+    line[n] = '\0';
+    lv_textarea_add_text(ta, line);
+    return true;
+}
+
 bool devos_focus_key(devos_focus_t *f, uint32_t key, uint8_t mods)
 {
+    if ((key == 'v' || key == 'V') && (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN)) && !(mods & DEVOS_MOD_ALT)) {
+        lv_obj_t *t = devos_focus_get(f);
+        if (t && usable(t) && lv_obj_check_type(t, &lv_textarea_class)) return paste_into(t);
+    }
     if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_FN | DEVOS_MOD_ALT)) return false;
     lv_obj_t *o = devos_focus_get(f);
     if (o && !usable(o)) {                      /* hidden / disabled since: drop it */

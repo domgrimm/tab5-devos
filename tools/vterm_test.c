@@ -136,6 +136,18 @@ int main(void)
     devos_vterm_cursor(vt, NULL, NULL, &vis);
     CHECK(!vis);
 
+    /* BEL rings (an OSC's terminating BEL doesn't); bracketed paste mode */
+    uint32_t bells = devos_vterm_bells(vt);
+    feed(vt, "done\a");
+    CHECK(devos_vterm_bells(vt) == bells + 1);
+    feed(vt, "\033]2;title\007");
+    CHECK(devos_vterm_bells(vt) == bells + 1);
+    CHECK(!devos_vterm_bracketed_paste(vt));
+    feed(vt, "\033[?2004h");
+    CHECK(devos_vterm_bracketed_paste(vt));
+    feed(vt, "\033[?2004l");
+    CHECK(!devos_vterm_bracketed_paste(vt));
+
     devos_vterm_destroy(vt);
     if (failures == 0) printf("vterm tests: ALL PASS\n");
     return failures ? 1 : 0;

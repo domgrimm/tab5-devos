@@ -49,7 +49,6 @@ LV_FONT_DECLARE(lv_font_nimbus_mono_14);
 #define ED_EDIT_MAX (48 * 1024)          /* edited in the text area */
 #define ED_VIEW_MAX (512 * 1024)         /* larger text files: read-only viewer */
 #define ED_UNDO_MAX 24
-#define ED_CLIP_MAX (32 * 1024)
 #define ED_AUTOSAVE_MS 30000
 #define ED_STATUS_H 40                   /* status line + key hints below it */
 #define ED_FIND_H 40
@@ -105,7 +104,6 @@ static EXT_RAM_BSS_ATTR char s_buf[ED_VIEW_MAX + 1];
 /* editing helpers */
 static struct { char *text; uint32_t cursor; } s_undo[ED_UNDO_MAX];
 static int s_undo_n = 0;
-static EXT_RAM_BSS_ATTR char s_clip[ED_CLIP_MAX];
 static char s_find[128] = "";
 static bool s_find_open = false;
 static ed_modal_t s_modal = MODAL_NONE;
@@ -700,9 +698,7 @@ static void copy_or_cut(bool cut)
     bool sel = get_selection(&s, &e);
     if (!sel) line_range(&s, &e);
     const char *t = lv_textarea_get_text(ta_editor);
-    size_t n = e - s < ED_CLIP_MAX - 1 ? e - s : ED_CLIP_MAX - 1;
-    memcpy(s_clip, t + s, n);
-    s_clip[n] = '\0';
+    devos_clipboard_set(t + s, e - s);              /* the system clipboard: Sym+V pastes it elsewhere */
     if (cut && !s_readonly) {
         before_edit(true);
         replace_range(s, e, "");
@@ -713,7 +709,8 @@ static void copy_or_cut(bool cut)
 
 static void paste(void)
 {
-    if (!s_clip[0]) {
+    const char *clip = devos_clipboard_get(NULL);
+    if (!clip[0]) {
         flash_warn("Clipboard is empty");
         return;
     }
@@ -723,7 +720,7 @@ static void paste(void)
         const char *t = lv_textarea_get_text(ta_editor);
         s = e = char_to_byte(t, lv_textarea_get_cursor_pos(ta_editor));
     }
-    replace_range(s, e, s_clip);
+    replace_range(s, e, clip);
     after_edit();
 }
 
@@ -1697,6 +1694,10 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
         return true;
     }
 
+    if ((mods & DEVOS_MOD_FN) && (key == 'v' || key == 'V')) {    /* Sym+V pastes, as in every app */
+        paste();
+        return true;
+    }
     if (mods & DEVOS_MOD_CTRL) {
         switch (key) {
         case 't': insert_timestamp(); return true;
@@ -2233,7 +2234,7 @@ static const char *editor_shortcuts(void)
         "Ctrl+F / Ctrl+G\tFind / next match\n"
         "Ctrl+P\tEdit, split or preview (Markdown)\n"
         "Ctrl+Z\tUndo\n"
-        "Ctrl+X / C / V\tCut / copy / paste (the selection, or the line)\n"
+        "Ctrl+X / C / V\tCut / copy / paste (the selection, or the line), shared by every app\n"
         "Ctrl+A\tSelect all\n"
         "Ctrl+K / Ctrl+D\tDelete / duplicate the line\n"
         "Ctrl+Enter\tTick / untick a task\n"

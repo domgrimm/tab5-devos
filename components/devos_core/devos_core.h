@@ -3,6 +3,7 @@
 #include "lvgl.h"
 #include "devos_config.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -178,6 +179,15 @@ bool devos_core_app_cost(const char *uid, int32_t *sram, int32_t *psram, bool *t
  * registered); the app's show() collects it with take_intent(). */
 bool devos_core_open_with(const char *uid, const char *action, const char *arg);
 bool devos_core_take_intent(const char *uid, char *action, size_t action_cap, char *arg, size_t arg_cap);
+
+/* Clipboard: one piece of text for every app (UI task only). The Editor's
+ * cut / copy and the Authenticator's C put text in; the Editor's paste, the
+ * Terminal's Sym+V and Sym+V / Ctrl+V in any text field (devos_focus) take
+ * it out. Up to DEVOS_CLIPBOARD_MAX bytes, kept in PSRAM. set() returns the
+ * length kept (0 on failure or for ""); get() never returns NULL. */
+#define DEVOS_CLIPBOARD_MAX (64 * 1024)
+size_t devos_clipboard_set(const char *text, size_t len);
+const char *devos_clipboard_get(size_t *len);
 
 /* Telemetry API */
 const devos_telemetry_t *devos_telemetry_get(void);

@@ -35,6 +35,8 @@ struct devos_vterm {
     devos_vt_cell_t pen;                /* current attributes (ch unused) */
     int top, bottom;                    /* scroll region, inclusive */
     bool autowrap, cursor_visible, app_cursor, origin, insert;
+    bool bracketed_paste;               /* ?2004: the host wants pastes marked */
+    uint32_t bells;                     /* BELs received */
     uint8_t tabs[DEVOS_VT_MAX_COLS];
     int g0, g1, gl;                     /* charsets: 0 = ASCII, 1 = DEC special graphics */
 
@@ -342,6 +344,7 @@ static void set_mode(devos_vterm_t *vt, bool on)
             case 6:    vt->origin = on; set_cursor(vt, 0, 0); break;
             case 7:    vt->autowrap = on; break;
             case 25:   vt->cursor_visible = on; mark(vt, vt->cy); break;
+            case 2004: vt->bracketed_paste = on; break;
             case 47:
             case 1047: set_alt_screen(vt, on, true); break;
             case 1048: if (on) save_cursor(vt); else restore_cursor(vt); break;
@@ -349,7 +352,7 @@ static void set_mode(devos_vterm_t *vt, bool on)
                 if (on) { save_cursor(vt); set_alt_screen(vt, true, true); }
                 else    { set_alt_screen(vt, false, false); restore_cursor(vt); }
                 break;
-            default: break;                                  /* mouse, paste, blink: ignored */
+            default: break;                                  /* mouse, blink: ignored */
             }
         } else if (m == 4) {
             vt->insert = on;
@@ -507,7 +510,7 @@ static void osc_dispatch(devos_vterm_t *vt)
 static void control(devos_vterm_t *vt, uint8_t c)
 {
     switch (c) {
-    case 0x07: break;                                       /* BEL */
+    case 0x07: vt->bells++; break;                          /* BEL: the app notices (devos_vterm_bells) */
     case 0x08:                                              /* BS */
         if (vt->cx > 0) { vt->cx--; mark(vt, vt->cy); }
         vt->wrap_pending = false;
@@ -641,6 +644,7 @@ void devos_vterm_reset(devos_vterm_t *vt)
     vt->autowrap = true;
     vt->cursor_visible = true;
     vt->app_cursor = false;
+    vt->bracketed_paste = false;
     vt->origin = false;
     vt->insert = false;
     vt->g0 = vt->g1 = vt->gl = 0;
@@ -808,6 +812,8 @@ void devos_vterm_cursor(const devos_vterm_t *vt, int *col, int *row, bool *visib
 }
 
 bool devos_vterm_app_cursor_keys(const devos_vterm_t *vt) { return vt && vt->app_cursor; }
+bool devos_vterm_bracketed_paste(const devos_vterm_t *vt) { return vt && vt->bracketed_paste; }
+uint32_t devos_vterm_bells(const devos_vterm_t *vt) { return vt ? vt->bells : 0; }
 bool devos_vterm_alt_screen(const devos_vterm_t *vt) { return vt && vt->alt_active; }
 const char *devos_vterm_title(const devos_vterm_t *vt) { return vt ? vt->title : ""; }
 

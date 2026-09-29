@@ -174,6 +174,17 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key('s', DEVOS_MOD_FN);
             return 0;
         }
+        if (sym == SDLK_F9) {
+            /* Sym + V (paste) */
+            devos_core_dispatch_key('v', DEVOS_MOD_FN);
+            return 0;
+        }
+        /* Super (Windows / Cmd) + a letter, digit or Space is Sym + it */
+        if ((mod & KMOD_GUI) && ((sym >= SDLK_a && sym <= SDLK_z) || (sym >= SDLK_0 && sym <= SDLK_9) ||
+                                 sym == SDLK_SPACE)) {
+            devos_core_dispatch_key((uint32_t)sym, DEVOS_MOD_FN | (devos_mods & DEVOS_MOD_SHIFT));
+            return 0;
+        }
         if (sym == SDLK_ESCAPE || sym == SDLK_HOME) {
             devos_core_dispatch_key(LV_KEY_ESC, DEVOS_MOD_NONE);
             return 0;

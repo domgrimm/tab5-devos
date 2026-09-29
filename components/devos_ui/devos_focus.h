@@ -16,6 +16,8 @@
  *                           which usually submits the form)
  *   printable keys          type into a focused text field (Backspace / Del (127) edit;
  *                           in a multi-line field Up / Down / Enter edit too)
+ *   Sym+V / Ctrl+V          paste the system clipboard into a focused text field
+ *                           (a one-line field takes its first line)
  *
  * Returned false (left to the app): Esc (unless a dropdown list is open),
  * Enter on a one-line text field or a checkbox / switch (submit), keys with

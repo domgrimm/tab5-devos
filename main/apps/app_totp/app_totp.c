@@ -154,6 +154,24 @@ static void row_draw(devos_vlist_t *v, lv_layer_t *layer, const lv_area_t *row, 
     devos_wipe(&a, sizeof(a));
 }
 
+/* C: the picked account's current code to the clipboard - Alt+Tab to the
+ * Terminal and Sym+V pastes it into the prompt. */
+static void copy_code(void)
+{
+    devos_totp_acct_t a;
+    if (s_list.sel < 0 || !devos_totp_get(s_list.sel, &a)) return;
+    int rem;
+    uint32_t code = devos_totp_code(&a, (int64_t)time(NULL), &rem);
+    char digits[12], m[128];
+    snprintf(digits, sizeof(digits), "%0*u", a.digits, (unsigned)code);
+    devos_clipboard_set(digits, strlen(digits));
+    snprintf(m, sizeof(m), "Copied the %.40s code - %d s left%s", a.issuer[0] ? a.issuer : a.label, rem,
+             rem <= 5 ? ", it changes soon" : "");
+    devos_toast_show(m, rem <= 5 ? DEVOS_TOAST_WARN : DEVOS_TOAST_OK, 2500);
+    devos_wipe(&a, sizeof(a));
+    devos_wipe(digits, sizeof(digits));
+}
+
 static void show_big(bool on)
 {
     if (on && s_list.sel < 0) return;
@@ -556,12 +574,12 @@ static const char *keys_text(void)
 {
     if (devos_qrscan_is_open(&s_scan)) return "Show the QR code to the camera    Esc cancels";
     if (any_dialog()) return "Tab / arrows move    Enter confirms    Esc cancels";
-    if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) return "Up / Down next account    Enter or Esc back";
+    if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) return "Up / Down next account    C copy the code    Enter or Esc back";
     switch (devos_totp_state()) {
     case DEVOS_TOTP_NO_VAULT: return "Type a passphrase, Tab, type it again, Enter    Esc home";
     case DEVOS_TOTP_LOCKED: return "Type your passphrase, Enter unlocks    Tab reaches Erase    Esc home";
     case DEVOS_TOTP_BUSY: return "Working - a few seconds    Esc home (it carries on)";
-    default: return "Up / Down pick    Enter big code    A add    E edit    Del delete    Aa+Up / Down move    B backup    L lock    Esc home";
+    default: return "Up / Down pick    Enter big code    C copy the code    A add    E edit    Del delete    Aa+Up / Down move    B backup    L lock    Esc home";
     }
 }
 
@@ -662,6 +680,7 @@ static bool totp_key(uint32_t key, uint8_t mods)
     if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) {
         if (key == LV_KEY_ESC || key == '\r' || key == '\n' || key == ' ') show_big(false);
         else if (key == LV_KEY_UP || key == LV_KEY_DOWN) { devos_vlist_key(&s_list, key); refresh_big(); }
+        else if ((key == 'c' || key == 'C') && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN))) copy_code();
         return true;
     }
     if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN)) return false;
@@ -676,6 +695,7 @@ static bool totp_key(uint32_t key, uint8_t mods)
     case 'e': case 'E': if (s_list.sel >= 0) form_open(s_list.sel); return true;
     case 127: case 'd': case 'D': if (s_list.sel >= 0) del_open(); return true;
     case 'b': case 'B': backup_open(); return true;
+    case 'c': case 'C': copy_code(); return true;
     case 'l': case 'L': do_lock(); return true;
     case LV_KEY_ESC: return false;
     default: return key >= 32 && key < 127;
@@ -970,6 +990,7 @@ static const char *totp_shortcuts(void)
         "Accounts\n"
         "Up / Down\tPick an account\n"
         "Enter\tBig code (Up / Down: the next account)\n"
+        "C\tCopy the code (Sym+V pastes it in the Terminal)\n"
         "A\tAdd: scan a QR code, type it, or import from the SD card\n"
         "E\tEdit\n"
         "D / Del\tDelete\n"

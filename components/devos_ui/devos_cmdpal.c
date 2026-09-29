@@ -310,6 +310,9 @@ static bool palette_key(uint32_t key, uint8_t mods)
     cancel_confirm();
     if ((mods & DEVOS_MOD_FN) && (key == LV_KEY_UP || key == LV_KEY_DOWN)) {
         key = key == LV_KEY_UP ? DEVOS_KEY_PGUP : DEVOS_KEY_PGDN;
+    } else if ((mods & DEVOS_MOD_FN) && (key == 'v' || key == 'V')) {
+        if (devos_focus_key(&s_focus, key, mods)) filter();     /* paste into the search */
+        return true;
     } else if ((mods & DEVOS_MOD_FN) && ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
                                           (key >= '0' && key <= '9') || key == '-' || key == '+' || key == '=')) {
         devos_cmdpal_close();               /* another Sym shortcut (Sym+I, Sym+H ...): go ahead */
