@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.4.2",
+    "built": "Sep 29 2026 07:15:08",
+    "notes": "One clipboard for every app: Sym+V pastes (text fields, Terminal, Editor); C in the Authenticator copies the code. Sym+S keyboard shortcuts, terminal bell, toasts, Docker SSH / web links, Se"
+  },
+  {
     "version": "0.4.1",
     "built": "Sep 28 2026 22:54:31",
     "notes": "Fixes updates over Wi-Fi stopping with a watchdog reset while the new image was written. A Tab5 on 0.3.3 or 0.4.0 still updates with its old installer: install 0.4.1 once by cable from this "

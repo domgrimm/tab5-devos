@@ -64,6 +64,9 @@ void tab5_keyboard_set_accent(uint32_t rgb);
 void tab5_keyboard_lights_suspend(bool off);
 /* What light idx shows now (0xRRGGBB before brightness; for previews). */
 uint32_t tab5_keyboard_light_colour(int idx);
+/* Both lights show rgb at full brightness for `ms`, then go back to their
+ * settings (the terminal bell). Any task; not while the screen sleeps. */
+void tab5_keyboard_lights_pulse(uint32_t rgb, uint32_t ms);
 
 #ifdef __cplusplus
 }

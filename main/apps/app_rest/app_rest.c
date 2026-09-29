@@ -812,6 +812,7 @@ static bool rest_key(uint32_t key, uint8_t mods)
         if (key == 's' || key == 'S') { save_quick(); return true; }
         if (key == 'n' || key == 'N') { new_req(); return true; }
         if (key == 'k' || key == 'K') { vars_open(); return true; }
+        if (key == 'v' || key == 'V') return devos_focus_key(&s_f, key, mods);     /* paste into the field */
         return false;
     }
     if ((mods & DEVOS_MOD_ALT) && (key == 'h' || key == 'H')) {
@@ -1029,6 +1030,27 @@ static int rest_telemetry(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *rest_shortcuts(void)
+{
+    return
+        "Request\n"
+        "Ctrl+Enter\tSend (again: cancel); Enter in the URL sends too\n"
+        "Ctrl+S\tSave (asks for a name the first time)\n"
+        "Ctrl+N\tNew request\n"
+        "Ctrl+K\tVariables, used as {{NAME}}\n"
+        "Alt+H\tThe response: body / headers\n"
+        "Tab\tBetween the fields and the response\n"
+        "Sym+Up / Down\tScroll the response (when it has the focus)\n"
+        "Esc\tCancel a request in flight, then Home\n"
+        "Saved requests\n"
+        "Sym+L\tOpen the list, focus it, hide it\n"
+        "Up / Down\tPick a request\n"
+        "Enter\tLoad it\n"
+        "D / Del\tDelete it\n"
+        "Esc / Tab\tBack to the request\n";
+}
+
 devos_app_descriptor_t *app_rest_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;             /* auto-assigned */
@@ -1044,5 +1066,6 @@ devos_app_descriptor_t *app_rest_get_descriptor(void)
     s_desc.hide = rest_hide;
     s_desc.handle_key = rest_key;
     s_desc.get_telemetry_lines = rest_telemetry;
+    s_desc.get_shortcuts = rest_shortcuts;
     return &s_desc;
 }

@@ -1,8 +1,5 @@
 {
   "version": "0.4.2",
-  "url": "tab5-devos-0.4.2.bin",
-  "size": 2542240,
-  "sha256": "e05484da09dd00f712ec37428d6e4fbe8d911025a0030c22e1f6798a604111eb",
-  "build": "b5f47c98ad623690652aedd44146f3fb720ad44d0ed155481825fe230c781372",
+  "built": "Sep 29 2026 07:15:08",
   "notes": "One clipboard for every app: Sym+V pastes (text fields, Terminal, Editor); C in the Authenticator copies the code. Sym+S keyboard shortcuts, terminal bell, toasts, Docker SSH / web links, Se"
 }

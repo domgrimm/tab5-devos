@@ -98,6 +98,7 @@ else()
         main/apps/app_template/app_template.c
         components/devos_core/devos_core.c
         components/devos_core/devos_apps.c
+        components/devos_core/devos_clipboard.c
         components/devos_ui/devos_theme.c
         components/devos_ui/devos_top_bar.c
         components/devos_ui/devos_codeview.c
@@ -108,6 +109,8 @@ else()
         components/devos_ui/devos_match.c
         components/devos_ui/devos_cmdpal.c
         components/devos_ui/devos_hud.c
+        components/devos_ui/devos_shortcuts.c
+        components/devos_ui/devos_toast.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/devos_fileshare/devos_fileshare.c

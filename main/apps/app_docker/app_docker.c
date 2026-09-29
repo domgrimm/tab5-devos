@@ -18,6 +18,7 @@
 #include "devos_widgets.h"
 #include "devos_codeview.h"
 #include "devos_docker.h"
+#include "devos_toast.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,7 +34,7 @@ static lv_obj_t *s_screen, *lbl_status, *btn_server, *btn_refresh, *s_keys;
 static lv_obj_t *list_box, *lbl_empty;
 static devos_vlist_t s_list;
 static lv_obj_t *detail, *lbl_name, *lbl_state, *lbl_info, *lbl_cpu, *lbl_mem, *bar_mem, *lbl_net, *lbl_note;
-static lv_obj_t *btn_logs, *btn_restart, *btn_stop, *lbl_stop;
+static lv_obj_t *btn_logs, *btn_restart, *btn_stop, *lbl_stop, *btn_ssh, *btn_web;
 static lv_obj_t *logs, *lbl_logs_hdr, *logs_scroll;
 static devos_codeview_t s_cv;
 static devos_w_dialog_t s_dlg_cfg, s_dlg_confirm;
@@ -48,6 +49,7 @@ static bool s_logs_open, s_follow = true, s_prog_scroll;
 static char *s_log_text;
 static char s_confirm_id[16], s_confirm_what[12];
 static bool s_inited;
+
 
 static const int INTERVALS[] = { 3, 5, 10, 30 };
 
@@ -116,10 +118,36 @@ static void on_select(devos_vlist_t *v, int idx)
 }
 
 static void open_logs(bool open);
+
+static void flash(const char *msg)
+{
+    devos_toast_show(msg, DEVOS_TOAST_WARN, 3000);
+}
+
+/* Enter on a container that publishes SSH: a session in the Terminal. */
+static bool open_ssh(void)
+{
+    char target[112];
+    const devos_docker_ct_t *c = sel_ct();
+    if (!c || !devos_docker_ssh_target(c, target, sizeof(target))) return false;
+    if (!devos_core_open_with("terminal", "ssh", target)) flash("The Terminal is switched off (Settings > Apps)");
+    return true;
+}
+
+/* W: its web port in the REST client. */
+static void open_web(void)
+{
+    char url[160];
+    const devos_docker_ct_t *c = sel_ct();
+    if (!c) return;
+    if (!devos_docker_web_url(c, url, sizeof(url))) flash("No web port published (80, 443, 8080, 5000 ...)");
+    else if (!devos_core_open_with("rest", "get", url)) flash("The REST app is switched off (Settings > Apps)");
+}
+
 static void on_activate(devos_vlist_t *v, int idx)
 {
     LV_UNUSED(v);
-    if (idx >= 0 && idx < s_n) open_logs(true);
+    if (idx >= 0 && idx < s_n && !open_ssh()) open_logs(true);
 }
 
 /* ------------------------------------------------------------------ detail */
@@ -146,6 +174,11 @@ static void show_detail(void)
     devos_w_track(btn_stop, running ? DEVOS_W_BTN_DANGER : DEVOS_W_BTN_PRIMARY);
     if (running) lv_obj_remove_state(btn_restart, LV_STATE_DISABLED);
     else lv_obj_add_state(btn_restart, LV_STATE_DISABLED);
+    char link[160];
+    if (devos_docker_ssh_target(c, link, sizeof(link))) lv_obj_remove_flag(btn_ssh, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(btn_ssh, LV_OBJ_FLAG_HIDDEN);
+    if (devos_docker_web_url(c, link, sizeof(link))) lv_obj_remove_flag(btn_web, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(btn_web, LV_OBJ_FLAG_HIDDEN);
 
     devos_docker_stats_t st;
     devos_docker_stats(&st);
@@ -260,6 +293,8 @@ static void confirm_cancel_cb(lv_event_t *e)
     devos_focus_clear(&s_fconfirm);
 }
 static void logs_cb(lv_event_t *e) { LV_UNUSED(e); open_logs(true); }
+static void ssh_cb(lv_event_t *e) { LV_UNUSED(e); open_ssh(); }
+static void web_cb(lv_event_t *e) { LV_UNUSED(e); open_web(); }
 static void restart_cb(lv_event_t *e) { LV_UNUSED(e); confirm_open("restart"); }
 static void stop_cb(lv_event_t *e) { LV_UNUSED(e); confirm_open("toggle"); }
 static void refresh_cb(lv_event_t *e) { LV_UNUSED(e); devos_docker_refresh(); }
@@ -390,7 +425,14 @@ static const char *keys_text(void)
     if (devos_w_dialog_open(&s_dlg_cfg)) return "Tab / arrows move    Left / Right change    Enter saves    Esc cancels";
     if (devos_w_dialog_open(&s_dlg_confirm)) return "Enter confirms    Esc cancels";
     if (s_logs_open) return "Up / Down / PgUp / PgDn scroll    F follow new lines    R restart    Esc back to the list";
-    return "Up / Down pick    Enter or L logs    R restart    S stop / start    Ctrl+R refresh    C server    Esc home";
+    static char k[200];
+    const devos_docker_ct_t *c = sel_ct();
+    char link[160];
+    bool ssh = c && devos_docker_ssh_target(c, link, sizeof(link));
+    bool web = c && devos_docker_web_url(c, link, sizeof(link));
+    snprintf(k, sizeof(k), "Up / Down pick    %s%s    R restart    S stop / start    Ctrl+R refresh    C server    Esc home",
+             ssh ? "Enter SSH    L logs" : "Enter or L logs", web ? "    W open in REST" : "");
+    return k;
 }
 
 static void tick_cb(lv_timer_t *t)
@@ -441,6 +483,7 @@ static bool docker_key(uint32_t key, uint8_t mods)
     if (devos_vlist_key(&s_list, key)) return true;
     switch (key) {
     case 'l': case 'L': open_logs(true); return true;
+    case 'w': case 'W': open_web(); return true;
     case 'r': case 'R': confirm_open("restart"); return true;
     case 's': case 'S': confirm_open("toggle"); return true;
     case 'c': case 'C': cfg_open(); return true;
@@ -517,15 +560,24 @@ static void docker_init(void)
     btn_stop = devos_w_btn_kind(detail, DEVOS_W_BTN_DANGER, LV_SYMBOL_STOP "  Stop  (S)", 150, stop_cb, NULL, &lbl_stop);
     lv_obj_set_size(btn_stop, 150, 36);
     lv_obj_set_pos(btn_stop, 334, 310);
+    /* deep links, shown when the container publishes the port */
+    btn_ssh = devos_w_btn(detail, LV_SYMBOL_KEYBOARD "  SSH  (Enter)", 150, ssh_cb, NULL, NULL);
+    lv_obj_set_size(btn_ssh, 150, 36);
+    lv_obj_set_pos(btn_ssh, 0, 354);
+    btn_web = devos_w_btn(detail, LV_SYMBOL_UPLOAD "  Open in REST  (W)", 200, web_cb, NULL, NULL);
+    lv_obj_set_size(btn_web, 200, 36);
+    lv_obj_set_pos(btn_web, 162, 354);
     lbl_note = devos_w_label(detail, &lv_font_montserrat_12, DEVOS_W_TEXT_OK, "");
     lv_label_set_long_mode(lbl_note, LV_LABEL_LONG_DOT);
     lv_obj_set_width(lbl_note, DEVOS_SCREEN_WIDTH - LIST_W - 40);
-    lv_obj_set_pos(lbl_note, 0, 360);
+    lv_obj_set_pos(lbl_note, 0, 404);
     lv_obj_add_flag(detail, LV_OBJ_FLAG_HIDDEN);
     devos_focus_init(&s_fdetail);
     devos_focus_add(&s_fdetail, btn_logs);
     devos_focus_add(&s_fdetail, btn_restart);
     devos_focus_add(&s_fdetail, btn_stop);
+    devos_focus_add(&s_fdetail, btn_ssh);
+    devos_focus_add(&s_fdetail, btn_web);
 
     logs = devos_w_panel(s_screen, 0, DEVOS_W_BAR_H, DEVOS_SCREEN_WIDTH, h, DEVOS_W_CODE);
     lbl_logs_hdr = devos_w_label(logs, &lv_font_montserrat_14, DEVOS_W_TEXT_ACCENT, "");
@@ -620,6 +672,27 @@ static int docker_telemetry(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *docker_shortcuts(void)
+{
+    return
+        "Containers\n"
+        "Up / Down\tPick a container\n"
+        "Enter\tSSH into it (if it publishes port 22), else its logs\n"
+        "L\tLogs\n"
+        "W\tOpen its web port in REST\n"
+        "R\tRestart\n"
+        "S\tStop / start\n"
+        "C\tServer: Docker API or Portainer\n"
+        "Ctrl+R\tRefresh now\n"
+        "Tab\tThe buttons beside the list\n"
+        "Logs\n"
+        "Up / Down, Sym+Up / Down\tScroll\n"
+        "F\tFollow new lines\n"
+        "R\tRestart\n"
+        "Esc\tBack to the list\n";
+}
+
 devos_app_descriptor_t *app_docker_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
@@ -635,5 +708,6 @@ devos_app_descriptor_t *app_docker_get_descriptor(void)
     s_desc.hide = docker_hide;
     s_desc.handle_key = docker_key;
     s_desc.get_telemetry_lines = docker_telemetry;
+    s_desc.get_shortcuts = docker_shortcuts;
     return &s_desc;
 }

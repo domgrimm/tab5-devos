@@ -467,9 +467,12 @@ services in the REST client).
     descriptor; without one its LV symbol is shown.
 *   `devos_net_resolve()` answers `name.local` with a one-shot mDNS query (lwIP's resolver
     can't), so homeassistant.local / piaware.local / raspberrypi.local work in every app.
-*   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something
-    ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network, "section"
-    in Settings, "scratchpad" in the Editor).
+*   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something:
+    "ssh" `[user@]host[:port]` in the Terminal (Tailscale peers, Network, Docker), "get" a URL in
+    the REST client, "ping" / "scan" / "dns" in Network, "section" in Settings, "scratchpad" and
+    "open" `notes/welcome.md` (a file or folder on the SD card) in the Editor. Docker (v0.4.2):
+    Enter on a container that publishes port 22 (or 2222) opens SSH to it on the Docker host, W
+    opens its first published web port (80, 443, 8080, 5000 ...) in REST.
 
 ---
 
@@ -537,6 +540,25 @@ The Tab5 physical keyboard is the primary input surface for `devOS` (see §4.0).
         updates; Editor: open the scratchpad). Search is `devos_match` (word starts, then
         substrings, then letters in order; `tools/palette_test.c`). Up / Down / Tab pick, Enter
         runs, Esc closes; a tap runs a row.
+    *   **Toasts** (`devos_toast`, v0.4.2): short notices just below the top bar, from any task;
+        Wi-Fi connected / lost, Tailscale and WireGuard up / down and low battery come from
+        `devos_toast_watch()` in main's 1 Hz loop. The apps' private flash labels use it too.
+    *   **Settings > System > Restart devOS** (v0.4.2): asks first, names anything a restart
+        would cut off (an update being written). The palette's "Restart the Tab5" does the same.
+    *   `Sym + S`: **Keyboard shortcuts** (`devos_shortcuts`, v0.4.2): the keys that work
+        everywhere on the left, the current app's on the right (its descriptor's
+        `get_shortcuts()`, which can follow the app's state). (`?` and `/` are Sym-layer symbols
+        on the A164, so the sheet can't be on them.)
+    *   `Sym + V`: **Paste** (v0.4.2). One system clipboard (`devos_clipboard_*` in devos_core,
+        PSRAM, 64 KB): the Editor's Ctrl+X / C and the Authenticator's C (the current code) fill it;
+        the Editor's Ctrl+V / Sym+V, any `devos_focus` text field (Sym+V / Ctrl+V; one-line
+        fields take the first line) and the Terminal's Sym+V use it. The Terminal sends newlines as
+        CR, drops ESC, wraps it in bracketed-paste markers when the host asked (ESC[?2004h), and
+        feeds big pastes out over several polls (the SSH send buffer is 8 KB).
+    *   **Terminal bell** (v0.4.2): BEL (`printf '\a'`) flashes an amber border round the terminal
+        for ~150 ms and pulses the keyboard lights (`tab5_keyboard_lights_pulse`); from another
+        session or another app it is a toast, "Bell from host (session n)". A burst rings once a
+        second at most.
     *   `Sym + I`: **System info** (`devos_hud`, v0.4.0) over the current app, updated every
         second: battery V / mA / W / time left, internal RAM free / low-water / largest block,
         PSRAM, SD, Wi-Fi SSID / RSSI / channel / BSSID, IP, Tailscale IP + DERP relay and its

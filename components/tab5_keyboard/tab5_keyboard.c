@@ -189,6 +189,20 @@ void tab5_keyboard_lights_suspend(bool off)
     s_led_off = off;
 }
 
+static volatile uint32_t s_pulse_rgb;
+static volatile int64_t s_pulse_until;      /* esp_timer time; 0 = none */
+
+void tab5_keyboard_lights_pulse(uint32_t rgb, uint32_t ms)
+{
+#ifdef ESP_PLATFORM
+    s_pulse_rgb = rgb & 0xFFFFFF;
+    s_pulse_until = esp_timer_get_time() + (int64_t)ms * 1000;
+#else
+    (void)rgb;
+    (void)ms;
+#endif
+}
+
 #ifdef ESP_PLATFORM
 static uint32_t scale_rgb(uint32_t rgb, unsigned num, unsigned den)
 {
@@ -465,6 +479,15 @@ static void lights_update(bool caps)
         bright = (int)top;
         rgb[0] = scale_rgb(light_colour(&cfg.light[0], caps, blink_on), b0, top);
         rgb[1] = scale_rgb(light_colour(&cfg.light[1], caps, blink_on), b1, top);
+    }
+    if (s_pulse_until && !s_led_off) {
+        if (esp_timer_get_time() < s_pulse_until) {    /* a pulse: both lights, full brightness */
+            mode = 1;
+            bright = 100;
+            rgb[0] = rgb[1] = s_pulse_rgb;
+        } else {
+            s_pulse_until = 0;
+        }
     }
     if (bright >= 0 && bright != s_led_reg_bright &&
         kbd_write_reg(KBD_REG_BRIGHTNESS, (uint8_t)bright) == ESP_OK) s_led_reg_bright = bright;

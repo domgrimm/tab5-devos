@@ -35,6 +35,7 @@
 #include "devos_vterm.h"
 #include "libssh2_port.h"
 #include "tab5_keyboard.h"
+#include "devos_toast.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,8 @@ typedef struct {
     int view_offset;               /* lines scrolled back (0 = live) */
     uint32_t sb_seen;              /* devos_vterm_scrolled_total() last seen */
     ssh_session_state_t last_state;
+    uint32_t bells_seen;           /* devos_vterm_bells() last seen */
+    uint32_t bell_at;              /* lv_tick of the last bell shown (rate limit) */
     /* connection parameters, for reconnect (password is never kept) */
     char alias[SSH_MAX_ALIAS_LEN];
     char host[SSH_MAX_HOST_LEN];
@@ -75,7 +78,8 @@ static lv_style_t st_bg, st_sidebar, st_header, st_title, st_text, st_muted, st_
 
 /* layout */
 static lv_obj_t *sidebar, *list_sessions, *list_hosts, *term_area, *header, *lbl_header_title,
-                *lbl_header_info, *term_view, *lbl_empty;
+                *lbl_header_info, *term_view, *lbl_empty, *bell_ring;
+static uint32_t s_bell_ring_at;     /* the visual bell's border is showing since (0 = not) */
 static bool s_sidebar_visible = true;
 static int s_cols = 126, s_rows = 40;
 static int s_active = 0;           /* active session id (0 = none) */
@@ -90,7 +94,7 @@ static bool s_panel_focus = false;                 /* keys go to the panel, not 
 enum { PI_NONE, PI_NEW, PI_SESSION, PI_HOST, PI_DEVKEY };
 static int s_psel_kind = PI_NONE, s_psel_idx = 0, s_psel_pos = 0;
 
-#define HINT_SHELL "Sym+L  panel     Sym+N  new\nSym+K  device key\nSym+Up/Down  scroll back\nAlt+1..8  switch session"
+#define HINT_SHELL "Sym+L  panel     Sym+N  new\nSym+K  device key     Sym+V  paste\nSym+Up/Down  scroll back\nAlt+1..8  switch session"
 #define HINT_PANEL "Up/Down  select    Tab  section\nEnter  open    N  new    E  edit\nD  disconnect / delete\nEsc  shell     Sym+L  hide panel"
 
 /* dialogs */
@@ -446,9 +450,101 @@ static void on_state_change(int id, term_sess_t *t, ssh_session_t *s)
     }
 }
 
+/* ---- bell: BEL from the host (make && printf '\a') ---- */
+static void ring_bell(int id, term_sess_t *t, bool visible)
+{
+    if (t->bell_at && lv_tick_elaps(t->bell_at) < 1000) return;    /* a burst rings once */
+    t->bell_at = lv_tick_get() | 1;
+    tab5_keyboard_lights_pulse(lv_color_to_u32(devos_theme_get()->accent_warning), 200);
+    if (visible && id == s_active) {
+        lv_obj_set_style_border_color(bell_ring, devos_theme_get()->accent_warning, 0);
+        lv_obj_remove_flag(bell_ring, LV_OBJ_FLAG_HIDDEN);          /* a flash round the terminal */
+        lv_obj_move_foreground(bell_ring);
+        s_bell_ring_at = lv_tick_get() | 1;
+    } else {
+        char m[96];
+        snprintf(m, sizeof(m), "Bell from %.40s (session %d)", t->alias[0] ? t->alias : t->host, id);
+        devos_toast_show(m, DEVOS_TOAST_INFO, 3000);
+    }
+}
+
+/* ---- Sym+V: the clipboard into the session, fed out over a few polls when
+ * it's more than the SSH send buffer takes at once ---- */
+static char *s_paste;
+static size_t s_paste_len, s_paste_off;
+static int s_paste_sess;
+
+static void paste_pump(void)
+{
+    if (!s_paste) return;
+    ssh_session_t *s = ssh_port_get_session(s_paste_sess);
+    int w = 0;
+    if (s && s->state == SSH_SESSION_CONNECTED) {
+        size_t n = s_paste_len - s_paste_off;
+        w = ssh_port_send(s_paste_sess, s_paste + s_paste_off, n > 4096 ? 4096 : n);
+        if (w > 0) s_paste_off += (size_t)w;
+    }
+    if (w < 0 || !s || s->state != SSH_SESSION_CONNECTED || s_paste_off >= s_paste_len) {
+        free(s_paste);
+        s_paste = NULL;
+    }
+}
+
+static void paste_clipboard(void)
+{
+    size_t n;
+    const char *clip = devos_clipboard_get(&n);
+    term_sess_t *t = ts_for(s_active);
+    ssh_session_t *s = ssh_port_get_session(s_active);
+    if (!n) {
+        devos_toast_show("The clipboard is empty", DEVOS_TOAST_WARN, 0);
+        return;
+    }
+    if (!t || !t->vt || !s || s->state != SSH_SESSION_CONNECTED) {
+        devos_toast_show("No connected session to paste into", DEVOS_TOAST_WARN, 0);
+        return;
+    }
+    if (s_paste) {
+        devos_toast_show("Still pasting the last one...", DEVOS_TOAST_WARN, 0);
+        return;
+    }
+    /* Newlines go as Enter (CR), like a terminal's paste; no escapes, so the
+     * text can't end bracketed paste early or drive the remote terminal. */
+    bool bracket = devos_vterm_bracketed_paste(t->vt);
+    char *b = malloc(n + 16);
+    if (!b) return;
+    size_t k = 0;
+    if (bracket) k += (size_t)sprintf(b, "\033[200~");
+    for (size_t i = 0; i < n; i++) {
+        char c = clip[i];
+        if (c == '\r' && clip[i + 1] == '\n') continue;
+        if (c == 0x1b) continue;
+        b[k++] = c == '\n' ? '\r' : c;
+    }
+    if (bracket) k += (size_t)sprintf(b + k, "\033[201~");
+    s_paste = b;
+    s_paste_len = k;
+    s_paste_off = 0;
+    s_paste_sess = s_active;
+    if (t->view_offset) {                                /* back to the live screen */
+        t->view_offset = 0;
+        term_invalidate_all();
+        refresh_header();
+    }
+    paste_pump();
+    char m[64];
+    snprintf(m, sizeof(m), "Pasted %u character%s", (unsigned)n, n == 1 ? "" : "s");
+    devos_toast_show(m, DEVOS_TOAST_OK, 1500);
+}
+
 static void poll_cb(lv_timer_t *tm)
 {
     LV_UNUSED(tm);
+    paste_pump();
+    if (s_bell_ring_at && lv_tick_elaps(s_bell_ring_at) > 150) {
+        s_bell_ring_at = 0;
+        lv_obj_add_flag(bell_ring, LV_OBJ_FLAG_HIDDEN);
+    }
     static EXT_RAM_BSS_ATTR char buf[4096];
     bool visible = screen && !lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN);
     bool states_changed = false;
@@ -463,6 +559,11 @@ static void poll_cb(lv_timer_t *tm)
             int got = ssh_port_recv(id, buf, sizeof(buf));
             if (got <= 0) break;
             devos_vterm_feed(t->vt, buf, (size_t)got);
+        }
+        uint32_t bells = devos_vterm_bells(t->vt);
+        if (bells != t->bells_seen) {
+            t->bells_seen = bells;
+            ring_bell(id, t, visible);
         }
         /* Keep a scrolled-back view anchored as new lines arrive. */
         uint32_t total = devos_vterm_scrolled_total(t->vt);
@@ -1853,6 +1954,7 @@ static bool terminal_handle_key(uint32_t key, uint8_t mods)
         }
         if (key == 'n' || key == 'N') { open_connect_dialog(NULL); return true; }
         if (key == 'k' || key == 'K') { open_devkey_dialog(); return true; }
+        if (key == 'v' || key == 'V') { paste_clipboard(); return true; }
     }
     if ((mods & DEVOS_MOD_ALT) && key >= '1' && key <= '8') {
         term_sess_t *to = ts_for((int)(key - '0'));
@@ -2061,6 +2163,16 @@ static void terminal_init(void)
     lv_obj_set_style_text_font(lbl_empty, &lv_font_montserrat_16, 0);
     lv_obj_center(lbl_empty);
 
+    /* the visual bell: an amber border round the terminal for a moment */
+    bell_ring = lv_obj_create(term_area);
+    lv_obj_remove_style_all(bell_ring);
+    lv_obj_set_size(bell_ring, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_border_width(bell_ring, 4, 0);
+    lv_obj_set_style_border_opa(bell_ring, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(bell_ring, p->accent_warning, 0);
+    lv_obj_remove_flag(bell_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bell_ring, LV_OBJ_FLAG_HIDDEN);
+
     build_dialogs();
     layout();
     devos_theme_add_listener(apply_theme, NULL);
@@ -2068,25 +2180,48 @@ static void terminal_init(void)
     refresh_sidebar(true);
 }
 
+/* The "ssh" intent (Tailscale peers, Network, Docker): "[user@]host[:port]".
+ * A live session to that host and port comes to the front (true); otherwise
+ * the connect dialog opens filled in. */
+static bool ssh_intent(const char *arg)
+{
+    char user[SSH_MAX_USER_LEN] = "", host[SSH_MAX_HOST_LEN] = "";
+    int port = 22;
+    const char *at = strchr(arg, '@');
+    if (at) {
+        snprintf(user, sizeof(user), "%.*s", (int)(at - arg), arg);
+        arg = at + 1;
+    }
+    const char *colon = strrchr(arg, ':');
+    if (colon && colon == strchr(arg, ':') && atoi(colon + 1) > 0) {   /* one colon: not IPv6 */
+        port = atoi(colon + 1);
+        snprintf(host, sizeof(host), "%.*s", (int)(colon - arg), arg);
+    } else {
+        snprintf(host, sizeof(host), "%s", arg);
+    }
+    if (!host[0]) return false;
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        ssh_session_t *s = ssh_port_get_session(i + 1);
+        if (s_ts[i].vt && s && s->state == SSH_SESSION_CONNECTED && strcmp(s->host, host) == 0 && s->port == port &&
+            (!user[0] || strcmp(s->user, user) == 0)) {
+            switch_session(i + 1);
+            return true;
+        }
+    }
+    open_connect_dialog(host);
+    char p[8];
+    snprintf(p, sizeof(p), "%d", port);
+    lv_textarea_set_text(ta_port, p);
+    if (user[0]) lv_textarea_set_text(ta_user, user);
+    return false;
+}
+
 static void terminal_show(void)
 {
-    /* Another app (Tailscale peer list) may ask for a session to a host. */
-    const devos_telemetry_t *t = devos_telemetry_get();
-    if (t->terminal_requested_host[0]) {
-        char host[64];
-        snprintf(host, sizeof(host), "%s", t->terminal_requested_host);
-        devos_telemetry_t u;
-        memcpy(&u, t, sizeof(u));
-        u.terminal_requested_host[0] = '\0';
-        devos_telemetry_update(&u);
-        for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-            ssh_session_t *s = ssh_port_get_session(i + 1);
-            if (s_ts[i].vt && s && s->state == SSH_SESSION_CONNECTED && strcmp(s->host, host) == 0) {
-                switch_session(i + 1);
-                return;
-            }
-        }
-        open_connect_dialog(host);
+    char action[16], arg[128];
+    if (devos_core_take_intent("terminal", action, sizeof(action), arg, sizeof(arg)) && !strcmp(action, "ssh") &&
+        ssh_intent(arg)) {
+        return;
     }
     term_invalidate_all();
     refresh_sidebar(true);
@@ -2110,6 +2245,38 @@ static int terminal_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *terminal_shortcuts(void)
+{
+    return
+        "In the shell\n"
+        "Sym+L\tConnections panel: open and focus it, or hide it\n"
+        "Sym+N\tNew SSH connection\n"
+        "Sym+K\tThis Tab5's SSH device key\n"
+        "Sym+V\tPaste the clipboard (a 2FA code, a token ...)\n"
+        "Alt+1 ... 8\tSwitch to session 1 ... 8\n"
+        "Sym+Up / Down\tScroll back / forward (any other key returns)\n"
+        "Sym+Left / Right\tHome / End on the remote\n"
+        "Ctrl+letter\tThe control key to the remote (Ctrl+C, Ctrl+D ...)\n"
+        "Esc\tEsc to the remote (Sym+Esc: Home)\n"
+        "Enter\tNo session: a new one. Closed: reconnect\n"
+        "Connections panel\n"
+        "Up / Down\tPick a session or a saved host\n"
+        "Tab / Aa+Tab\tNext / previous section\n"
+        "Enter\tSwitch to the session, or connect to the host\n"
+        "N\tNew connection\n"
+        "E\tEdit the saved host\n"
+        "D / Del\tDisconnect the session / delete the host\n"
+        "K\tDevice key\n"
+        "Esc\tBack to the shell\n"
+        "Dialogs\n"
+        "Enter\tConnect, or save\n"
+        "Left / Right\tSign in with: password, device key, key file\n"
+        "Space\tTick \"save to saved hosts\"\n"
+        "Y / N\tTrust / reject a host's key\n"
+        "Esc\tCancel\n";
+}
+
 devos_app_descriptor_t *app_terminal_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_TERMINAL;
@@ -2126,5 +2293,6 @@ devos_app_descriptor_t *app_terminal_get_descriptor(void)
     app_descriptor.hide = terminal_hide;
     app_descriptor.handle_key = terminal_handle_key;
     app_descriptor.get_telemetry_lines = terminal_telemetry_lines;
+    app_descriptor.get_shortcuts = terminal_shortcuts;
     return &app_descriptor;
 }

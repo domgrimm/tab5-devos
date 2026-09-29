@@ -65,6 +65,12 @@ int  devos_vterm_scrollback_lines(const devos_vterm_t *vt);
 uint32_t devos_vterm_scrolled_total(const devos_vterm_t *vt);
 void devos_vterm_cursor(const devos_vterm_t *vt, int *col, int *row, bool *visible);
 bool devos_vterm_app_cursor_keys(const devos_vterm_t *vt);
+/* The host turned on bracketed paste (ESC[?2004h): wrap pasted text in
+ * ESC[200~ ... ESC[201~ so shells don't run it line by line. */
+bool devos_vterm_bracketed_paste(const devos_vterm_t *vt);
+/* BEL characters received so far (not those ending an OSC string); the app
+ * compares it with the last count to ring its visual bell. */
+uint32_t devos_vterm_bells(const devos_vterm_t *vt);
 bool devos_vterm_alt_screen(const devos_vterm_t *vt);
 const char *devos_vterm_title(const devos_vterm_t *vt);
 

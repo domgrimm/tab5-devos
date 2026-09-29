@@ -677,6 +677,22 @@ static int adsb_telemetry(char lines[3][64])
     return 1;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *adsb_shortcuts(void)
+{
+    return
+        "Radar\n"
+        "Up / Down\tPick an aircraft\n"
+        "+ / -\tZoom in / out\n"
+        "0\tBack to the set range\n"
+        "L\tLabels\n"
+        "T\tTrails\n"
+        "M\tMap underlay\n"
+        "Space\tFreeze\n"
+        "C\tSettings: feed URL, position, range\n"
+        "Esc\tClear the pick, then Home\n";
+}
+
 devos_app_descriptor_t *app_adsb_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
@@ -692,5 +708,6 @@ devos_app_descriptor_t *app_adsb_get_descriptor(void)
     s_desc.hide = adsb_hide;
     s_desc.handle_key = adsb_key;
     s_desc.get_telemetry_lines = adsb_telemetry;
+    s_desc.get_shortcuts = adsb_shortcuts;
     return &s_desc;
 }

@@ -39,11 +39,14 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
    * One socket helper layer (`devos_net_socket_*`, incl. `send_all`, non-blocking `connect_start/wait`, and `listen` / `accept` for servers): all network code routes through it so SIGPIPE, SYN-stall, and routing fixes land once. It is also where VPN routing applies (`devos_net_set_route_hook`, used by the WireGuard tunnel), so a socket opened any other way bypasses the tunnel. A UDP or raw socket of your own calls `devos_net_socket_route()` before its first send. A custom lwIP netif (the WireGuard tunnel) is added with no address and its address fields are set directly: `netif_add()` with an address or `netif_set_addr()` fires esp_netif's callback, which reads `netif->state` of any netif as its own `esp_netif_t` (this build has no `LWIP_ESP_NETIF_DATA`) and crashes.
    * One HTTP(S) client (`components/devos_http/`): REST calls, APIs and webhooks go through it (never `esp_http_client`, which bypasses the socket layer).
    * One set of screen building blocks (`devos_widgets.h` in `devos_ui`): new apps build buttons, fields, dialogs and lists with it so theming and focus behave the same everywhere.
+   * One clipboard (`devos_clipboard_set()` / `_get()` in devos_core): copy puts text there and paste takes it from there; never keep a private clipboard. `devos_focus` already pastes it into text fields on Sym+V / Ctrl+V.
+   * One notice channel (`devos_toast.h`): short feedback ("Copied", "Can't open that file", "Wi-Fi connected") goes through `devos_toast_show(msg, type, ms)`, not a private status label. It is safe to call from any task (it queues; the UI task shows it). System events (Wi-Fi, Tailscale, WireGuard, low battery) come from `devos_toast_watch()` in main's 1 Hz loop, so engines stay free of LVGL.
 
 8. **Modular Self-Registering Apps:**
    * All apps must implement the standardized `devos_app_descriptor_t` interface (init, show, hide, handle_key, get_telemetry_lines) and register via `devos_core_register_app()`.
    * Adding a new application must never require modifying the Home Screen (`app_launcher.c`) or hardcoding app IDs into closed enums. Use `main/apps/app_template/` as the canonical reference.
    * An app's icon is its descriptor's `draw_icon` (a vector icon from `components/devos_ui/devos_icons.c`; add yours there, on its 20 x 20 grid) or, failing that, its `icon` LV symbol. The launcher tiles, Settings > Apps and the top bar all draw icons through `devos_icon_create()`, so they match everywhere.
+   * An app lists its keys for the `Sym + S` shortcut sheet in its descriptor's `get_shortcuts()` ("keys\twhat they do" lines, a line without a tab is a heading; return the set for the app's current state). Keep it in step with the app's hint line when keys change.
    * An app's commands for the `Sym + Space` palette are added with `devos_cmdpal_add()` (`components/devos_ui/devos_cmdpal.h`) from its `init()`, so a switched-off app's commands vanish with it; the palette already lists every app itself. An action another app or the palette should trigger is an intent handled in `show()` (e.g. Settings' "section", the Editor's "scratchpad"). Anything a restart would lose goes through `devos_core_add_restart_check()`; `devos_core_restart()` hides the current app first, so save in `hide()`.
    * Apps can be switched off in Settings > Apps (a boot mask in devos_core, applied on restart). Always call `devos_core_register_app()`: it skips a switched-off app. Start an app's engine in `main.c` with `START_ENGINE(uid, init())`, and make the engine's status getters return "off" when its init never ran, so other code can call them without checks. Never look up another app by id; use its uid, and handle `devos_core_open_with()` returning false.
 
@@ -57,7 +60,7 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
      * `Left` / `Right` change the focused value (slider, dropdown, switch).
      * `Esc` backs out one level: close the dialog, then leave the field or panel, then (unhandled) go to the Home Screen.
      * Frequent actions get a letter shortcut.
-     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel). `Sym + Space` (command palette) and `Sym + I` (system info) are taken by system overlays that see keys before the app.
+     * `Sym + <key>` stays reserved for system shortcuts (apps may use `Sym + L` for their side panel). `Sym + Space` (command palette), `Sym + I` (system info) and `Sym + S` (shortcut sheet) are taken by system overlays that see keys before the app; `Sym + V` means paste everywhere.
    * **Visible focus:** whatever the next key will act on is always highlighted: the accent focus ring from `devos_focus`, an app's selection border, or a text cursor.
    * **Discoverable:** every screen shows its keys (a hint line or footer); the welcome note lists the global ones.
    * **Dialogs** take keyboard focus when they open (first field or default button) and give it back when they close; `Enter` confirms, `Esc` cancels.
@@ -95,7 +98,7 @@ tab5-devos/
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher, app on/off boot mask
-│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons, devos_cmdpal (Sym+Space), devos_hud (Sym+I)
+│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons, devos_cmdpal (Sym+Space), devos_hud (Sym+I), devos_shortcuts (Sym+S), devos_toast
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
 │   ├── devos_fileshare/           # SD card as a password-protected web page (no LVGL; Settings > File Sharing)
@@ -169,7 +172,7 @@ To allow the developer to test and verify UI/UX progress in real-time from their
 * **The Web Simulator Stack:**
   * Runs on the headless Linux server using `Xvfb` (Virtual Framebuffer @ 1280×720), `x11vnc`, and `websockify` / `noVNC`.
   * Renders the native `devos_sim` binary at 60 FPS in an HTML5 browser canvas.
-  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T` = F1, `Sym + L` = F3, `Sym + 1..6` = Ctrl + 1..6, `Sym + Space` = F6 or Ctrl + Space, `Sym + I` = F7).
+  * Captures mouse clicks as GT911 capacitive touch events, and keyboard input as A164 physical keyboard strokes and hotkeys (`Sym + T` = F1, `Sym + L` = F3, `Sym + 1..6` = Ctrl + 1..6, `Sym + Space` = F6 or Ctrl + Space, `Sym + I` = F7, `Sym + S` = F8, `Sym + V` = F9, and Super (Windows / Cmd) + any letter, digit or Space = `Sym` + it).
 * **Start Web Simulator Service:**
   ```bash
   # Build simulator target

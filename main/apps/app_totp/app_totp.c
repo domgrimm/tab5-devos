@@ -9,6 +9,7 @@
  * leave the app. Keys: Up / Down pick, Enter shows the code big, A add,
  * E edit, Del delete, Aa+Up / Down move, B backup / passphrase, L lock.
  */
+#include "devos_toast.h"
 #include "app_totp.h"
 #include "devos_config.h"
 #include "devos_icons.h"
@@ -31,7 +32,7 @@
 #define IMPORT_FILE   TAB5_SD_MOUNT_POINT "/totp/import.txt"
 
 static devos_app_descriptor_t s_desc;
-static lv_obj_t *s_screen, *lbl_clock, *s_keys, *lbl_flash;
+static lv_obj_t *s_screen, *lbl_clock, *s_keys;
 static lv_obj_t *btn_add, *btn_backup, *btn_lock;
 /* setup + lock panels */
 static lv_obj_t *p_setup, *ta_new1, *ta_new2, *lbl_setup_err, *btn_create;
@@ -53,15 +54,13 @@ static devos_qrscan_t s_scan;
 static devos_totp_state_t s_last_state = (devos_totp_state_t)-1;
 static int s_edit = -1;                         /* form: -1 add, else index */
 static int s_pass_mode;                         /* 1 import backup, 2 change passphrase */
-static uint32_t s_last_key, s_hidden_at, s_flash_until;
+static uint32_t s_last_key, s_hidden_at;
 static bool s_visible, s_inited;
 
 /* ------------------------------------------------------------------ helpers */
 static void flash(const char *msg, bool err)
 {
-    devos_w_set_text(lbl_flash, msg);
-    devos_w_track(lbl_flash, err ? DEVOS_W_TEXT_ERR : DEVOS_W_TEXT_OK);
-    s_flash_until = lv_tick_get() + 4000;
+    devos_toast_show(msg, err ? DEVOS_TOAST_ERROR : DEVOS_TOAST_OK, err ? 4000 : 0);
 }
 
 static void fmt_code(uint32_t code, int digits, char *out, size_t cap)
@@ -153,6 +152,24 @@ static void row_draw(devos_vlist_t *v, lv_layer_t *layer, const lv_area_t *row, 
     draw_countdown(layer, row->x2 - 44, y + ROW_H / 2, 16, rem, a.period);
     devos_w_draw_rect(layer, row->x1 + 12, row->y2, row->x2 - 12, row->y2, p->surface_border, LV_OPA_50, 0);
     devos_wipe(&a, sizeof(a));
+}
+
+/* C: the picked account's current code to the clipboard - Alt+Tab to the
+ * Terminal and Sym+V pastes it into the prompt. */
+static void copy_code(void)
+{
+    devos_totp_acct_t a;
+    if (s_list.sel < 0 || !devos_totp_get(s_list.sel, &a)) return;
+    int rem;
+    uint32_t code = devos_totp_code(&a, (int64_t)time(NULL), &rem);
+    char digits[12], m[128];
+    snprintf(digits, sizeof(digits), "%0*u", a.digits, (unsigned)code);
+    devos_clipboard_set(digits, strlen(digits));
+    snprintf(m, sizeof(m), "Copied the %.40s code - %d s left%s", a.issuer[0] ? a.issuer : a.label, rem,
+             rem <= 5 ? ", it changes soon" : "");
+    devos_toast_show(m, rem <= 5 ? DEVOS_TOAST_WARN : DEVOS_TOAST_OK, 2500);
+    devos_wipe(&a, sizeof(a));
+    devos_wipe(digits, sizeof(digits));
 }
 
 static void show_big(bool on)
@@ -557,12 +574,12 @@ static const char *keys_text(void)
 {
     if (devos_qrscan_is_open(&s_scan)) return "Show the QR code to the camera    Esc cancels";
     if (any_dialog()) return "Tab / arrows move    Enter confirms    Esc cancels";
-    if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) return "Up / Down next account    Enter or Esc back";
+    if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) return "Up / Down next account    C copy the code    Enter or Esc back";
     switch (devos_totp_state()) {
     case DEVOS_TOTP_NO_VAULT: return "Type a passphrase, Tab, type it again, Enter    Esc home";
     case DEVOS_TOTP_LOCKED: return "Type your passphrase, Enter unlocks    Tab reaches Erase    Esc home";
     case DEVOS_TOTP_BUSY: return "Working - a few seconds    Esc home (it carries on)";
-    default: return "Up / Down pick    Enter big code    A add    E edit    Del delete    Aa+Up / Down move    B backup    L lock    Esc home";
+    default: return "Up / Down pick    Enter big code    C copy the code    A add    E edit    Del delete    Aa+Up / Down move    B backup    L lock    Esc home";
     }
 }
 
@@ -591,10 +608,6 @@ static void tick_cb(lv_timer_t *t)
     }
     devos_w_set_text(lbl_clock, buf);
     devos_w_track(lbl_clock, tel->time_valid ? DEVOS_W_TEXT_DIM : DEVOS_W_TEXT_ERR);
-    if (s_flash_until && (int32_t)(lv_tick_get() - s_flash_until) >= 0) {
-        s_flash_until = 0;
-        devos_w_set_text(lbl_flash, "");
-    }
     if (st == DEVOS_TOTP_LOCKED) {
         int w = devos_totp_lockout_s();
         if (w) {
@@ -667,6 +680,7 @@ static bool totp_key(uint32_t key, uint8_t mods)
     if (!lv_obj_has_flag(big, LV_OBJ_FLAG_HIDDEN)) {
         if (key == LV_KEY_ESC || key == '\r' || key == '\n' || key == ' ') show_big(false);
         else if (key == LV_KEY_UP || key == LV_KEY_DOWN) { devos_vlist_key(&s_list, key); refresh_big(); }
+        else if ((key == 'c' || key == 'C') && !(mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN))) copy_code();
         return true;
     }
     if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN)) return false;
@@ -681,6 +695,7 @@ static bool totp_key(uint32_t key, uint8_t mods)
     case 'e': case 'E': if (s_list.sel >= 0) form_open(s_list.sel); return true;
     case 127: case 'd': case 'D': if (s_list.sel >= 0) del_open(); return true;
     case 'b': case 'B': backup_open(); return true;
+    case 'c': case 'C': copy_code(); return true;
     case 'l': case 'L': do_lock(); return true;
     case LV_KEY_ESC: return false;
     default: return key >= 32 && key < 127;
@@ -730,11 +745,6 @@ static void totp_init(void)
     lv_obj_align_to(btn_backup, btn_lock, LV_ALIGN_OUT_LEFT_MID, -6, 0);
     btn_add = devos_w_btn(bar, LV_SYMBOL_PLUS " Add", 64, add_cb, NULL, NULL);
     lv_obj_align_to(btn_add, btn_backup, LV_ALIGN_OUT_LEFT_MID, -6, 0);
-    lbl_flash = devos_w_label(bar, &lv_font_montserrat_12, DEVOS_W_TEXT_OK, "");
-    lv_label_set_long_mode(lbl_flash, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(lbl_flash, 420);
-    lv_obj_set_style_text_align(lbl_flash, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(lbl_flash, LV_ALIGN_RIGHT_MID, -250, 0);
 
     /* setup */
     p_setup = centre_panel(s_screen, 620, 400);
@@ -973,6 +983,25 @@ static int totp_telemetry(char lines[3][64])
     }
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *totp_shortcuts(void)
+{
+    return
+        "Accounts\n"
+        "Up / Down\tPick an account\n"
+        "Enter\tBig code (Up / Down: the next account)\n"
+        "C\tCopy the code (Sym+V pastes it in the Terminal)\n"
+        "A\tAdd: scan a QR code, type it, or import from the SD card\n"
+        "E\tEdit\n"
+        "D / Del\tDelete\n"
+        "Aa+Up / Down\tMove the account up / down\n"
+        "B\tBackup, restore, passphrase\n"
+        "L\tLock the vault\n"
+        "Locked\n"
+        "Type, Enter\tUnlock with the passphrase\n"
+        "Tab\tThe Erase button\n";
+}
+
 devos_app_descriptor_t *app_totp_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
@@ -988,5 +1017,6 @@ devos_app_descriptor_t *app_totp_get_descriptor(void)
     s_desc.hide = totp_hide;
     s_desc.handle_key = totp_key;
     s_desc.get_telemetry_lines = totp_telemetry;
+    s_desc.get_shortcuts = totp_shortcuts;
     return &s_desc;
 }
