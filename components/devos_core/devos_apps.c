@@ -16,6 +16,7 @@
 #include "nvs.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_sleep.h"
 #else
 #include <malloc.h>
 #endif
