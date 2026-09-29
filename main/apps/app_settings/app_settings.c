@@ -2535,6 +2535,27 @@ static int settings_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *settings_shortcuts(void)
+{
+    return
+        "Sections\n"
+        "Up / Down\tPick a section\n"
+        "Enter / Tab / Right\tInto its controls\n"
+        "Esc\tBack to the sections, then Home\n"
+        "Wi-Fi\n"
+        "S\tScan\n"
+        "A\tAdd a network (hidden ones too)\n"
+        "X\tDisconnect\n"
+        "Enter\tConnect to the picked network\n"
+        "D / Del\tForget a saved network\n"
+        "Tab\tButtons, available networks, saved networks\n"
+        "The other sections\n"
+        "Left / Right\tChange the focused setting\n"
+        "Space\tFlip a switch\n"
+        "Enter\tOpen a list, press a button (Apps: restart now)\n";
+}
+
 devos_app_descriptor_t *app_settings_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_SETTINGS;
@@ -2550,6 +2571,7 @@ devos_app_descriptor_t *app_settings_get_descriptor(void)
     app_descriptor.hide = settings_hide;
     app_descriptor.handle_key = settings_handle_key;
     app_descriptor.get_telemetry_lines = settings_telemetry_lines;
+    app_descriptor.get_shortcuts = settings_shortcuts;
 
     return &app_descriptor;
 }

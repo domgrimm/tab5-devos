@@ -28,6 +28,7 @@
 #include "devos_mdview.h"
 #include "devos_codeview.h"
 #include "devos_cmdpal.h"
+#include "devos_toast.h"
 #include "ed_voice.h"
 #include <stdio.h>
 #include <time.h>
@@ -109,8 +110,6 @@ static char s_find[128] = "";
 static bool s_find_open = false;
 static ed_modal_t s_modal = MODAL_NONE;
 static char s_modal_target[ED_PATH_MAX] = "";
-static char s_flash[96] = "";
-static uint32_t s_flash_until = 0;
 
 static void apply_layout(void);
 static void refresh_status(void);
@@ -232,11 +231,15 @@ static void config_load(char *file_out, size_t n)
 }
 
 /* ------------------------------------------------------------------ flash */
+/* Notices go to the system toast (devos_toast.h). */
 static void flash(const char *msg)
 {
-    snprintf(s_flash, sizeof(s_flash), "%s", msg);
-    s_flash_until = lv_tick_get() + 3000;
-    refresh_status();
+    devos_toast_show(msg, DEVOS_TOAST_OK, 0);
+}
+
+static void flash_warn(const char *msg)
+{
+    devos_toast_show(msg, DEVOS_TOAST_WARN, 3000);
 }
 
 /* -------------------------------------------------------------- directory */
@@ -450,19 +453,19 @@ static void open_path(const char *rel)
     abs_path(rel, path, sizeof(path));
     struct stat st;
     if (stat(path, &st) != 0 || S_ISDIR(st.st_mode)) {
-        flash("Can't open that file");
+        flash_warn("Can't open that file");
         return;
     }
     if (st.st_size > ED_VIEW_MAX) {
         char m[96], b[16];
         size_str((uint32_t)st.st_size, b, sizeof(b));
         snprintf(m, sizeof(m), "Too large to open here (%s)", b);
-        flash(m);
+        flash_warn(m);
         return;
     }
     FILE *f = fopen(path, "rb");
     if (!f) {
-        flash("Can't read that file");
+        flash_warn("Can't read that file");
         return;
     }
     /* sniff first: s_buf may still be on screen in the viewer */
@@ -470,7 +473,7 @@ static void open_path(const char *rel)
     size_t pn = fread(probe, 1, sizeof(probe), f);
     if (memchr(probe, '\0', pn)) {
         fclose(f);
-        flash("Binary file - not a text file");
+        flash_warn("Binary file - not a text file");
         return;
     }
     if (s_dirty && !save_file()) {
@@ -543,7 +546,7 @@ static bool save_file(void)
     if (!s_file[0] || s_readonly) return true;
     const char *t = lv_textarea_get_text(ta_editor);
     if (!write_file(s_file, t ? t : "")) {
-        flash("SAVE FAILED - check the SD card");
+        flash_warn("SAVE FAILED - check the SD card");
         return false;
     }
     s_dirty = false;
@@ -575,7 +578,7 @@ static void undo_push(void)
 static void undo(void)
 {
     if (!s_undo_n) {
-        flash("Nothing to undo");
+        flash_warn("Nothing to undo");
         return;
     }
     s_undo_n--;
@@ -632,7 +635,7 @@ static void replace_range(uint32_t bs, uint32_t be, const char *ins)
     size_t len = strlen(t), il = strlen(ins);
     if (be > len) be = (uint32_t)len;
     if (len - (be - bs) + il > ED_EDIT_MAX) {
-        flash("File would get too large to edit here");
+        flash_warn("File would get too large to edit here");
         return;
     }
     char *n = malloc(len - (be - bs) + il + 1);
@@ -711,7 +714,7 @@ static void copy_or_cut(bool cut)
 static void paste(void)
 {
     if (!s_clip[0]) {
-        flash("Clipboard is empty");
+        flash_warn("Clipboard is empty");
         return;
     }
     before_edit(true);
@@ -821,7 +824,7 @@ static void memo_dir(char *out, size_t n)
 static void voice_insert(const char *after, const char *line)
 {
     if (!s_file[0] || s_readonly) {
-        flash("Open a note to put the memo link in");
+        flash_warn("Open a note to put the memo link in");
         return;
     }
     const char *t = lv_textarea_get_text(ta_editor);
@@ -890,7 +893,7 @@ static void open_scratchpad(void)
         if (!write_file(ED_SCRATCHPAD, "# Scratchpad\n\n"
                                        "Ctrl+T adds a timestamped line, Ctrl+R records a voice memo, "
                                        "Ctrl+L plays the one on the line, Ctrl+M lists them.\n")) {
-            flash("Couldn't create notes/scratchpad.md (SD card?)");
+            flash_warn("Couldn't create notes/scratchpad.md (SD card?)");
             return;
         }
     }
@@ -945,7 +948,7 @@ static void play_line_memo(void)
     char *o = w ? w : NULL;
     while (o && o > line && o[-1] != '(') o--;
     if (!w || o == line) {
-        flash("No voice memo on this line");
+        flash_warn("No voice memo on this line");
         return;
     }
     w[4] = '\0';                                        /* keep ".wav" */
@@ -1373,10 +1376,6 @@ static void refresh_status(void)
         snprintf(tmp, sizeof(tmp), "%s     %s", vs, buf);
         snprintf(buf, sizeof(buf), "%s", tmp);
     }
-    if (s_flash[0] && lv_tick_get() < s_flash_until) {
-        size_t l = strlen(buf);
-        snprintf(buf + l, sizeof(buf) - l, "     %s", s_flash);
-    }
     if (strcmp(lv_label_get_text(lbl_status), buf) != 0) lv_label_set_text(lbl_status, buf);
 
     refresh_keys();
@@ -1399,7 +1398,7 @@ static void refresh_status(void)
 static void cycle_view(void)
 {
     if (!s_file[0] || !s_markdown || s_readonly) {
-        flash("Preview is for Markdown files");
+        flash_warn("Preview is for Markdown files");
         return;
     }
     s_view = s_view == VIEW_EDIT ? VIEW_SPLIT : s_view == VIEW_SPLIT ? VIEW_PREVIEW : VIEW_EDIT;
@@ -1427,11 +1426,7 @@ static void tick_cb(lv_timer_t *t)
         render_preview(true);
     }
     if (s_dirty && lv_tick_elaps(s_last_edit) > ED_AUTOSAVE_MS) {
-        if (save_file()) flash("Autosaved");
-    }
-    if (s_flash[0] && lv_tick_get() >= s_flash_until) {
-        s_flash[0] = '\0';
-        refresh_status();
+        if (save_file()) refresh_status();          /* the status line says "saved" */
     }
 }
 
@@ -1825,7 +1820,7 @@ static bool editor_handle_key(uint32_t key, uint8_t mods)
     if (key >= 32 && key <= 126) {
         if (mods & (DEVOS_MOD_FN | DEVOS_MOD_ALT)) return true;   /* unbound shortcut */
         if (strlen(lv_textarea_get_text(ta_editor)) >= ED_EDIT_MAX - 1) {
-            flash("File is at the editing limit");
+            flash_warn("File is at the editing limit");
             return true;
         }
         before_edit(sel);
@@ -1874,10 +1869,22 @@ static const devos_command_t s_scratchpad_cmd = {
     .hint = "Editor", .icon = LV_SYMBOL_EDIT, .run = scratchpad_cmd,
 };
 
+static void welcome_cmd(void *ud)
+{
+    LV_UNUSED(ud);
+    devos_core_open_with("editor", "open", "notes/welcome.md");
+}
+
+static const devos_command_t s_welcome_cmd = {
+    .title = "Open the welcome note", .keywords = "welcome help guide keys shortcuts readme manual",
+    .hint = "Editor", .icon = LV_SYMBOL_FILE, .run = welcome_cmd,
+};
+
 static void editor_init(void)
 {
     const devos_palette_t *p = devos_theme_get();
     devos_cmdpal_add(&s_scratchpad_cmd);
+    devos_cmdpal_add(&s_welcome_cmd);
 
     screen = lv_obj_create(lv_screen_active());
     app_descriptor.screen = screen;
@@ -2115,6 +2122,49 @@ static void editor_init(void)
     refresh_status();
 }
 
+/* The "open" intent: a file or folder on the SD card, relative to it
+ * ("notes/welcome.md"; a leading "/" or the mount point is fine too). */
+static void open_intent(const char *arg)
+{
+    size_t mp = strlen(TAB5_SD_MOUNT_POINT);
+    if (!strncmp(arg, TAB5_SD_MOUNT_POINT, mp) && (arg[mp] == '/' || !arg[mp])) arg += mp;
+    while (*arg == '/') arg++;
+    char rel[ED_PATH_MAX];
+    snprintf(rel, sizeof(rel), "%s", arg);
+    size_t n = strlen(rel);
+    while (n && rel[n - 1] == '/') rel[--n] = '\0';
+    for (const char *c = rel; *c; c = strchr(c, '/') ? strchr(c, '/') + 1 : c + strlen(c)) {
+        if (c[0] == '.' && c[1] == '.' && (c[2] == '/' || !c[2])) {     /* stay on the card */
+            flash_warn("Can't open a path outside the SD card");
+            return;
+        }
+    }
+    char path[ED_PATH_MAX + 32];
+    abs_path(rel, path, sizeof(path));
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        char m[ED_PATH_MAX + 32];
+        snprintf(m, sizeof(m), "Not on the SD card: /%.200s", rel);
+        flash_warn(m);
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        enter_dir(rel, NULL);
+        s_sidebar_visible = true;
+        s_focus_list = true;                            /* pick a file from it */
+    } else {
+        char dir[ED_PATH_MAX];
+        snprintf(dir, sizeof(dir), "%s", rel);
+        parent_of(dir);
+        enter_dir(dir, base_name(rel));
+        open_path(rel);
+        s_focus_list = false;
+    }
+    apply_layout();
+    list_paint();
+    refresh_status();
+}
+
 static void editor_show(void)
 {
     /* pick up files changed elsewhere (e.g. edited on a PC) */
@@ -2142,9 +2192,10 @@ static void editor_show(void)
     apply_layout();
     refresh_status();
 
-    char action[16];
-    if (devos_core_take_intent("editor", action, sizeof(action), NULL, 0) && !strcmp(action, "scratchpad")) {
-        open_scratchpad();
+    char action[16], arg[ED_PATH_MAX + 16];
+    if (devos_core_take_intent("editor", action, sizeof(action), arg, sizeof(arg))) {
+        if (!strcmp(action, "scratchpad")) open_scratchpad();
+        else if (!strcmp(action, "open")) open_intent(arg);
     }
 }
 
@@ -2171,6 +2222,44 @@ static int editor_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *editor_shortcuts(void)
+{
+    return
+        "Writing\n"
+        "Ctrl+S\tSave (it also saves itself when you stop typing)\n"
+        "Ctrl+N\tNew file\n"
+        "Ctrl+O\tThe file list\n"
+        "Ctrl+F / Ctrl+G\tFind / next match\n"
+        "Ctrl+P\tEdit, split or preview (Markdown)\n"
+        "Ctrl+Z\tUndo\n"
+        "Ctrl+X / C / V\tCut / copy / paste (the selection, or the line)\n"
+        "Ctrl+A\tSelect all\n"
+        "Ctrl+K / Ctrl+D\tDelete / duplicate the line\n"
+        "Ctrl+Enter\tTick / untick a task\n"
+        "Ctrl+B\tBold\n"
+        "Ctrl+T\tA timestamped line\n"
+        "Ctrl+J\tThe scratchpad\n"
+        "Sym+Left / Right\tStart / end of the line\n"
+        "Alt+Left / Right\tWord left / right\n"
+        "Sym+Up / Down\tPage up / down\n"
+        "Tab\tIndent\n"
+        "Esc\tThe file list\n"
+        "Sym+L / Sym+F\tShow / hide the file list\n"
+        "Voice memos\n"
+        "Ctrl+R\tRecord (again to stop); its link goes in at the cursor\n"
+        "Ctrl+L\tPlay the memo on this line\n"
+        "Ctrl+M\tMemo list: Enter plays, T transcribes, I inserts, Del deletes, S settings\n"
+        "File list\n"
+        "Enter / Right\tOpen\n"
+        "Backspace / Left\tUp a folder\n"
+        "N / F\tNew file / new folder\n"
+        "R\tRename\n"
+        "D / Del\tDelete\n"
+        "H\tShow / hide hidden files\n"
+        "Esc / Tab\tBack to the text\n";
+}
+
 devos_app_descriptor_t *app_editor_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_EDITOR;
@@ -2187,5 +2276,6 @@ devos_app_descriptor_t *app_editor_get_descriptor(void)
     app_descriptor.hide = editor_hide;
     app_descriptor.handle_key = editor_handle_key;
     app_descriptor.get_telemetry_lines = editor_telemetry_lines;
+    app_descriptor.get_shortcuts = editor_shortcuts;
     return &app_descriptor;
 }

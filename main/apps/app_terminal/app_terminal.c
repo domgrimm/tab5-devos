@@ -2068,25 +2068,48 @@ static void terminal_init(void)
     refresh_sidebar(true);
 }
 
+/* The "ssh" intent (Tailscale peers, Network, Docker): "[user@]host[:port]".
+ * A live session to that host and port comes to the front (true); otherwise
+ * the connect dialog opens filled in. */
+static bool ssh_intent(const char *arg)
+{
+    char user[SSH_MAX_USER_LEN] = "", host[SSH_MAX_HOST_LEN] = "";
+    int port = 22;
+    const char *at = strchr(arg, '@');
+    if (at) {
+        snprintf(user, sizeof(user), "%.*s", (int)(at - arg), arg);
+        arg = at + 1;
+    }
+    const char *colon = strrchr(arg, ':');
+    if (colon && colon == strchr(arg, ':') && atoi(colon + 1) > 0) {   /* one colon: not IPv6 */
+        port = atoi(colon + 1);
+        snprintf(host, sizeof(host), "%.*s", (int)(colon - arg), arg);
+    } else {
+        snprintf(host, sizeof(host), "%s", arg);
+    }
+    if (!host[0]) return false;
+    for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
+        ssh_session_t *s = ssh_port_get_session(i + 1);
+        if (s_ts[i].vt && s && s->state == SSH_SESSION_CONNECTED && strcmp(s->host, host) == 0 && s->port == port &&
+            (!user[0] || strcmp(s->user, user) == 0)) {
+            switch_session(i + 1);
+            return true;
+        }
+    }
+    open_connect_dialog(host);
+    char p[8];
+    snprintf(p, sizeof(p), "%d", port);
+    lv_textarea_set_text(ta_port, p);
+    if (user[0]) lv_textarea_set_text(ta_user, user);
+    return false;
+}
+
 static void terminal_show(void)
 {
-    /* Another app (Tailscale peer list) may ask for a session to a host. */
-    const devos_telemetry_t *t = devos_telemetry_get();
-    if (t->terminal_requested_host[0]) {
-        char host[64];
-        snprintf(host, sizeof(host), "%s", t->terminal_requested_host);
-        devos_telemetry_t u;
-        memcpy(&u, t, sizeof(u));
-        u.terminal_requested_host[0] = '\0';
-        devos_telemetry_update(&u);
-        for (int i = 0; i < SSH_MAX_SESSIONS; i++) {
-            ssh_session_t *s = ssh_port_get_session(i + 1);
-            if (s_ts[i].vt && s && s->state == SSH_SESSION_CONNECTED && strcmp(s->host, host) == 0) {
-                switch_session(i + 1);
-                return;
-            }
-        }
-        open_connect_dialog(host);
+    char action[16], arg[128];
+    if (devos_core_take_intent("terminal", action, sizeof(action), arg, sizeof(arg)) && !strcmp(action, "ssh") &&
+        ssh_intent(arg)) {
+        return;
     }
     term_invalidate_all();
     refresh_sidebar(true);
@@ -2110,6 +2133,37 @@ static int terminal_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *terminal_shortcuts(void)
+{
+    return
+        "In the shell\n"
+        "Sym+L\tConnections panel: open and focus it, or hide it\n"
+        "Sym+N\tNew SSH connection\n"
+        "Sym+K\tThis Tab5's SSH device key\n"
+        "Alt+1 ... 8\tSwitch to session 1 ... 8\n"
+        "Sym+Up / Down\tScroll back / forward (any other key returns)\n"
+        "Sym+Left / Right\tHome / End on the remote\n"
+        "Ctrl+letter\tThe control key to the remote (Ctrl+C, Ctrl+D ...)\n"
+        "Esc\tEsc to the remote (Sym+Esc: Home)\n"
+        "Enter\tNo session: a new one. Closed: reconnect\n"
+        "Connections panel\n"
+        "Up / Down\tPick a session or a saved host\n"
+        "Tab / Aa+Tab\tNext / previous section\n"
+        "Enter\tSwitch to the session, or connect to the host\n"
+        "N\tNew connection\n"
+        "E\tEdit the saved host\n"
+        "D / Del\tDisconnect the session / delete the host\n"
+        "K\tDevice key\n"
+        "Esc\tBack to the shell\n"
+        "Dialogs\n"
+        "Enter\tConnect, or save\n"
+        "Left / Right\tSign in with: password, device key, key file\n"
+        "Space\tTick \"save to saved hosts\"\n"
+        "Y / N\tTrust / reject a host's key\n"
+        "Esc\tCancel\n";
+}
+
 devos_app_descriptor_t *app_terminal_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_TERMINAL;
@@ -2126,5 +2180,6 @@ devos_app_descriptor_t *app_terminal_get_descriptor(void)
     app_descriptor.hide = terminal_hide;
     app_descriptor.handle_key = terminal_handle_key;
     app_descriptor.get_telemetry_lines = terminal_telemetry_lines;
+    app_descriptor.get_shortcuts = terminal_shortcuts;
     return &app_descriptor;
 }

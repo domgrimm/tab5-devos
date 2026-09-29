@@ -2,6 +2,7 @@
  * which devos_sysmon refreshes once a second. */
 #include "devos_hud.h"
 #include "devos_cmdpal.h"
+#include "devos_shortcuts.h"
 #include "devos_widgets.h"
 #include "devos_theme.h"
 #include "devos_core.h"
@@ -316,6 +317,7 @@ void devos_hud_open(void)
 {
     if (devos_hud_is_open()) return;
     devos_cmdpal_close();
+    devos_shortcuts_close();
     build();
     refresh();
     lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);

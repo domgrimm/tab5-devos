@@ -46,6 +46,10 @@ typedef struct {
     /* Optional vector icon (see devos_icons.h) drawn to fit `area` in `color`
      * (brand marks keep their own colours). NULL = the `icon` symbol. */
     void (*draw_icon)(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
+    /* Optional: this app's keys for the shortcut sheet (devos_shortcuts.h),
+     * one per line as "keys\twhat they do"; a line without a tab is a
+     * heading. May follow the app's state (file list vs text). NULL = none. */
+    const char *(*get_shortcuts)(void);
 } devos_app_descriptor_t;
 
 typedef struct {
@@ -101,7 +105,6 @@ typedef struct {
     /* App Subsystem Statuses */
     uint8_t  terminal_sessions;
     char     terminal_host[32];
-    char     terminal_requested_host[64];
     char     editor_file[32];
     uint32_t editor_file_kb;
 } devos_telemetry_t;

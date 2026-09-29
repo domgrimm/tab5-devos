@@ -89,6 +89,15 @@ void devos_docker_stats(devos_docker_stats_t *out);
  * stderr lines start with "! "). Returns bytes copied. */
 size_t devos_docker_logs(char *out, size_t cap, uint32_t *gen);
 
+/* Deep links from a container's published ports, on the Docker host (the
+ * server URL's host). The Docker app opens them in the Terminal / REST. */
+/* The host port container port `priv`/tcp is published on, 0 = none. */
+int devos_docker_published(const devos_docker_ct_t *c, int priv);
+/* "host:port" for SSH: its port 22 (or 2222, linuxserver's openssh-server). */
+bool devos_docker_ssh_target(const devos_docker_ct_t *c, char *out, size_t cap);
+/* "http[s]://host:port/" of its first published web port (80, 443, 8080 ...). */
+bool devos_docker_web_url(const devos_docker_ct_t *c, char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

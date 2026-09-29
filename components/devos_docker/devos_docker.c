@@ -833,3 +833,56 @@ size_t devos_docker_logs(char *out, size_t cap, uint32_t *gen)
     UNLOCK();
     return n;
 }
+
+/* ------------------------------------------------------------------ deep links */
+int devos_docker_published(const devos_docker_ct_t *c, int priv)
+{
+    /* c->ports: "8080->80/tcp, 443/tcp" (host->container, unpublished alone) */
+    for (const char *p = c ? c->ports : ""; *p;) {
+        while (*p == ' ' || *p == ',') p++;
+        int a = 0, b = 0;
+        char type[8] = "";
+        if (sscanf(p, "%d->%d/%7[a-z]", &a, &b, type) == 3 && b == priv && !strcmp(type, "tcp")) return a;
+        while (*p && *p != ',') p++;
+    }
+    return 0;
+}
+
+/* The Docker host: the server URL's host name. */
+static bool docker_host(char *out, size_t cap)
+{
+    devos_docker_config_t cfg;
+    devos_docker_get_config(&cfg);
+    bool https;
+    int port;
+    char path[8];
+    return devos_http_parse_url(cfg.url, &https, out, cap, &port, path, sizeof(path)) == 0 && out[0];
+}
+
+bool devos_docker_ssh_target(const devos_docker_ct_t *c, char *out, size_t cap)
+{
+    int pub = devos_docker_published(c, 22);
+    if (!pub) pub = devos_docker_published(c, 2222);
+    char host[96];
+    if (!pub || !docker_host(host, sizeof(host))) return false;
+    snprintf(out, cap, "%s:%d", host, pub);
+    return true;
+}
+
+bool devos_docker_web_url(const devos_docker_ct_t *c, char *out, size_t cap)
+{
+    static const struct { int port; bool tls; } web[] = {
+        { 80, false }, { 443, true }, { 8080, false }, { 8443, true }, { 8000, false }, { 3000, false },
+        { 5000, false }, { 5001, true }, { 8081, false }, { 8008, false }, { 8888, false }, { 9000, false },
+        { 9090, false }, { 9443, true },
+    };
+    char host[96];
+    for (size_t i = 0; i < sizeof(web) / sizeof(web[0]); i++) {
+        int pub = devos_docker_published(c, web[i].port);
+        if (!pub) continue;
+        if (!docker_host(host, sizeof(host))) return false;
+        snprintf(out, cap, "%s://%s:%d/", web[i].tls ? "https" : "http", host, pub);
+        return true;
+    }
+    return false;
+}

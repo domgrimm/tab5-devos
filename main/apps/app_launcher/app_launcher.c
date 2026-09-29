@@ -82,7 +82,7 @@ static lv_obj_t *bottom_bar = NULL;
 static lv_obj_t *lbl_bottom_hint = NULL;
 #define HINT_NORMAL \
     "[Arrows/Tab] Move  |  [Enter/Tap] Launch  |  [1-8] Launch tile  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN \
-    "] Page  |  [E] Arrange  |  [Sym+Space] Commands  |  [Sym+I] Info  |  [Sym+T] Theme"
+    "] Page  |  [E] Arrange  |  [Sym+Space] Commands  |  [Sym+I] Info  |  [Sym+S] Keys"
 #define HINT_ARRANGE \
     "[Arrows/Tab] Move  |  [Enter/Tap] Pick up / drop  |  [1-8] Pick / swap slot  |  [H] Hide / show  |  " \
     "[R] Defaults  |  [Sym+" LV_SYMBOL_UP "/" LV_SYMBOL_DOWN "] Page  |  [Esc] Cancel / done"
@@ -1381,6 +1381,22 @@ static void launcher_hide(void)
     selected_slot = -1;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *launcher_shortcuts(void)
+{
+    return
+        "Home Screen\n"
+        "Arrows / Tab\tMove between the tiles\n"
+        "Enter / 1 ... 8\tOpen a tile\n"
+        "Sym+Up / Down\tPage (Sym+Left / Right too)\n"
+        "E\tArrange: move and hide tiles\n"
+        "Arranging\n"
+        "Enter / 1 ... 8\tPick up, drop or swap a tile\n"
+        "H\tHide / show the tile\n"
+        "R\tBack to the default layout\n"
+        "Esc\tDone\n";
+}
+
 devos_app_descriptor_t *app_launcher_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_LAUNCHER;
@@ -1396,6 +1412,7 @@ devos_app_descriptor_t *app_launcher_get_descriptor(void)
     app_descriptor.hide = launcher_hide;
     app_descriptor.handle_key = launcher_handle_key;
     app_descriptor.get_telemetry_lines = NULL;
+    app_descriptor.get_shortcuts = launcher_shortcuts;
 
     return &app_descriptor;
 }

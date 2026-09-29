@@ -34,7 +34,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
 | **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
-Global keys, from any app: **Sym + Space** command palette (type part of an app or command, Enter runs it), **Sym + I** system info (power, memory, network, CPU), **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier. In the top bar, a tap on the Wi-Fi name, the battery, the clock or the **Shared** mark opens that part of Settings.
+Global keys, from any app: **Sym + Space** command palette (type part of an app or command, Enter runs it), **Sym + I** system info (power, memory, network, CPU), **Sym + S** keyboard shortcuts (everywhere, and for the app you're in), **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier. In the top bar, a tap on the Wi-Fi name, the battery, the clock or the **Shared** mark opens that part of Settings.
 
 On first boot with a MicroSD card inserted, devOS creates the folders and starter files it needs (`/notes/`, `/.ssh/`, `/wireguard/`, `/.devos/`, a welcome note that lists the keys). You never have to prepare the card on a computer.
 
@@ -94,7 +94,7 @@ Memory follows the same split. The 32 MB PSRAM holds big things: LVGL draw buffe
 - **App registry:** up to 32 apps, each identified by a stable string **uid** (`"terminal"`, `"adsb"`). Registration calls the app's `init()` once and measures the memory it took.
 - **App switcher:** shows one app's screen at a time and calls `hide()` on the old app, then `show()` on the new one.
 - **Key dispatcher:** every key goes first to the system overlays (the command palette and the system info panel, which take the keyboard while they're open), then to the global shortcuts, then to the active app's `handle_key()`. An unhandled `Esc` goes to the Home Screen.
-- **Intents:** one app can ask another to do something. `devos_core_open_with("terminal", "ssh", "pi@host")` switches to the Terminal, whose `show()` picks the request up with `devos_core_take_intent()`. The Network app uses this to SSH or ping a host it found, for example.
+- **Intents:** one app can ask another to do something. `devos_core_open_with("terminal", "ssh", "pi@host")` switches to the Terminal, whose `show()` picks the request up with `devos_core_take_intent()`. The Network app uses this to SSH or ping a host it found, Docker to SSH into a container or open its web port in REST, and the palette to open a file in the Editor (`"open"`, `"notes/welcome.md"`).
 - **Telemetry:** a 1 Hz snapshot (battery, Wi-Fi, IP, VPN state, SD, heap, CPU, clock) fed by `devos_sysmon` and drawn by the top bar and tiles.
 - **App switches:** an app switched off in Settings is never initialised and its engine never starts, so it costs no RAM. Changes apply on restart. If a new set of switches fails to boot twice, devOS reverts to the last set that worked. Holding a finger on the screen at power-on switches every app back on.
 
@@ -104,7 +104,7 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 
 | Component | Provides |
 | :--- | :--- |
-| `devos_ui` | Theme engine (dark / high-contrast light, live switching), top bar, `devos_widgets` (buttons, fields, dialogs, virtual lists), `devos_focus` (keyboard focus and focus ring), `devos_icons` (vector icons), `devos_cmdpal` (the `Sym + Space` command palette), `devos_hud` (the `Sym + I` system info panel) |
+| `devos_ui` | Theme engine (dark / high-contrast light, live switching), top bar, `devos_widgets` (buttons, fields, dialogs, virtual lists), `devos_focus` (keyboard focus and focus ring), `devos_icons` (vector icons), `devos_cmdpal` (the `Sym + Space` command palette), `devos_hud` (the `Sym + I` system info panel), `devos_shortcuts` (the `Sym + S` keyboard sheet), `devos_toast` (short notices below the top bar, from any task) |
 | `devos_net` | Wi-Fi manager, DNS + mDNS resolver, and the socket layer every connection goes through (outgoing, and listening for the file-sharing server). That layer is where VPN routing applies, so a socket opened any other way would bypass the tunnel |
 | `devos_http` | HTTP/1.1 + HTTPS client on top of the socket layer |
 | `devos_json` | Small JSON reader and pretty-printer |
@@ -174,6 +174,7 @@ typedef struct {
 | `handle_key` | Every key, after the global shortcuts | Return `true` if it used the key. Leave `Esc` unhandled at the top level and the core goes Home |
 | `get_telemetry_lines` | About once a second while the Home Screen is up | Write up to 3 short lines for its tile ("3 aircraft", "Tunnel up") |
 | `draw_icon` | Whenever an icon is drawn | Draw a vector icon on a 20×20 grid (see `devos_icons.c`); `NULL` falls back to `icon` |
+| `get_shortcuts` | When the `Sym + S` sheet opens over it | Return its keys, one `"keys\twhat they do"` per line (a line without a tab is a heading), for its current state |
 
 Once registered, an app automatically gets:
 
@@ -311,7 +312,7 @@ ninja -C build_sim
 ./build_sim/devos_sim
 ```
 
-Your keyboard stands in for the Tab5's; as a PC keyboard has no Sym key, **Ctrl + 1…8** are Sym + 1…8, **F1** is Sym + T, **F6** (or Ctrl + Space) is Sym + Space and **F7** is Sym + I. `tools/sim/run_web_sim.sh` runs it headless behind noVNC so you can use it from a browser on another machine. The simulator also shows some placeholder demo tiles to exercise Home Screen paging; they're never built into the firmware.
+Your keyboard stands in for the Tab5's; as a PC keyboard has no Sym key, **Ctrl + 1…8** are Sym + 1…8, **F1** is Sym + T, **F6** (or Ctrl + Space) is Sym + Space, **F7** is Sym + I and **F8** is Sym + S. `tools/sim/run_web_sim.sh` runs it headless behind noVNC so you can use it from a browser on another machine. The simulator also shows some placeholder demo tiles to exercise Home Screen paging; they're never built into the firmware.
 
 ### Tests
 

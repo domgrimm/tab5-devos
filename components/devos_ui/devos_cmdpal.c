@@ -2,6 +2,7 @@
 #include "devos_cmdpal.h"
 #include "devos_match.h"
 #include "devos_hud.h"
+#include "devos_shortcuts.h"
 #include "devos_widgets.h"
 #include "devos_focus.h"
 #include "devos_theme.h"
@@ -263,6 +264,7 @@ void devos_cmdpal_open(void)
 {
     if (devos_cmdpal_is_open()) return;
     devos_hud_close();
+    devos_shortcuts_close();
     build();
     gather();
     lv_textarea_set_text(s_ta, "");
@@ -308,7 +310,13 @@ static bool palette_key(uint32_t key, uint8_t mods)
     cancel_confirm();
     if ((mods & DEVOS_MOD_FN) && (key == LV_KEY_UP || key == LV_KEY_DOWN)) {
         key = key == LV_KEY_UP ? DEVOS_KEY_PGUP : DEVOS_KEY_PGDN;
-    } else if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT | DEVOS_MOD_FN)) {
+    } else if ((mods & DEVOS_MOD_FN) && ((key >= 'a' && key <= 'z') || (key >= 'A' && key <= 'Z') ||
+                                          (key >= '0' && key <= '9') || key == '-' || key == '+' || key == '=')) {
+        devos_cmdpal_close();               /* another Sym shortcut (Sym+I, Sym+H ...): go ahead */
+        return false;
+    } else if (mods & DEVOS_MOD_FN) {
+        mods &= (uint8_t)~DEVOS_MOD_FN;     /* Sym+Backspace, Sym+Tab ...: as the plain key */
+    } else if (mods & (DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) {
         return true;
     }
     if (key == '\t') key = (mods & DEVOS_MOD_SHIFT) ? LV_KEY_UP : LV_KEY_DOWN;
@@ -334,6 +342,12 @@ static void info_run(void *ud)
 {
     LV_UNUSED(ud);
     devos_hud_open();
+}
+
+static void keys_run(void *ud)
+{
+    LV_UNUSED(ud);
+    devos_shortcuts_open();
 }
 
 static void sleep_run(void *ud)
@@ -363,6 +377,8 @@ static const devos_command_t s_system[] = {
       .icon = LV_SYMBOL_TINT, .label = theme_label, .run = theme_run },
     { .title = "System info", .keywords = "hud info battery power memory ram psram cpu load wifi ip uptime stats",
       .hint = "Sym+I", .icon = LV_SYMBOL_CHARGE, .run = info_run },
+    { .title = "Keyboard shortcuts", .keywords = "keys help cheat sheet hotkeys shortcut",
+      .hint = DEVOS_SHORTCUTS_KEY_TEXT, .icon = LV_SYMBOL_KEYBOARD, .run = keys_run },
     { .title = "Turn the screen off", .keywords = "sleep screen display off lock", .icon = LV_SYMBOL_EYE_CLOSE,
       .run = sleep_run },
     { .title = "Restart the Tab5", .keywords = "reboot restart reset", .icon = LV_SYMBOL_REFRESH,
