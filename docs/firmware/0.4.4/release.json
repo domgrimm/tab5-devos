@@ -1,0 +1,5 @@
+{
+  "version": "0.4.4",
+  "built": "Sep 29 2026 09:03:25",
+  "notes": "Fix OTA watchdog starvation by yielding more, v0.4.4"
+}

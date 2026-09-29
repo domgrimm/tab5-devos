@@ -1,8 +1,8 @@
 {
-  "version": "0.4.3",
-  "url": "tab5-devos-0.4.3.bin",
-  "size": 2555264,
-  "sha256": "01cdad783c1805463f57e895e66bfc0b33b6c10011db1475b65ecfeeb26364da",
-  "build": "eee09bc9e97c16537bd5ba5c8e080df8181aa91cc204e5263ff5b72c0e1d39ce",
-  "notes": "Restart and shutdown buttons in Power page, Sleep renamed, v0.4.3"
+  "version": "0.4.4",
+  "url": "tab5-devos-0.4.4.bin",
+  "size": 2555392,
+  "sha256": "ffaf10cb6f9fa9554b50dd1ba3b19ae282f60f9ea8a0e216d1ddde458173b4ed",
+  "build": "6b95b7d0700451f967a702489fc25b906d1274c5370a13175671d5a445d28f4b",
+  "notes": "Fix OTA watchdog starvation by yielding more, v0.4.4"
 }
