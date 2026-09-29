@@ -558,6 +558,25 @@ static int cricket_telemetry(char lines[3][64])
     return 2;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *cricket_shortcuts(void)
+{
+    return
+        "Matches\n"
+        "Up / Down\tPick a match\n"
+        "Enter / Tab\tIts scorecard\n"
+        "Left / Right, [ / ]\tDay before / after\n"
+        "T\tToday\n"
+        "D\tGo to a date\n"
+        "L\tLive matches only\n"
+        "R\tRefresh\n"
+        "Scorecard\n"
+        "Up / Down, Sym+Up / Down\tScroll\n"
+        "Left / Right, 1 ... 4\tInnings\n"
+        "Enter\tReload\n"
+        "Esc / Tab\tBack to the matches\n";
+}
+
 devos_app_descriptor_t *app_cricket_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
@@ -573,5 +592,6 @@ devos_app_descriptor_t *app_cricket_get_descriptor(void)
     s_desc.hide = cricket_hide;
     s_desc.handle_key = cricket_key;
     s_desc.get_telemetry_lines = cricket_telemetry;
+    s_desc.get_shortcuts = cricket_shortcuts;
     return &s_desc;
 }

@@ -9,6 +9,7 @@
  * Tools hand work to each other: a scan result can be pinged, an mDNS
  * service opened in the terminal, a DNS answer looked up in turn.
  */
+#include "devos_toast.h"
 #include "app_netdiag.h"
 #include "app_netdiag_int.h"
 #include "devos_net.h"
@@ -18,19 +19,17 @@
 #include <string.h>
 
 static devos_app_descriptor_t s_desc;
-static lv_obj_t *s_screen, *s_bar, *s_lbl_flash, *s_keys;
+static lv_obj_t *s_screen, *s_bar, *s_keys;
 static lv_obj_t *s_tabs[ND_VIEWS], *s_tab_lbl[ND_VIEWS];
 static lv_obj_t *s_view_obj[ND_VIEWS];
 static const nd_view_t *s_views[ND_VIEWS] = { &nd_view_ping, &nd_view_dns, &nd_view_scan, &nd_view_wifi,
                                               &nd_view_mdns };
 static int s_cur = -1;
-static uint32_t s_flash_until;
 static bool s_inited;
 
 void nd_flash(const char *msg)
 {
-    devos_w_set_text(s_lbl_flash, msg);
-    s_flash_until = lv_tick_get() + 3000;
+    devos_toast_show(msg, DEVOS_TOAST_WARN, 3000);
 }
 
 bool nd_form_key(devos_focus_t *f, devos_vlist_t *v, uint32_t key, uint8_t mods)
@@ -100,10 +99,6 @@ static void tick_cb(lv_timer_t *t)
     LV_UNUSED(t);
     if (!s_screen || lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN) || s_cur < 0) return;
     if (s_views[s_cur]->tick) s_views[s_cur]->tick();
-    if (s_flash_until && (int32_t)(lv_tick_get() - s_flash_until) >= 0) {
-        s_flash_until = 0;
-        devos_w_set_text(s_lbl_flash, "");
-    }
     char keys[240];
     snprintf(keys, sizeof(keys), "%s    Alt+1..5 tools    Esc home", s_views[s_cur]->keys ? s_views[s_cur]->keys() : "");
     devos_w_set_text(s_keys, keys);
@@ -159,11 +154,6 @@ static void nd_init(void)
         lv_obj_align(s_tabs[i], LV_ALIGN_LEFT_MID, x, 0);
         x += widths[i] + 6;
     }
-    s_lbl_flash = devos_w_label(s_bar, &lv_font_montserrat_12, DEVOS_W_TEXT_OK, "");
-    lv_label_set_long_mode(s_lbl_flash, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(s_lbl_flash, DEVOS_SCREEN_WIDTH - x - 24);
-    lv_obj_set_style_text_align(s_lbl_flash, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(s_lbl_flash, LV_ALIGN_RIGHT_MID, -12, 0);
     for (int i = 0; i < ND_VIEWS; i++) {
         lv_obj_t *v = lv_obj_create(s_screen);
         lv_obj_remove_style_all(v);
@@ -216,6 +206,47 @@ static int nd_telemetry(char lines[3][64])
     return n;
 }
 
+/* Sym+S sheet (devos_shortcuts.h): the tool on screen first */
+static const char *nd_shortcuts(void)
+{
+    static const char *const tool[ND_VIEWS] = {
+        [ND_PING] = "Ping\n"
+                    "Enter\tStart / stop\n"
+                    "Tab / arrows\tMove between the fields\n"
+                    "Left / Right\tChange a setting\n",
+        [ND_DNS] = "DNS\n"
+                   "Enter\tLook up (on an answer: follow what it points at)\n"
+                   "Left / Right\tRecord type\n"
+                   "Tab\tBetween the form and the answers\n",
+        [ND_SCAN] = "Port scan\n"
+                    "Enter\tStart / stop the scan\n"
+                    "Space\tTick \"ping first\"\n"
+                    "Enter / P\tPing the host picked in the results\n"
+                    "S\tSSH to it in the Terminal\n"
+                    "D\tReverse DNS\n",
+        [ND_WIFI] = "Wi-Fi survey\n"
+                    "Up / Down\tPick a radio\n"
+                    "Space\tPause\n"
+                    "S\tSort by signal, channel or name\n"
+                    "R\tScan now\n"
+                    "Esc\tClear the pick\n",
+        [ND_MDNS] = "mDNS\n"
+                    "Up / Down\tPick a service\n"
+                    "Enter\tOpen it (SSH in the Terminal, web in REST)\n"
+                    "P\tPing it\n"
+                    "C\tScan its ports\n"
+                    "B\tBrowse again\n",
+    };
+    static char text[1200];
+    snprintf(text, sizeof(text), "%s"
+             "Every tool\n"
+             "Alt+1 ... 5\tPing, DNS, Port scan, Wi-Fi survey, mDNS\n"
+             "Alt+Left / Right\tPrevious / next tool\n"
+             "Esc\tStop what's running, then Home\n",
+             s_cur >= 0 && s_cur < ND_VIEWS ? tool[s_cur] : "");
+    return text;
+}
+
 devos_app_descriptor_t *app_netdiag_get_descriptor(void)
 {
     s_desc.id = DEVOS_APP_LAUNCHER;                 /* auto-assigned */
@@ -231,5 +262,6 @@ devos_app_descriptor_t *app_netdiag_get_descriptor(void)
     s_desc.hide = nd_hide;
     s_desc.handle_key = nd_key;
     s_desc.get_telemetry_lines = nd_telemetry;
+    s_desc.get_shortcuts = nd_shortcuts;
     return &s_desc;
 }

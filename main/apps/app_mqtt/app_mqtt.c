@@ -1392,6 +1392,30 @@ static int mqtt_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *mqtt_shortcuts(void)
+{
+    return
+        "Messages\n"
+        "Up / Down\tPick a message\n"
+        "Enter\tCopy it into the publish panel\n"
+        "Space\tPause / resume\n"
+        "C\tClear\n"
+        "F\tJump to the newest and follow\n"
+        "P\tPublish panel\n"
+        "O\tConnect / disconnect\n"
+        "B\tBroker\n"
+        "Tab / Left\tThe topics\n"
+        "Sym+L\tShow / hide the topic list\n"
+        "Publishing\n"
+        "Ctrl+Enter\tSend\n"
+        "Alt+1 ... 9\tSend template 1 ... 9\n"
+        "Esc\tLeave the panel (again: close it)\n"
+        "Topics\n"
+        "Up / Down\tPick a topic\n"
+        "Tab / Enter\tBack to the messages\n";
+}
+
 devos_app_descriptor_t *app_mqtt_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_MQTT;
@@ -1408,5 +1432,6 @@ devos_app_descriptor_t *app_mqtt_get_descriptor(void)
     app_descriptor.hide = mqtt_hide;
     app_descriptor.handle_key = mqtt_handle_key;
     app_descriptor.get_telemetry_lines = mqtt_telemetry_lines;
+    app_descriptor.get_shortcuts = mqtt_shortcuts;
     return &app_descriptor;
 }

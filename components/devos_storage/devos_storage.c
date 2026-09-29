@@ -50,6 +50,7 @@ static const char *WELCOME_MD_CONTENT =
 "- **`Sym + Space`**: Command palette - type part of an app or command (\"doc\", \"theme\", \"reboot\"), "
 "**Enter** runs it\n"
 "- **`Sym + I`**: System info - battery, memory, network and CPU over the app you're in\n"
+"- **`Sym + S`**: Keyboard shortcuts - the global ones and the current app's\n"
 "- **`Sym + H`** or **`Esc`**: Home Screen (Esc goes to the remote shell in Terminal)\n"
 "- **`1` .. `8`**: Launch an app from the Home Screen\n"
 "- **`Sym + T`**: Toggle Dark Cyberdeck / High-Contrast Light theme\n"

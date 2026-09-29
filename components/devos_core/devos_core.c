@@ -57,7 +57,6 @@ static devos_telemetry_t telemetry_data = {
 
     .terminal_sessions      = 2,
     .terminal_host          = "workstation (bash)",
-    .terminal_requested_host = "",
     .editor_file            = "welcome.md",
     .editor_file_kb         = 14,
 };
@@ -212,15 +211,9 @@ bool devos_core_open_with(const char *uid, const char *action, const char *arg)
 {
     devos_app_descriptor_t *app = devos_core_find_app(uid);
     if (!app) return false;
-    if (!strcmp(uid, "terminal") && action && !strcmp(action, "ssh")) {
-        /* the terminal's older mechanism */
-        snprintf(telemetry_data.terminal_requested_host, sizeof(telemetry_data.terminal_requested_host), "%s",
-                 arg ? arg : "");
-    } else {
-        snprintf(s_intent.uid, sizeof(s_intent.uid), "%s", uid);
-        snprintf(s_intent.action, sizeof(s_intent.action), "%s", action ? action : "");
-        snprintf(s_intent.arg, sizeof(s_intent.arg), "%s", arg ? arg : "");
-    }
+    snprintf(s_intent.uid, sizeof(s_intent.uid), "%s", uid);
+    snprintf(s_intent.action, sizeof(s_intent.action), "%s", action ? action : "");
+    snprintf(s_intent.arg, sizeof(s_intent.arg), "%s", arg ? arg : "");
     if (current_app_id == app->id && app->show) app->show();   /* already there: re-check */
     else devos_core_switch_app(app->id);
     return true;

@@ -380,6 +380,17 @@ static int template_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* The Sym+S sheet shows these beside the global keys: "keys\twhat they do",
+ * a line without a tab is a heading. Return the set for the current state. */
+static const char *template_shortcuts(void)
+{
+    return "This screen\n"
+           "C\tCount one up\n"
+           "R\tReset the count\n"
+           "Left / Right\tChange the slider value\n"
+           "Enter\tApply the name you typed\n";
+}
+
 devos_app_descriptor_t *app_template_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_COUNT; /* Auto-assigned if collision */
@@ -397,6 +408,7 @@ devos_app_descriptor_t *app_template_get_descriptor(void)
     app_descriptor.hide = template_hide;
     app_descriptor.handle_key = template_handle_key;
     app_descriptor.get_telemetry_lines = template_telemetry_lines;
+    app_descriptor.get_shortcuts = template_shortcuts;      /* optional: the Sym+S sheet */
 
     return &app_descriptor;
 }

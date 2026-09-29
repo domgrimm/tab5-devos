@@ -467,9 +467,12 @@ services in the REST client).
     descriptor; without one its LV symbol is shown.
 *   `devos_net_resolve()` answers `name.local` with a one-shot mDNS query (lwIP's resolver
     can't), so homeassistant.local / piaware.local / raspberrypi.local work in every app.
-*   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something
-    ("ssh" a host in the terminal, "get" a URL in the REST client, "ping" in Network, "section"
-    in Settings, "scratchpad" in the Editor).
+*   `devos_core_open_with()` / `devos_core_take_intent()`: one app asks another to do something:
+    "ssh" `[user@]host[:port]` in the Terminal (Tailscale peers, Network, Docker), "get" a URL in
+    the REST client, "ping" / "scan" / "dns" in Network, "section" in Settings, "scratchpad" and
+    "open" `notes/welcome.md` (a file or folder on the SD card) in the Editor. Docker (v0.4.2):
+    Enter on a container that publishes port 22 (or 2222) opens SSH to it on the Docker host, W
+    opens its first published web port (80, 443, 8080, 5000 ...) in REST.
 
 ---
 
@@ -537,6 +540,10 @@ The Tab5 physical keyboard is the primary input surface for `devOS` (see §4.0).
         updates; Editor: open the scratchpad). Search is `devos_match` (word starts, then
         substrings, then letters in order; `tools/palette_test.c`). Up / Down / Tab pick, Enter
         runs, Esc closes; a tap runs a row.
+    *   `Sym + S`: **Keyboard shortcuts** (`devos_shortcuts`, v0.4.2): the keys that work
+        everywhere on the left, the current app's on the right (its descriptor's
+        `get_shortcuts()`, which can follow the app's state). (`?` and `/` are Sym-layer symbols
+        on the A164, so the sheet can't be on them.)
     *   `Sym + I`: **System info** (`devos_hud`, v0.4.0) over the current app, updated every
         second: battery V / mA / W / time left, internal RAM free / low-water / largest block,
         PSRAM, SD, Wi-Fi SSID / RSSI / channel / BSSID, IP, Tailscale IP + DERP relay and its

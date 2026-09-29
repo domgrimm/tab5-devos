@@ -5,6 +5,8 @@
 #include "devos_top_bar.h"
 #include "devos_cmdpal.h"
 #include "devos_hud.h"
+#include "devos_shortcuts.h"
+#include "devos_toast.h"
 #include "devos_storage.h"
 #include "devos_fileshare.h"
 #include "devos_power.h"
@@ -87,6 +89,7 @@ static void gui_task(void *arg)
             devos_sysmon_apply();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
+            devos_toast_watch();                /* Wi-Fi / VPN / battery notices */
             app_launcher_update_telemetry();
             devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
             /* A new OTA image that has run the UI for 15 s is good: cancel
@@ -164,6 +167,11 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
         if (sym == SDLK_F7) {
             /* Sym + I (system info) */
             devos_core_dispatch_key('i', DEVOS_MOD_FN);
+            return 0;
+        }
+        if (sym == SDLK_F8) {
+            /* Sym + S (keyboard shortcuts) */
+            devos_core_dispatch_key('s', DEVOS_MOD_FN);
             return 0;
         }
         if (sym == SDLK_ESCAPE || sym == SDLK_HOME) {
@@ -442,9 +450,12 @@ static void devos_system_bringup(void)
     /* Create persistent Top Status Bar */
     printf("[devOS] Creating Top Bar...\n");
     devos_top_bar_create(lv_layer_top());
-    /* Sym + Space command palette and Sym + I info panel, over any app */
+    /* Sym + Space command palette, Sym + I info panel and Sym + S shortcut
+     * sheet, over any app */
     devos_cmdpal_init();
     devos_hud_init();
+    devos_shortcuts_init();
+    devos_toast_init();                     /* notices below the top bar */
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
@@ -573,6 +584,7 @@ int main(int argc, char **argv)
             devos_sysmon_apply();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
+            devos_toast_watch();                /* Wi-Fi / VPN / battery notices */
             app_launcher_update_telemetry();
             devos_tailnet_housekeeping();       /* peer cache -> flash, on this core */
             if (sim_seconds == 15) devos_core_apps_boot_ok();

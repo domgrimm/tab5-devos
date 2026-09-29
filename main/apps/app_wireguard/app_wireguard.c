@@ -945,6 +945,24 @@ static int wg_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *wireguard_shortcuts(void)
+{
+    return
+        "Tunnels\n"
+        "Up / Down\tPick a tunnel\n"
+        "Enter\tConnect / disconnect\n"
+        "D / Del\tDelete the tunnel\n"
+        "Tab\tThe .conf files on the SD card\n"
+        "SD card files\n"
+        "Enter\tImport the file\n"
+        "Anywhere here\n"
+        "Q\tScan a QR code with the camera\n"
+        "R\tLook on the SD card again (/wireguard)\n"
+        "Y / N\tYes / no to a delete\n"
+        "Esc\tHome\n";
+}
+
 devos_app_descriptor_t *app_wireguard_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_WIREGUARD;
@@ -961,5 +979,6 @@ devos_app_descriptor_t *app_wireguard_get_descriptor(void)
     app_descriptor.hide = wg_hide;
     app_descriptor.handle_key = wg_handle_key;
     app_descriptor.get_telemetry_lines = wg_telemetry_lines;
+    app_descriptor.get_shortcuts = wireguard_shortcuts;
     return &app_descriptor;
 }

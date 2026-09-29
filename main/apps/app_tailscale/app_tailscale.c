@@ -14,6 +14,7 @@
  *            takes Y / N. The on-screen keyboard only appears when no
  *            hardware keyboard is attached.
  */
+#include "devos_toast.h"
 #include "app_tailscale.h"
 #include "devos_config.h"
 #include "devos_icons.h"
@@ -235,11 +236,9 @@ static void peer_ssh(int idx)
 {
     devos_ts_peer_t p;
     if (devos_tailnet_get_peer(idx, &p) != 0) return;
-    devos_telemetry_t t;
-    memcpy(&t, devos_telemetry_get(), sizeof(t));
-    snprintf(t.terminal_requested_host, sizeof(t.terminal_requested_host), "%s", p.ip);
-    devos_telemetry_update(&t);
-    devos_core_switch_app(DEVOS_APP_TERMINAL);
+    if (!devos_core_open_with("terminal", "ssh", p.ip)) {
+        devos_toast_show("The Terminal is switched off (Settings > Apps)", DEVOS_TOAST_WARN, 3000);
+    }
 }
 
 /* The header button row has the keyboard (focus ring showing). */
@@ -893,6 +892,23 @@ static int tailscale_telemetry_lines(char lines[3][64])
     return 3;
 }
 
+/* Sym+S sheet (devos_shortcuts.h) */
+static const char *tailscale_shortcuts(void)
+{
+    return
+        "Peers\n"
+        "Up / Down, 1 ... 9\tPick a peer\n"
+        "Enter\tSSH to it in the Terminal\n"
+        "P\tPing it\n"
+        "Anywhere here\n"
+        "C\tConnect / disconnect\n"
+        "K\tAuth key\n"
+        "N\tThis device's name on the tailnet\n"
+        "F\tForget this device (log out)\n"
+        "Tab\tThe buttons along the top (Down / Esc: back)\n"
+        "Esc\tDeselect, then Home\n";
+}
+
 devos_app_descriptor_t *app_tailscale_get_descriptor(void)
 {
     app_descriptor.id = DEVOS_APP_TAILSCALE;
@@ -909,5 +925,6 @@ devos_app_descriptor_t *app_tailscale_get_descriptor(void)
     app_descriptor.hide = tailscale_hide;
     app_descriptor.handle_key = tailscale_handle_key;
     app_descriptor.get_telemetry_lines = tailscale_telemetry_lines;
+    app_descriptor.get_shortcuts = tailscale_shortcuts;
     return &app_descriptor;
 }
