@@ -1394,6 +1394,9 @@ static void sleep_btn_cb(lv_event_t *e)
     devos_power_sleep_now();
 }
 
+static void restart_btn_cb(lv_event_t *e);
+static void shutdown_btn_cb(lv_event_t *e);
+
 static void build_power_panel(lv_obj_t *pn)
 {
     lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 260, "BATTERY");
@@ -1416,11 +1419,19 @@ static void build_power_panel(lv_obj_t *pn)
     c = mk_card(pn, 0, 276, PANEL_W, 150, "POWER STATE");
     lbl_pwr_state = mk_label(c, &st_text, "");
     lv_obj_set_pos(lbl_pwr_state, 0, 30);
-    lv_obj_t *b = mk_btn(c, LV_SYMBOL_POWER "  Sleep now", NULL, sleep_btn_cb, NULL, NULL);
+    lv_obj_t *b = mk_btn(c, LV_SYMBOL_PAUSE "  Sleep", NULL, sleep_btn_cb, NULL, NULL);
     lv_obj_set_pos(b, 0, 66);
     focus_add(SEC_POWER, &s_pf[SEC_POWER], b);
+
+    lv_obj_t *rb = mk_btn(c, LV_SYMBOL_REFRESH "  Restart", NULL, restart_btn_cb, NULL, NULL);
+    lv_obj_align_to(rb, b, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+    focus_add(SEC_POWER, &s_pf[SEC_POWER], rb);
+
+    lv_obj_t *sb = mk_btn(c, LV_SYMBOL_POWER "  Shutdown", NULL, shutdown_btn_cb, NULL, NULL);
+    lv_obj_align_to(sb, rb, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+    focus_add(SEC_POWER, &s_pf[SEC_POWER], sb);
     lv_obj_t *h = mk_label(c, &st_muted, "Turns the backlight off. Any key or touch wakes it.");
-    lv_obj_set_pos(h, 170, 76);
+    lv_obj_set_pos(h, 0, 110);
 }
 
 static void refresh_power(void)
@@ -1629,15 +1640,82 @@ static void build_restart_dialog(void)
     devos_focus_add(&s_rb_f, btn_rb_ok);
 }
 
+/* ---- Shutdown (Power), asking first ---- */
+static devos_w_dialog_t s_sd;
+static devos_focus_t s_sd_f;
+static lv_obj_t *lbl_sd_msg, *btn_sd_ok;
+
+static void shutdown_close(void)
+{
+    devos_focus_clear(&s_sd_f);
+    devos_w_dialog_show(&s_sd, false);
+}
+
+static void shutdown_cancel_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    shutdown_close();
+}
+
+static void shutdown_ok_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    set_text(lbl_sd_msg, "Shutting down...");
+    lv_refr_now(NULL);
+    devos_core_shutdown();       /* the current app finishes up first (hide) */
+}
+
+static void shutdown_open(void)
+{
+    const char *why = devos_core_restart_check();
+    char m[200];
+    if (why) snprintf(m, sizeof(m), "%s - shutting down now stops it.", why);
+    else snprintf(m, sizeof(m), "The Tab5 will power off. Apps save their work first.");
+    set_text(lbl_sd_msg, m);
+    devos_w_track(lbl_sd_msg, why ? DEVOS_W_TEXT_WARN : DEVOS_W_TEXT_DIM);
+    devos_w_dialog_show(&s_sd, true);
+    devos_focus_set(&s_sd_f, btn_sd_ok);             /* Enter shuts down, Esc cancels */
+}
+
+static void shutdown_btn_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    shutdown_open();
+}
+
+static bool shutdown_dialog_key(uint32_t key, uint8_t mods)
+{
+    if (!devos_w_dialog_open(&s_sd)) return false;
+    if (key == LV_KEY_ESC) shutdown_close();
+    else if (devos_focus_key(&s_sd_f, key, mods)) {}           /* Left / Right, Enter presses */
+    return true;                                               /* the dialog has the keyboard */
+}
+
+static void build_shutdown_dialog(void)
+{
+    devos_w_dialog(&s_sd, screen, 520, 200, "Shut down?");
+    lbl_sd_msg = devos_w_label(s_sd.box, &lv_font_montserrat_14, DEVOS_W_TEXT_DIM, "");
+    lv_obj_set_width(lbl_sd_msg, 520 - 44);
+    lv_label_set_long_mode(lbl_sd_msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(lbl_sd_msg, 0, 34);
+    lv_obj_t *cancel = devos_w_btn(s_sd.box, "Cancel  (Esc)", 130, shutdown_cancel_cb, NULL, NULL);
+    lv_obj_set_height(cancel, 36);
+    lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
+    btn_sd_ok = devos_w_btn_kind(s_sd.box, DEVOS_W_BTN_PRIMARY, LV_SYMBOL_POWER "  Shutdown", 136, shutdown_ok_cb,
+                                 NULL, NULL);
+    lv_obj_set_height(btn_sd_ok, 36);
+    lv_obj_align(btn_sd_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    devos_focus_init(&s_sd_f);
+    devos_focus_add(&s_sd_f, cancel);
+    devos_focus_add(&s_sd_f, btn_sd_ok);
+}
+
 static void build_system_panel(lv_obj_t *pn)
 {
     lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 230, "DEVICE");
     lbl_sys_device = mk_label(c, &st_text, "");
     lv_obj_set_pos(lbl_sys_device, 0, 30);
     lv_obj_set_style_text_line_space(lbl_sys_device, 6, 0);
-    lv_obj_t *rb = mk_btn(c, LV_SYMBOL_REFRESH "  Restart devOS", NULL, restart_btn_cb, NULL, NULL);
-    lv_obj_align(rb, LV_ALIGN_TOP_RIGHT, 0, 22);
-    focus_add(SEC_SYSTEM, &s_pf[SEC_SYSTEM], rb);
 
     c = mk_card(pn, 0, 246, PANEL_W, 150, "MEMORY & STORAGE");
     lbl_sys_mem = mk_label(c, &st_text, "");
@@ -2261,6 +2339,7 @@ static void settings_init(void)
     }
     build_modal();
     build_restart_dialog();
+    build_shutdown_dialog();
 
     devos_theme_add_listener(apply_theme, NULL);
     lv_timer_create(settings_timer_cb, 500, NULL);
@@ -2581,6 +2660,7 @@ static bool settings_handle_key(uint32_t key, uint8_t mods)
 {
     if (modal_open()) return modal_handle_key(key, mods);
     if (restart_dialog_key(key, mods)) return true;
+    if (shutdown_dialog_key(key, mods)) return true;
     if (mods & (DEVOS_MOD_FN | DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) return false;   /* global shortcuts */
 
     bool used = wifi_shortcut_key(key) || (s_in_panel ? panel_handle_key(key, mods) : nav_handle_key(key, mods));
@@ -2632,8 +2712,8 @@ static const char *settings_shortcuts(void)
         "Left / Right\tChange the focused setting\n"
         "Space\tFlip a switch\n"
         "Enter\tOpen a list, press a button (Apps: restart now)\n"
-        "System\n"
-        "Restart devOS\tThe first button there; asks first (Enter restarts, Esc cancels)\n";
+        "Power\n"
+        "Sleep / Restart / Shutdown\tButtons there; ask first (Enter confirms, Esc cancels)\n";
 }
 
 devos_app_descriptor_t *app_settings_get_descriptor(void)

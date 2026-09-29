@@ -365,6 +365,21 @@ void devos_core_restart(void)
 #endif
 }
 
+void devos_core_shutdown(void)
+{
+    /* Leave the current app first. */
+    devos_app_descriptor_t *cur = devos_core_get_app(devos_core_get_current_app());
+    if (cur && cur->hide) cur->hide();
+    printf("[devOS] Shutting down\n");
+    fflush(stdout);
+#ifdef ESP_PLATFORM
+#include "esp_sleep.h"
+    esp_deep_sleep_start();
+#else
+    exit(0);
+#endif
+}
+
 static devos_restart_check_fn s_restart_checks[8];
 static int s_restart_check_count;
 
