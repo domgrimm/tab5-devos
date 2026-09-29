@@ -16,6 +16,7 @@
 #include "nvs.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_sleep.h"
 #else
 #include <malloc.h>
 #endif
@@ -362,6 +363,21 @@ void devos_core_restart(void)
     if (s_restart_cb) s_restart_cb();
 #ifdef ESP_PLATFORM
     esp_restart();
+#endif
+}
+
+void devos_core_shutdown(void)
+{
+    /* Leave the current app first. */
+    devos_app_descriptor_t *cur = devos_core_get_app(devos_core_get_current_app());
+    if (cur && cur->hide) cur->hide();
+    printf("[devOS] Shutting down\n");
+    fflush(stdout);
+#ifdef ESP_PLATFORM
+#include "esp_sleep.h"
+    esp_deep_sleep_start();
+#else
+    exit(0);
 #endif
 }
 

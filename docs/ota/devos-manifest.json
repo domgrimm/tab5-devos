@@ -1,8 +1,8 @@
 {
-  "version": "0.4.2",
-  "url": "tab5-devos-0.4.2.bin",
-  "size": 2542240,
-  "sha256": "e05484da09dd00f712ec37428d6e4fbe8d911025a0030c22e1f6798a604111eb",
-  "build": "b5f47c98ad623690652aedd44146f3fb720ad44d0ed155481825fe230c781372",
-  "notes": "One clipboard for every app: Sym+V pastes (text fields, Terminal, Editor); C in the Authenticator copies the code. Sym+S keyboard shortcuts, terminal bell, toasts, Docker SSH / web links, Se"
+  "version": "0.4.3",
+  "url": "tab5-devos-0.4.3.bin",
+  "size": 2555264,
+  "sha256": "01cdad783c1805463f57e895e66bfc0b33b6c10011db1475b65ecfeeb26364da",
+  "build": "eee09bc9e97c16537bd5ba5c8e080df8181aa91cc204e5263ff5b72c0e1d39ce",
+  "notes": "Restart and shutdown buttons in Power page, Sleep renamed, v0.4.3"
 }

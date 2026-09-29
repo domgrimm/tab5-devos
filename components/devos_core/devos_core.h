@@ -152,6 +152,7 @@ void devos_core_apps_boot_ok(void);                  /* Home Screen up for 15 s 
 typedef void (*devos_restart_fn)(void);
 void devos_core_set_restart_cb(devos_restart_fn cb);
 void devos_core_restart(void);
+void devos_core_shutdown(void);
 /* Restart checks: an app with work a restart would lose (an update being
  * written) returns a short reason, else NULL. Up to 8.
  * devos_core_restart_check() gives the first reason (NULL = safe); the
