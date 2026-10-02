@@ -807,7 +807,7 @@ static bool launcher_handle_key(uint32_t key, uint8_t modifiers)
         return true;
     }
 
-    /* 2. Page Navigation: PageUp / PageDown, Fn + Left / Right */
+    /* 2. Page Navigation: PageUp / PageDown, Sym + Left / Right */
     if (key == DEVOS_KEY_PGUP || ((modifiers & DEVOS_MOD_FN) && key == LV_KEY_LEFT)) {
         if (current_page > 0) {
             app_launcher_set_page(current_page - 1, true);

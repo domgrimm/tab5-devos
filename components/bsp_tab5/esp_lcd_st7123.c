@@ -140,7 +140,6 @@
  
  static const st7123_lcd_init_cmd_t vendor_specific_init_default[] = {
      // {cmd, { data }, data_size, delay_ms}
-     // TODO: 
      {0x60, (uint8_t []){0x71,0x23,0xa2}, 3, 0},
      {0x60, (uint8_t []){0x71,0x23,0xa3}, 3, 0},
      {0x60, (uint8_t []){0x71,0x23,0xa4}, 3, 0},
