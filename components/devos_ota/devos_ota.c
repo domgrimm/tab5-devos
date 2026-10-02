@@ -203,7 +203,7 @@ static int slot_write(const uint8_t *d, size_t n, char *err, size_t cap)
         snprintf(err, cap, "Flash write failed: %s", esp_err_to_name(e));
         esp_ota_abort(s_ota);
     }
-    vTaskDelay(1);                      /* a breather for the UI and the idle tasks */
+    vTaskDelay(pdMS_TO_TICKS(25));      /* a breather for the UI and the idle tasks */
     return e == ESP_OK ? 0 : -1;
 }
 
@@ -243,7 +243,10 @@ static void quiet_while_writing(bool quiet)
         .idle_core_mask = quiet ? 0 : (TWDT_IDLE_CPU0 | TWDT_IDLE_CPU1),
         .trigger_panic = TWDT_PANIC,
     };
-    esp_task_wdt_reconfigure(&c);
+    esp_err_t err = esp_task_wdt_reconfigure(&c);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_task_wdt_reconfigure failed: %s", esp_err_to_name(err));
+    }
     if (!quiet) esp_log_level_set("*", level);
 }
 
