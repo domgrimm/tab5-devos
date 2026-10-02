@@ -4,6 +4,7 @@
  */
 #include "devos_crypto.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -147,6 +148,151 @@ int main(void)
     else printf("ok   base32 lenient\n");
     if (devos_base32_decode("ABC1", b, sizeof(b)) != -1) { printf("FAIL base32 bad char accepted\n"); fails++; }
     else printf("ok   base32 bad char rejected\n");
+
+    /* base64 / base64url (RFC 4648 section 10) */
+    {
+        static const struct { const char *in, *b64, *url; } bv[] = {
+            { "",       "",         "" },
+            { "f",      "Zg==",     "Zg" },
+            { "fo",     "Zm8=",     "Zm8" },
+            { "foo",    "Zm9v",     "Zm9v" },
+            { "foob",   "Zm9vYg==", "Zm9vYg" },
+            { "fooba",  "Zm9vYmE=", "Zm9vYmE" },
+            { "foobar", "Zm9vYmFy", "Zm9vYmFy" },
+        };
+        for (unsigned i = 0; i < sizeof(bv) / sizeof(bv[0]); i++) {
+            char e[64];
+            uint8_t d2[64];
+            char name[64];
+            devos_base64_encode((const uint8_t *)bv[i].in, strlen(bv[i].in), e, sizeof(e));
+            snprintf(name, sizeof(name), "base64 encode \"%s\"", bv[i].in);
+            if (strcmp(e, bv[i].b64)) { printf("FAIL %s: got %s want %s\n", name, e, bv[i].b64); fails++; }
+            else printf("ok   %s\n", name);
+            int dn = devos_base64_decode(bv[i].b64, d2, sizeof(d2));
+            d2[dn < 0 ? 0 : dn] = '\0';
+            snprintf(name, sizeof(name), "base64 decode \"%s\"", bv[i].b64);
+            if (dn != (int)strlen(bv[i].in) || memcmp(d2, bv[i].in, (size_t)dn)) {
+                printf("FAIL %s: got %s\n", name, d2);
+                fails++;
+            } else printf("ok   %s\n", name);
+
+            devos_base64url_encode((const uint8_t *)bv[i].in, strlen(bv[i].in), e, sizeof(e));
+            snprintf(name, sizeof(name), "base64url encode \"%s\"", bv[i].in);
+            if (strcmp(e, bv[i].url)) { printf("FAIL %s: got %s want %s\n", name, e, bv[i].url); fails++; }
+            else printf("ok   %s\n", name);
+            dn = devos_base64url_decode(bv[i].url, d2, sizeof(d2));
+            d2[dn < 0 ? 0 : dn] = '\0';
+            snprintf(name, sizeof(name), "base64url decode \"%s\"", bv[i].url);
+            if (dn != (int)strlen(bv[i].in) || memcmp(d2, bv[i].in, (size_t)dn)) { printf("FAIL %s\n", name); fails++; }
+            else printf("ok   %s\n", name);
+        }
+        uint8_t d2[4];
+        if (devos_base64_decode("***", d2, sizeof(d2)) != -1) { printf("FAIL base64 bad char accepted\n"); fails++; }
+        else printf("ok   base64 bad char rejected\n");
+        if (devos_base64_decode("Zm9v", d2, 2) != -1) { printf("FAIL base64 overflow accepted\n"); fails++; }
+        else printf("ok   base64 overflow rejected\n");
+    }
+
+    /* hex encode (decode is exercised via the separators below) */
+    {
+        char e[40];
+        uint8_t d2[16];
+        devos_hex_encode((const uint8_t *)"ABC", 3, e, sizeof(e));
+        if (strcmp(e, "414243")) { printf("FAIL hex encode: %s\n", e); fails++; }
+        else printf("ok   hex encode\n");
+        int dn = devos_hex_decode("41:42-43 44", d2, sizeof(d2));
+        if (dn != 4 || memcmp(d2, "ABCD", 4)) { printf("FAIL hex decode separators\n"); fails++; }
+        else printf("ok   hex decode separators\n");
+        dn = devos_hex_decode("4", d2, sizeof(d2));
+        if (dn != -1) { printf("FAIL hex odd length accepted\n"); fails++; }
+        else printf("ok   hex odd length rejected\n");
+    }
+
+    /* percent-encoding (RFC 3986) */
+    {
+        char e[80];
+        uint8_t d2[80];
+        devos_url_encode((const uint8_t *)"a b/c?d=e&f", 11, e, sizeof(e));
+        if (strcmp(e, "a%20b%2Fc%3Fd%3De%26f")) { printf("FAIL url encode: %s\n", e); fails++; }
+        else printf("ok   url encode\n");
+        int dn = devos_url_decode(e, d2, sizeof(d2));
+        if (dn != 11 || memcmp(d2, "a b/c?d=e&f", 11)) { printf("FAIL url decode\n"); fails++; }
+        else printf("ok   url decode\n");
+        dn = devos_url_decode("a+b", d2, sizeof(d2));
+        if (dn != 3 || memcmp(d2, "a b", 3)) { printf("FAIL url decode plus\n"); fails++; }
+        else printf("ok   url decode plus\n");
+        if (devos_url_decode("a%2", d2, sizeof(d2)) != -1) { printf("FAIL url bad escape accepted\n"); fails++; }
+        else printf("ok   url bad escape rejected\n");
+    }
+
+    /* base58 (Bitcoin alphabet): known vectors */
+    {
+        static const struct { const char *hex_in, *b58; } bv[] = {
+            { "00",                 "1" },
+            { "",                   "" },
+            { "0000000000000000000000000000000000", "11111111111111111" },
+            { "61",                 "2g" },
+            { "626262",             "a3gV" },
+            { "636363",             "aPEr" },
+            { "516b6fcd0f",         "ABnLTmg" },
+            { "bf4f89001e670274dd", "3SEo3LWLoPntC" },
+            { "572e4794",           "3EFU7m" },
+            { "ecac89cad93923c02321", "EJDM8drfXA6uyA" },
+            { "10c8511e",           "Rt5zm" },
+            { "00000000000000000000", "1111111111" },
+        };
+        for (unsigned i = 0; i < sizeof(bv) / sizeof(bv[0]); i++) {
+            uint8_t raw[64];
+            size_t rl = 0;
+            for (const char *p = bv[i].hex_in; p[0] && p[1]; p += 2) {
+                unsigned v; sscanf(p, "%2x", &v); raw[rl++] = (uint8_t)v;
+            }
+            char e[128];
+            devos_base58_encode(raw, rl, e, sizeof(e));
+            char name[80];
+            snprintf(name, sizeof(name), "base58 encode \"%s\"", bv[i].hex_in);
+            if (strcmp(e, bv[i].b58)) { printf("FAIL %s: got %s want %s\n", name, e, bv[i].b58); fails++; }
+            else printf("ok   %s\n", name);
+            uint8_t back[64];
+            int bn2 = devos_base58_decode(bv[i].b58, back, sizeof(back));
+            snprintf(name, sizeof(name), "base58 decode \"%s\"", bv[i].b58);
+            if (bn2 != (int)rl || memcmp(back, raw, rl)) { printf("FAIL %s\n", name); fails++; }
+            else printf("ok   %s\n", name);
+        }
+        uint8_t d2[8];
+        if (devos_base58_decode("0OIl", d2, sizeof(d2)) != -1) { printf("FAIL base58 bad char accepted\n"); fails++; }
+        else printf("ok   base58 bad char rejected\n");
+    }
+
+    /* CRC-32 (IEEE): "123456789" -> 0xCBF43926 */
+    {
+        uint32_t c = devos_crc32("123456789", 9);
+        if (c != 0xCBF43926u) { printf("FAIL crc32: got %08x\n", c); fails++; }
+        else printf("ok   crc32 \"123456789\"\n");
+        if (devos_crc32("", 0) != 0) { printf("FAIL crc32 empty\n"); fails++; }
+        else printf("ok   crc32 empty\n");
+    }
+
+    /* streaming hash equals the one-shot result, fed in awkward chunk sizes */
+    {
+        const char *msg = "The quick brown fox jumps over the lazy dog";
+        size_t ml = strlen(msg);
+        for (size_t chunk = 1; chunk <= 17; chunk *= 2) {
+            uint8_t one[32], two[32];
+            devos_hash(DEVOS_HASH_SHA256, msg, ml, one);
+            union { max_align_t a; char b[512]; } store;
+            devos_hash_ctx_t *ctx = devos_hash_begin(DEVOS_HASH_SHA256, (devos_hash_ctx_t *)store.b);
+            for (size_t off = 0; off < ml; off += chunk) {
+                size_t k = ml - off < chunk ? ml - off : chunk;
+                devos_hash_update(ctx, msg + off, k);
+            }
+            devos_hash_end(ctx, two);
+            char name[64];
+            snprintf(name, sizeof(name), "stream sha256 chunk=%zu", chunk);
+            if (memcmp(one, two, 32)) { printf("FAIL %s\n", name); fails++; }
+            else printf("ok   %s\n", name);
+        }
+    }
 
     printf(fails ? "\n%d FAILED\n" : "\nall passed\n", fails);
     return fails ? 1 : 0;

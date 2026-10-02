@@ -528,6 +528,9 @@ The Tab5 physical keyboard is the primary input surface for `devOS` (see §4.0).
     *   `Sym + 1` .. `Sym + 6`: Switch to Terminal, Editor, Tailscale, WireGuard, MQTT or Settings from anywhere.
     *   `Sym + T`: **Toggle Dark / Light Theme** system-wide.
     *   `Sym + -` / `Sym + +`: Screen brightness.
+    *   `Sym + P`: Screen off (sleep) - any key wakes it.
+    *   `Sym + Shift + R`: Restart the Tab5 (asks first; names anything a restart would cut off).
+    *   `Sym + Shift + Q`: Shut the Tab5 down (asks first). The destructive two need Shift so a stray Sym + R / Sym + Q can't reboot the device.
     *   `Sym + L`: Toggle the left panel (editor file list, terminal connections).
     *   `Sym + F`: Hide the editor's file list.
     *   `Sym + Up/Down`: Page up / down (launcher pages, editor, terminal scrollback).

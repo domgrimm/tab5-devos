@@ -5,6 +5,7 @@
 
 static devos_theme_toggle_fn s_theme_toggle_cb = NULL;
 static devos_brightness_step_fn s_brightness_step_cb = NULL;
+static devos_sys_action_fn s_sys_action_cb = NULL;
 
 static devos_app_descriptor_t *registered_apps[DEVOS_MAX_APPS] = {NULL};
 static int registered_count = 0;
@@ -311,6 +312,11 @@ void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb)
     s_brightness_step_cb = cb;
 }
 
+void devos_core_set_sys_action_cb(devos_sys_action_fn cb)
+{
+    s_sys_action_cb = cb;
+}
+
 static devos_key_hook_fn s_key_hooks[4];
 static int s_key_hook_count = 0;
 
@@ -351,6 +357,22 @@ bool devos_core_dispatch_key(uint32_t key, uint8_t modifiers)
         if (s_brightness_step_cb) {
             s_brightness_step_cb(key == '-' ? -10 : 10);
         }
+        return true;
+    }
+
+    /* 2c. Global Hotkeys: sleep (Sym+P), restart (Sym+Shift+R), shutdown
+     * (Sym+Shift+Q). The destructive two need Shift so a stray Sym+R / Sym+Q
+     * can't reboot the device; sleep is reversible, so it stays one chord. */
+    if ((modifiers & DEVOS_MOD_FN) && (key == 'p' || key == 'P') && !(modifiers & DEVOS_MOD_SHIFT)) {
+        if (s_sys_action_cb) s_sys_action_cb(DEVOS_SYS_SLEEP);
+        return true;
+    }
+    if ((modifiers & DEVOS_MOD_FN) && (modifiers & DEVOS_MOD_SHIFT) && (key == 'r' || key == 'R')) {
+        if (s_sys_action_cb) s_sys_action_cb(DEVOS_SYS_RESTART);
+        return true;
+    }
+    if ((modifiers & DEVOS_MOD_FN) && (modifiers & DEVOS_MOD_SHIFT) && (key == 'q' || key == 'Q')) {
+        if (s_sys_action_cb) s_sys_action_cb(DEVOS_SYS_SHUTDOWN);
         return true;
     }
 

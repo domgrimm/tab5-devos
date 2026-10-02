@@ -13,6 +13,7 @@ set(APP_SRCS
     "apps/app_netdiag/nd_ui_scan.c"
     "apps/app_netdiag/nd_ui_wifi.c"
     "apps/app_netdiag/nd_ui_mdns.c"
+    "apps/app_netdiag/nd_ui_wol.c"
     "apps/app_rest/app_rest.c"
     "apps/app_docker/app_docker.c"
     "apps/app_adsb/app_adsb.c"
@@ -21,6 +22,8 @@ set(APP_SRCS
     "apps/app_totp/app_totp.c"
     "apps/app_settings/app_settings.c"
     "apps/app_template/app_template.c"
+    "apps/app_coder/app_coder.c"
+    "apps/app_coder/coder_core.c"
 )
 
 idf_component_register(
@@ -36,6 +39,7 @@ idf_component_register(
         "apps/app_wireguard"
         "apps/app_settings"
         "apps/app_template"
+        "apps/app_coder"
     REQUIRES
         devos_core
         devos_ui
@@ -64,6 +68,7 @@ idf_component_register(
         devos_cricket
         devos_totp
         devos_crypto
+        devos_hashfile
         devos_audio
         lvgl
         nvs_flash
