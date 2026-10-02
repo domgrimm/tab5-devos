@@ -20,9 +20,9 @@ extern "C" {
  * ========================================================================= */
 
 #define DEVOS_VERSION_MAJOR         0
-#define DEVOS_VERSION_MINOR         4
-#define DEVOS_VERSION_PATCH         6
-#define DEVOS_VERSION_STR           "devOS v0.4.6"
+#define DEVOS_VERSION_MINOR         5
+#define DEVOS_VERSION_PATCH         0
+#define DEVOS_VERSION_STR           "devOS v0.5.0"
 #define DEVOS_BUILD_CODENAME        "Cyberdeck Alpha"
 
 /* --- Display & Screen Geometry --- */

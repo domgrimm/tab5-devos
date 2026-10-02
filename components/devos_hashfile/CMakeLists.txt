@@ -1,8 +1,8 @@
 idf_component_register(
-    SRCS "nd_common.c" "nd_ping.c" "nd_dns.c" "nd_scan.c" "nd_wol.c"
+    SRCS "devos_hashfile.c"
     INCLUDE_DIRS "."
     REQUIRES devos_config
-    PRIV_REQUIRES devos_net esp_timer lwip
+    PRIV_REQUIRES devos_crypto
 )
 
 # UI / log strings are cut to fit on purpose

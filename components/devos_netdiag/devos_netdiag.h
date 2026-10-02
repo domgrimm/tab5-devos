@@ -149,6 +149,25 @@ const char *devos_mdns_error(void);
 /* Friendly name for a service type ("_ssh._tcp" -> "SSH"), or NULL. */
 const char *devos_mdns_type_label(const char *type);
 
+/* ------------------------------------------------------------------ wol */
+/* Wake-on-LAN: send a magic packet to a sleeping machine's NIC. The MAC is
+ * accepted as "aa:bb:cc:dd:ee:ff", "aa-bb-cc-dd-ee-ff", "aabb.ccdd.eeff" or
+ * plain "aabbccddeeff". With no address the packet goes to the subnet
+ * broadcast (and 255.255.255.255); typing a host or IP sends it there
+ * directly, which also reaches a machine across a routed network (or a
+ * WireGuard / Tailscale subnet - the socket is routed like every other). */
+
+/* Parse into 6 bytes; returns 0, or -1 with the reason in err. */
+int devos_wol_parse_mac(const char *text, uint8_t mac[6], char *err, size_t errcap);
+/* Format 6 bytes back to "aa:bb:cc:dd:ee:ff". */
+void devos_wol_format_mac(const uint8_t mac[6], char *out, size_t cap);
+/* Send one magic packet. addr "" / NULL = broadcast. Returns 0 on success, -1
+ * with the reason in devos_wol_error(). */
+int devos_wol_send(const uint8_t mac[6], const char *addr);
+const char *devos_wol_error(void);
+/* Where the last packet went, for the result line ("255.255.255.255:9"). */
+const char *devos_wol_last_target(void);
+
 #ifdef __cplusplus
 }
 #endif

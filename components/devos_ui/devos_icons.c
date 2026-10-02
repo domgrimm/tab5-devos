@@ -239,6 +239,17 @@ void devos_icon_cricket(lv_layer_t *layer, const lv_area_t *area, lv_color_t col
     dot(&p, 150, 150, 26, LV_OPA_COVER);                /* ball */
 }
 
+/* Coder's Toolkit: angle brackets with a slash between (</>). */
+void devos_icon_coder(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
+{
+    pen_t p = pen(layer, area, color);
+    static const int16_t lt[] = { 80, 32, 32, 100, 80, 168 };
+    polyline(&p, lt, 3, 20);
+    static const int16_t gt[] = { 120, 32, 168, 100, 120, 168 };
+    polyline(&p, gt, 3, 20);
+    line(&p, 112, 24, 88, 176, 16);                     /* the slash */
+}
+
 /* ------------------------------------------------------------------ widget */
 static void icon_draw_cb(lv_event_t *e)
 {

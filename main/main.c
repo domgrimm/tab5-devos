@@ -34,6 +34,7 @@
 #include "apps/app_wireguard/app_wireguard.h"
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
+#include "apps/app_coder/app_coder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,6 +116,25 @@ static void gui_task(void *arg)
 #include "src/drivers/sdl/lv_sdl_window.h"
 #include "src/drivers/sdl/lv_sdl_mouse.h"
 #include "src/drivers/sdl/lv_sdl_keyboard.h"
+
+/* US-layout Shift mapping for the digit and punctuation keys (SDL hands us the
+ * unshifted keysym, so the shifted symbol has to be derived here). */
+static char sim_shift_char(char c)
+{
+    switch (c) {
+    case '1': return '!';  case '2': return '@';  case '3': return '#';
+    case '4': return '$';  case '5': return '%';  case '6': return '^';
+    case '7': return '&';  case '8': return '*';  case '9': return '(';
+    case '0': return ')';
+    case '-': return '_';  case '=': return '+';
+    case '[': return '{';  case ']': return '}';
+    case '\\': return '|';
+    case ';': return ':';  case '\'': return '"';
+    case ',': return '<';  case '.': return '>';  case '/': return '?';
+    case '`': return '~';
+    default:  return c;
+    }
+}
 
 static int sdl_event_watcher(void *userdata, SDL_Event *event)
 {
@@ -255,12 +275,16 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
 
         /* Printable ASCII characters */
         if (sym >= 32 && sym <= 126) {
-            /* If Shift is held and alpha, SDL sym is lowercase unless handled */
+            /* SDL reports the unshifted key here (Shift+- arrives as '-'), so
+             * apply the US-layout shift for punctuation; fold Shift into
+             * alphabet case. Drop the Shift modifier so LVGL doesn't treat the
+             * character as a shortcut. */
             char c = (char)sym;
-            if ((devos_mods & DEVOS_MOD_SHIFT) && c >= 'a' && c <= 'z') {
-                c -= 32;
+            if (devos_mods & DEVOS_MOD_SHIFT) {
+                if (c >= 'a' && c <= 'z') c -= 32;
+                else c = sim_shift_char(c);
             }
-            devos_core_dispatch_key((uint32_t)c, devos_mods);
+            devos_core_dispatch_key((uint32_t)c, devos_mods & (uint8_t)~DEVOS_MOD_SHIFT);
             return 0;
         }
     }
@@ -272,6 +296,19 @@ static void power_backlight_cb(int percent)
 {
     bsp_tab5_set_brightness((uint8_t)percent);
     tab5_keyboard_lights_suspend(percent == 0);   /* keyboard lights sleep too */
+}
+
+/* The global power shortcuts: Sym+P sleeps, Sym+Shift+R restarts, Sym+Shift+Q
+ * shuts down. Sleep is reversible and acts at once; the other two open the
+ * command palette on their command so the same confirmation (and the restart
+ * check) runs as from the palette. */
+static void sys_action_cb(devos_sys_action_t action)
+{
+    switch (action) {
+    case DEVOS_SYS_SLEEP:    devos_power_sleep_now(); break;
+    case DEVOS_SYS_RESTART:  devos_cmdpal_open_with("restart", true); break;
+    case DEVOS_SYS_SHUTDOWN: devos_cmdpal_open_with("shut down", true); break;
+    }
 }
 
 /* The keyboard lights' "theme accent" colour follows the theme. */
@@ -361,6 +398,7 @@ static void devos_system_bringup(void)
     devos_power_load_prefs();
     bsp_tab5_set_touch_activity_cb(devos_power_activity);
     devos_core_set_brightness_step_cb(devos_power_step_brightness);
+    devos_core_set_sys_action_cb(sys_action_cb);   /* Sym+P / Sym+Shift+R / Sym+Shift+Q */
 
     /* 5c. OTA feed config */
     devos_ota_init();
@@ -443,6 +481,11 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering Authenticator...\n");
     devos_core_register_app(app_totp_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Coder's Toolkit...\n");
+    devos_core_register_app(app_coder_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif

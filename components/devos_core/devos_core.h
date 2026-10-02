@@ -198,6 +198,18 @@ void devos_telemetry_tick_sim(void);
 typedef void (*devos_brightness_step_fn)(int delta);
 void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb);
 
+/* System actions for the global power hotkeys: Sym+P (sleep), Sym+Shift+R
+ * (restart), Sym+Shift+Q (shutdown). main wires this to the UI so the core
+ * stays free of devos_ui: sleep acts at once, restart and shutdown raise
+ * their confirmation. */
+typedef enum {
+    DEVOS_SYS_SLEEP = 0,
+    DEVOS_SYS_RESTART,
+    DEVOS_SYS_SHUTDOWN,
+} devos_sys_action_t;
+typedef void (*devos_sys_action_fn)(devos_sys_action_t action);
+void devos_core_set_sys_action_cb(devos_sys_action_fn cb);
+
 /* Input & Hotkey Dispatcher */
 typedef void (*devos_theme_toggle_fn)(void);
 void devos_core_set_theme_toggle_cb(devos_theme_toggle_fn cb);
