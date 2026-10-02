@@ -292,7 +292,7 @@ The Tailscale client connects the Tab5 to an optional private tailnet (`100.x.y.
 *   **Toggle Controls:**
     *   **Global Hotkey:** **`Sym + T`** instantly flips between Dark and Light mode from anywhere in the OS without restarting or losing UI state.
     *   **Settings App:** Moon / switch / sun control (`knob left = Dark, right = Light`); stays in sync with `Sym + T`.
-    *   **Boot Default:** Dark Cyberdeck. (NVS persistence of the theme preference is not yet implemented.)
+    *   **Boot Default:** Dark Cyberdeck. The chosen theme is persisted in NVS and restored at boot.
 
 ---
 
@@ -635,8 +635,8 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 >    (`OTA_WITH_SEQUENTIAL_WRITES`), with logging off and the task watchdog ignoring the idle
 >    tasks meanwhile: 0.3.3 / 0.4.0 installs reset on a watchdog during the up-front 2.5 MB erase.
 > 5. Secrets (Tailscale key, Wi-Fi passwords) in plain NVS / SD; no NVS encryption.
-> 6. Missing: audio, IMU, USB host HID, SD hot-plug, CPU throttling / light sleep. (Command palette:
->    done in v0.4.0.)
+> 6. Missing: IMU, USB host HID, SD hot-plug, CPU throttling / light sleep. (Command palette
+>    done in v0.4.0; audio done - voice memos in the Editor.)
 > 7. Camera (2026-09-27): driver + WireGuard QR import built on the new `i2c_master` driver (the
 >    whole BSP moved off the legacy I2C driver); `esp_cam_sensor` is pinned to 0.9.0 because 1.x
 >    needs esp-idf-kconfig >= 2.5. Preview verified on hardware; QR decoding reworked after the
