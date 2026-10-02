@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.4.5",
+    "built": "Oct  2 2026 05:28:05",
+    "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."
+  },
+  {
     "version": "0.4.4",
     "built": "Sep 29 2026 09:03:25",
     "notes": "Fix OTA watchdog starvation by yielding more, v0.4.4"

@@ -135,12 +135,12 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
         /* F-keys stand in for Sym shortcuts. (Ctrl+T / F / E used to as well, but
          * they are real app shortcuts: editor find, timestamp ...) */
         if (sym == SDLK_F1) {
-            /* Simulate Fn + T */
+            /* Simulate Sym + T */
             devos_core_dispatch_key('t', DEVOS_MOD_FN);
             return 0;
         }
         if (sym == SDLK_F2) {
-            /* Simulate Fn + F */
+            /* Simulate Sym + F */
             devos_core_dispatch_key('f', DEVOS_MOD_FN);
             return 0;
         }
@@ -155,7 +155,7 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             return 0;
         }
         if (sym == SDLK_F5) {
-            /* Simulate Fn + E (Arrange Mode) */
+            /* Simulate Sym + E (Arrange Mode) */
             devos_core_dispatch_key('e', DEVOS_MOD_FN);
             return 0;
         }
@@ -190,7 +190,7 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             return 0;
         }
 
-        /* Ctrl + 1..8 simulates Fn + 1..8 (Global App Switcher) */
+        /* Ctrl + 1..8 simulates Sym + 1..8 (Global App Switcher) */
         if ((devos_mods & DEVOS_MOD_CTRL) && sym >= SDLK_1 && sym <= SDLK_8) {
             devos_core_dispatch_key((uint32_t)('0' + (sym - SDLK_0)), DEVOS_MOD_FN);
             return 0;
@@ -240,8 +240,8 @@ static int sdl_event_watcher(void *userdata, SDL_Event *event)
             devos_core_dispatch_key(LV_KEY_DOWN, devos_mods);
             return 0;
         }
-        /* ponytail: no Fn key on PC keyboards; Ctrl+Arrow stands in for
-         * Fn+Arrow (page flip on the launcher) in the simulator */
+        /* ponytail: no Sym key on PC keyboards; Ctrl+Arrow stands in for
+         * Sym+Arrow (page flip on the launcher) in the simulator */
         if (sym == SDLK_LEFT) {
             devos_core_dispatch_key(LV_KEY_LEFT,
                 (devos_mods & DEVOS_MOD_CTRL) ? DEVOS_MOD_FN : devos_mods);

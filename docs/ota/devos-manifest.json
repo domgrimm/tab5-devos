@@ -1,8 +1,8 @@
 {
-  "version": "0.4.4",
-  "url": "tab5-devos-0.4.4.bin",
+  "version": "0.4.5",
+  "url": "tab5-devos-0.4.5.bin",
   "size": 2555392,
-  "sha256": "ffaf10cb6f9fa9554b50dd1ba3b19ae282f60f9ea8a0e216d1ddde458173b4ed",
-  "build": "6b95b7d0700451f967a702489fc25b906d1274c5370a13175671d5a445d28f4b",
-  "notes": "Fix OTA watchdog starvation by yielding more, v0.4.4"
+  "sha256": "b73cf454f6d3f80db2bd7eff6ecbd62bf7a076f9c44dcc048f4269b3788f2a3a",
+  "build": "85a9d39df8fa2d0e182cc1a0c32e26c7cb16c9f27ed1c1c78c1d76b7d3a79b93",
+  "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."
 }

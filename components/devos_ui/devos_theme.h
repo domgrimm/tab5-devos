@@ -50,7 +50,7 @@ void devos_theme_init(void);
 devos_theme_type_t devos_theme_get_type(void);
 const devos_palette_t *devos_theme_get(void);
 void devos_theme_set(devos_theme_type_t type);
-void devos_theme_toggle(void);      /* Bound to Fn + T */
+void devos_theme_toggle(void);      /* Bound to Sym + T */
 bool devos_theme_is_dark(void);
 
 /* Dynamic Listener Registration */
