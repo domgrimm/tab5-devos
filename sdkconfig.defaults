@@ -170,6 +170,14 @@ CONFIG_ML_ENABLE_CONFIG_HTTPD=n
 # next reset returns to the previous firmware.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# OTA writes: a single flash block erase suspends the other core for longer
+# than the 300 ms default (IDF only raises this to 800 ms for ESP32+SPIRAM,
+# not the P4), tripping the interrupt watchdog - the reset that stops installs
+# mid-write and leaves the device on the old firmware. The task watchdog is
+# already reconfigured around writes (devos_ota.c); this gives the interrupt
+# watchdog the same headroom without disabling it.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=1000
+
 # Camera: SC2356 (esp_cam_sensor "SC202CS") on MIPI CSI, RAW8 1280x720,
 # used through IDF's CSI + ISP drivers (components/bsp_tab5/bsp_tab5_camera.c)
 CONFIG_CAMERA_SC202CS=y

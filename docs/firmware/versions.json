@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.4.6",
+    "built": "Oct  2 2026 05:41:58",
+    "notes": "Fix OTA: the 300 ms interrupt watchdog fired during the flash write, resetting the Tab5 mid-update. It now has 1 s headroom."
+  },
+  {
     "version": "0.4.5",
     "built": "Oct  2 2026 05:28:05",
     "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."

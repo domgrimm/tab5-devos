@@ -1,8 +1,8 @@
 {
-  "version": "0.4.5",
-  "url": "tab5-devos-0.4.5.bin",
+  "version": "0.4.6",
+  "url": "tab5-devos-0.4.6.bin",
   "size": 2555392,
-  "sha256": "b73cf454f6d3f80db2bd7eff6ecbd62bf7a076f9c44dcc048f4269b3788f2a3a",
-  "build": "85a9d39df8fa2d0e182cc1a0c32e26c7cb16c9f27ed1c1c78c1d76b7d3a79b93",
-  "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."
+  "sha256": "3f75c16ed74143d5f5423a8bf055b6d4d4e1e9613c51feeb0bc2705fc2a64fb2",
+  "build": "c2b9b614397b2e266177e80315e1c1108a5aa27ff660be6d111eef973a9d2972",
+  "notes": "Fix OTA: the 300 ms interrupt watchdog fired during the flash write, resetting the Tab5 mid-update. It now has 1 s headroom."
 }
