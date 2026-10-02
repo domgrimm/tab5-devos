@@ -22,9 +22,9 @@ typedef struct {
     const char *(*keys)(void);                  /* footer hint */
 } nd_view_t;
 
-extern const nd_view_t nd_view_ping, nd_view_dns, nd_view_scan, nd_view_wifi, nd_view_mdns;
+extern const nd_view_t nd_view_ping, nd_view_dns, nd_view_scan, nd_view_wifi, nd_view_mdns, nd_view_wol;
 
-enum { ND_PING = 0, ND_DNS, ND_SCAN, ND_WIFI, ND_MDNS, ND_VIEWS };
+enum { ND_PING = 0, ND_DNS, ND_SCAN, ND_WIFI, ND_MDNS, ND_WOL, ND_VIEWS };
 
 void nd_goto(int view);
 void nd_flash(const char *msg);                 /* a short message in the bar */

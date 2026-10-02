@@ -1,8 +1,8 @@
 {
-  "version": "0.4.6",
-  "url": "tab5-devos-0.4.6.bin",
-  "size": 2555392,
-  "sha256": "3f75c16ed74143d5f5423a8bf055b6d4d4e1e9613c51feeb0bc2705fc2a64fb2",
-  "build": "c2b9b614397b2e266177e80315e1c1108a5aa27ff660be6d111eef973a9d2972",
-  "notes": "Fix OTA: the 300 ms interrupt watchdog fired during the flash write, resetting the Tab5 mid-update. It now has 1 s headroom."
+  "version": "0.5.0",
+  "url": "tab5-devos-0.5.0.bin",
+  "size": 2572864,
+  "sha256": "269d337d470c2d70eb8015f7427985194614407786b93c349a21fcd71b1123a0",
+  "build": "5e1a10e9a0bb526633635c5e89a4fc2b69434a33096e9475a8fda8fc94eb0033",
+  "notes": "Coder's Toolkit, Wake-on-LAN, and power shortcuts (Sym+P sleep, Sym+Shift+R restart, Sym+Shift+Q shutdown)"
 }

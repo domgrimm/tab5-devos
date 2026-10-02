@@ -262,18 +262,27 @@ static void build(void)
 
 void devos_cmdpal_open(void)
 {
-    if (devos_cmdpal_is_open()) return;
+    devos_cmdpal_open_with(NULL, false);
+}
+
+/* Open with `query` already typed. When `run_first` is set, the best match's
+ * action runs at once (used by the Sym+R / Sym+Q shortcuts: they land on the
+ * restart / shutdown command and show its confirmation). */
+void devos_cmdpal_open_with(const char *query, bool run_first)
+{
+    if (devos_cmdpal_is_open()) devos_cmdpal_close();
     devos_hud_close();
     devos_shortcuts_close();
     build();
     gather();
-    lv_textarea_set_text(s_ta, "");
+    lv_textarea_set_text(s_ta, query ? query : "");
     s_confirm = -1;
     set_hint(NULL, false);
     lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_overlay);
     devos_focus_set(&s_focus, s_ta);
     filter();
+    if (run_first && s_shown_n > 0) run_shown(0);
 }
 
 void devos_cmdpal_close(void)
@@ -375,6 +384,22 @@ static void restart_run(void *ud)
     devos_core_restart();
 }
 
+static const char *shutdown_confirm(void *ud)
+{
+    LV_UNUSED(ud);
+    static char ask[160];
+    const char *why = devos_core_restart_check();
+    if (why) snprintf(ask, sizeof(ask), "%s. Enter shuts down anyway, Esc cancels", why);
+    else snprintf(ask, sizeof(ask), "Shut the Tab5 down now? Enter shuts down, Esc cancels");
+    return ask;
+}
+
+static void shutdown_run(void *ud)
+{
+    LV_UNUSED(ud);
+    devos_core_shutdown();
+}
+
 static const devos_command_t s_system[] = {
     { .title = "Switch theme", .keywords = "theme dark light colours colors mode", .hint = "Sym+T",
       .icon = LV_SYMBOL_TINT, .label = theme_label, .run = theme_run },
@@ -382,10 +407,12 @@ static const devos_command_t s_system[] = {
       .hint = "Sym+I", .icon = LV_SYMBOL_CHARGE, .run = info_run },
     { .title = "Keyboard shortcuts", .keywords = "keys help cheat sheet hotkeys shortcut",
       .hint = DEVOS_SHORTCUTS_KEY_TEXT, .icon = LV_SYMBOL_KEYBOARD, .run = keys_run },
-    { .title = "Turn the screen off", .keywords = "sleep screen display off lock", .icon = LV_SYMBOL_EYE_CLOSE,
-      .run = sleep_run },
-    { .title = "Restart the Tab5", .keywords = "reboot restart reset", .icon = LV_SYMBOL_REFRESH,
-      .confirm = restart_confirm, .run = restart_run },
+    { .title = "Turn the screen off", .keywords = "sleep screen display off lock", .hint = "Sym+P",
+      .icon = LV_SYMBOL_EYE_CLOSE, .run = sleep_run },
+    { .title = "Restart the Tab5", .keywords = "reboot restart reset", .hint = "Sym+Shift+R",
+      .icon = LV_SYMBOL_REFRESH, .confirm = restart_confirm, .run = restart_run },
+    { .title = "Shut down the Tab5", .keywords = "shutdown power off halt quit exit", .hint = "Sym+Shift+Q",
+      .icon = LV_SYMBOL_POWER, .confirm = shutdown_confirm, .run = shutdown_run },
 };
 
 void devos_cmdpal_init(void)

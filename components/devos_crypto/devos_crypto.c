@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef ESP_PLATFORM
@@ -223,6 +224,26 @@ void devos_hash(devos_hash_t h, const void *data, size_t len, uint8_t *out)
     h_init(&c, h);
     h_update(&c, data, len);
     h_final(&c, out);
+}
+
+/* Public streaming wrappers. The header exposes an opaque `struct
+ * devos_hash_ctx`; here it is the internal hctx_t. */
+struct devos_hash_ctx { hctx_t c; };
+
+devos_hash_ctx_t *devos_hash_begin(devos_hash_t h, devos_hash_ctx_t *ctx)
+{
+    h_init(&ctx->c, h);
+    return ctx;
+}
+
+void devos_hash_update(devos_hash_ctx_t *ctx, const void *data, size_t len)
+{
+    h_update(&ctx->c, data, len);
+}
+
+void devos_hash_end(devos_hash_ctx_t *ctx, uint8_t *out)
+{
+    h_final(&ctx->c, out);
 }
 
 /* ------------------------------------------------------------------ HMAC */
@@ -535,4 +556,250 @@ size_t devos_base32_encode(const uint8_t *in, size_t len, char *out, size_t cap)
     if (bits > 0 && o + 1 < cap) out[o++] = a[(buf << (5 - bits)) & 31];
     if (cap) out[o] = '\0';
     return o;
+}
+
+/* ------------------------------------------------------------------ base64 */
+
+static size_t b64_encode(const uint8_t *in, size_t len, char *out, size_t cap,
+                         const char *a, bool pad)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t b = (uint32_t)in[i] << 16;
+        size_t left = len - i;
+        if (left > 1) b |= (uint32_t)in[i + 1] << 8;
+        if (left > 2) b |= (uint32_t)in[i + 2];
+        int nchars = left >= 3 ? 4 : (left + 1);        /* 1 -> 2, 2 -> 3, 3 -> 4 */
+        for (int j = 0; j < 4; j++) {
+            char c;
+            if (j < nchars) c = a[(b >> ((3 - j) * 6)) & 0x3f];
+            else c = pad ? '=' : '\0';
+            if (c == '\0') continue;
+            if (o + 1 >= cap) { if (cap) out[o] = '\0'; return o; }
+            out[o++] = c;
+        }
+    }
+    if (cap) out[o] = '\0';
+    return o;
+}
+
+static int b64_decode(const char *in, uint8_t *out, size_t cap, bool url)
+{
+    uint32_t buf = 0;
+    int bits = 0;
+    size_t n = 0;
+    for (; *in; in++) {
+        char c = *in;
+        int v;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+' && !url) v = 62;
+        else if (c == '/' && !url) v = 63;
+        else if (c == '-' && url) v = 62;
+        else if (c == '_' && url) v = 63;
+        else if (c == '=' || c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        else return -1;
+        buf = (buf << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            if (n >= cap) return -1;
+            out[n++] = (uint8_t)(buf >> (bits - 8));
+            bits -= 8;
+        }
+    }
+    return (int)n;
+}
+
+size_t devos_base64_encode(const uint8_t *in, size_t len, char *out, size_t cap)
+{
+    static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    return b64_encode(in, len, out, cap, a, true);
+}
+
+int devos_base64_decode(const char *in, uint8_t *out, size_t cap)
+{
+    return b64_decode(in, out, cap, false);
+}
+
+size_t devos_base64url_encode(const uint8_t *in, size_t len, char *out, size_t cap)
+{
+    static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    return b64_encode(in, len, out, cap, a, false);
+}
+
+int devos_base64url_decode(const char *in, uint8_t *out, size_t cap)
+{
+    return b64_decode(in, out, cap, true);
+}
+
+/* ------------------------------------------------------------------ hex */
+
+size_t devos_hex_encode(const uint8_t *in, size_t len, char *out, size_t cap)
+{
+    static const char h[] = "0123456789abcdef";
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (o + 2 >= cap) { if (cap) out[o] = '\0'; return o; }
+        out[o++] = h[in[i] >> 4];
+        out[o++] = h[in[i] & 0x0f];
+    }
+    if (cap) out[o] = '\0';
+    return o;
+}
+
+int devos_hex_decode(const char *in, uint8_t *out, size_t cap)
+{
+    size_t n = 0;
+    int hi = -1;
+    for (; *in; in++) {
+        char c = *in;
+        int v;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        else if (c == ' ' || c == ':' || c == '-' || c == '\t' || c == '\r' || c == '\n') continue;
+        else return -1;
+        if (hi < 0) {
+            hi = v;
+        } else {
+            if (n >= cap) return -1;
+            out[n++] = (uint8_t)((hi << 4) | v);
+            hi = -1;
+        }
+    }
+    return hi >= 0 ? -1 : (int)n;
+}
+
+/* ------------------------------------------------------------------ URL */
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+size_t devos_url_encode(const uint8_t *in, size_t len, char *out, size_t cap)
+{
+    static const char h[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t c = in[i];
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                          c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            if (o + 1 >= cap) break;
+            out[o++] = (char)c;
+        } else {
+            if (o + 3 >= cap) break;
+            out[o++] = '%';
+            out[o++] = h[c >> 4];
+            out[o++] = h[c & 0x0f];
+        }
+    }
+    if (cap) out[o] = '\0';
+    return o;
+}
+
+int devos_url_decode(const char *in, uint8_t *out, size_t cap)
+{
+    size_t n = 0;
+    for (; *in; in++) {
+        int v;
+        if (*in == '%') {
+            v = hexval(in[1]);
+            int lo = in[1] ? hexval(in[2]) : -1;
+            if (v < 0 || lo < 0) return -1;
+            in += 2;
+            v = (v << 4) | lo;
+        } else if (*in == '+') {
+            v = ' ';
+        } else {
+            v = (unsigned char)*in;
+        }
+        if (n >= cap) return -1;
+        out[n++] = (uint8_t)v;
+    }
+    return (int)n;
+}
+
+/* ------------------------------------------------------------------ base58 */
+static const char B58[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+size_t devos_base58_encode(const uint8_t *in, size_t len, char *out, size_t cap)
+{
+    size_t zeros = 0;
+    while (zeros < len && in[zeros] == 0) zeros++;
+    size_t size = (len - zeros) * 138 / 100 + 1;     /* log(256)/log(58) ~= 1.37 */
+    uint8_t *digits = calloc(size, 1);               /* little-endian base58 digits */
+    if (!digits) { if (cap) out[0] = '\0'; return 0; }
+    size_t dlen = 0;                                 /* number of digits used */
+    for (size_t i = zeros; i < len; i++) {
+        uint32_t carry = in[i];
+        for (size_t j = 0; j < dlen; j++) {
+            carry += (uint32_t)digits[j] << 8;
+            digits[j] = (uint8_t)(carry % 58);
+            carry /= 58;
+        }
+        while (carry) { digits[dlen++] = (uint8_t)(carry % 58); carry /= 58; }
+    }
+    size_t o = 0;
+    for (size_t i = 0; i < zeros && o + 1 < cap; i++) out[o++] = '1';
+    for (size_t j = dlen; j-- > 0 && o + 1 < cap; ) out[o++] = B58[digits[j]];
+    if (cap) out[o] = '\0';
+    free(digits);
+    return o;
+}
+
+static int b58_val(char c)
+{
+    const char *p = strchr(B58, c);
+    return p ? (int)(p - B58) : -1;
+}
+
+int devos_base58_decode(const char *in, uint8_t *out, size_t cap)
+{
+    size_t zeros = 0;
+    while (in[zeros] == '1') zeros++;
+    size_t size = strlen(in) * 733 / 1000 + 1;        /* log(58)/log(256) ~= 0.733 */
+    uint8_t *bytes = calloc(size, 1);                 /* little-endian base256 */
+    if (!bytes) return -1;
+    size_t blen = 0;
+    for (const char *p = in; *p; p++) {
+        int v = b58_val(*p);
+        if (v < 0) { free(bytes); return -1; }
+        uint32_t carry = (uint32_t)v;
+        for (size_t j = 0; j < blen; j++) {
+            carry += (uint32_t)bytes[j] * 58;
+            bytes[j] = (uint8_t)(carry & 0xff);
+            carry >>= 8;
+        }
+        while (carry) { bytes[blen++] = (uint8_t)(carry & 0xff); carry >>= 8; }
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < zeros; i++) { if (n >= cap) { free(bytes); return -1; } out[n++] = 0; }
+    for (size_t j = blen; j-- > 0; ) { if (n >= cap) { free(bytes); return -1; } out[n++] = bytes[j]; }
+    free(bytes);
+    return (int)n;
+}
+
+/* ------------------------------------------------------------------ crc32 */
+uint32_t devos_crc32(const void *data, size_t len)
+{
+    static uint32_t table[256];
+    static int ready;
+    if (!ready) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        ready = 1;
+    }
+    const uint8_t *p = data;
+    uint32_t c = 0xffffffffu;
+    for (size_t i = 0; i < len; i++) c = table[(c ^ p[i]) & 0xff] ^ (c >> 8);
+    return c ^ 0xffffffffu;
 }

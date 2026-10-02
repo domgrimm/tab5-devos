@@ -24,6 +24,7 @@ void devos_icon_docker(lv_layer_t *layer, const lv_area_t *area, lv_color_t colo
 void devos_icon_adsb(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_cricket(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_totp(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
+void devos_icon_coder(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 
 /* A size x size object that shows an app's icon: its draw_icon, else its
  * `icon` symbol in the object's text font. The colour is the object's text

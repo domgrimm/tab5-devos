@@ -42,6 +42,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_coder
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
@@ -68,6 +69,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_maptiles
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_cricket
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_hashfile
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_audio
     )
@@ -88,6 +90,7 @@ else()
         main/apps/app_netdiag/nd_ui_scan.c
         main/apps/app_netdiag/nd_ui_wifi.c
         main/apps/app_netdiag/nd_ui_mdns.c
+        main/apps/app_netdiag/nd_ui_wol.c
         main/apps/app_rest/app_rest.c
         main/apps/app_docker/app_docker.c
         main/apps/app_adsb/app_adsb.c
@@ -96,6 +99,8 @@ else()
         main/apps/app_totp/app_totp.c
         main/apps/app_settings/app_settings.c
         main/apps/app_template/app_template.c
+        main/apps/app_coder/app_coder.c
+        main/apps/app_coder/coder_core.c
         components/devos_core/devos_core.c
         components/devos_core/devos_apps.c
         components/devos_core/devos_clipboard.c
@@ -139,11 +144,13 @@ else()
         components/devos_netdiag/nd_ping.c
         components/devos_netdiag/nd_dns.c
         components/devos_netdiag/nd_scan.c
+        components/devos_netdiag/nd_wol.c
         components/devos_docker/devos_docker.c
         components/devos_adsb/devos_adsb.c
         components/devos_maptiles/devos_maptiles.c
         components/devos_cricket/devos_cricket.c
         components/devos_crypto/devos_crypto.c
+        components/devos_hashfile/devos_hashfile.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c
     )

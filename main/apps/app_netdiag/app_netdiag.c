@@ -23,7 +23,7 @@ static lv_obj_t *s_screen, *s_bar, *s_keys;
 static lv_obj_t *s_tabs[ND_VIEWS], *s_tab_lbl[ND_VIEWS];
 static lv_obj_t *s_view_obj[ND_VIEWS];
 static const nd_view_t *s_views[ND_VIEWS] = { &nd_view_ping, &nd_view_dns, &nd_view_scan, &nd_view_wifi,
-                                              &nd_view_mdns };
+                                              &nd_view_mdns, &nd_view_wol };
 static int s_cur = -1;
 static bool s_inited;
 
@@ -100,7 +100,7 @@ static void tick_cb(lv_timer_t *t)
     if (!s_screen || lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN) || s_cur < 0) return;
     if (s_views[s_cur]->tick) s_views[s_cur]->tick();
     char keys[240];
-    snprintf(keys, sizeof(keys), "%s    Alt+1..5 tools    Esc home", s_views[s_cur]->keys ? s_views[s_cur]->keys() : "");
+    snprintf(keys, sizeof(keys), "%s    Alt+1..6 tools    Esc home", s_views[s_cur]->keys ? s_views[s_cur]->keys() : "");
     devos_w_set_text(s_keys, keys);
 }
 
@@ -146,8 +146,9 @@ static void nd_init(void)
     devos_netdiag_init();
     s_screen = devos_w_screen(&s_desc);
     s_bar = devos_w_bar(s_screen, LV_SYMBOL_WIFI "  Network", NULL);
-    static const char *names[ND_VIEWS] = { "1  Ping", "2  DNS", "3  Port scan", "4  Wi-Fi survey", "5  mDNS" };
-    static const int widths[ND_VIEWS] = { 70, 70, 100, 120, 76 };
+    static const char *names[ND_VIEWS] = { "1  Ping", "2  DNS", "3  Port scan", "4  Wi-Fi survey", "5  mDNS",
+                                           "6  Wake-on-LAN" };
+    static const int widths[ND_VIEWS] = { 62, 62, 92, 110, 70, 128 };
     int x = 150;
     for (int i = 0; i < ND_VIEWS; i++) {
         s_tabs[i] = devos_w_btn(s_bar, names[i], widths[i], tab_cb, (void *)(intptr_t)i, &s_tab_lbl[i]);
@@ -200,7 +201,7 @@ static int nd_telemetry(char lines[3][64])
     else if (ss.hosts_total) snprintf(lines[n++], 64, "* Last scan: %d hosts, %d open ports", ss.hosts_alive, ss.open_ports);
     if (!n) {
         snprintf(lines[0], 64, "* Ping, DNS, port scan");
-        snprintf(lines[1], 64, "* Wi-Fi survey, mDNS browser");
+        snprintf(lines[1], 64, "* Wi-Fi survey, mDNS, WOL");
         return 2;
     }
     return n;
@@ -236,11 +237,15 @@ static const char *nd_shortcuts(void)
                     "P\tPing it\n"
                     "C\tScan its ports\n"
                     "B\tBrowse again\n",
+        [ND_WOL] = "Wake-on-LAN\n"
+                   "W / Enter\tSend the magic packet\n"
+                   "Up / Down\tPick a saved machine, Enter re-wakes it\n"
+                   "Type\tMAC address and, optionally, where to send it\n",
     };
-    static char text[1200];
+    static char text[1400];
     snprintf(text, sizeof(text), "%s"
              "Every tool\n"
-             "Alt+1 ... 5\tPing, DNS, Port scan, Wi-Fi survey, mDNS\n"
+             "Alt+1 ... 6\tPing, DNS, Port scan, Wi-Fi survey, mDNS, Wake-on-LAN\n"
              "Alt+Left / Right\tPrevious / next tool\n"
              "Esc\tStop what's running, then Home\n",
              s_cur >= 0 && s_cur < ND_VIEWS ? tool[s_cur] : "");
@@ -256,7 +261,7 @@ devos_app_descriptor_t *app_netdiag_get_descriptor(void)
     s_desc.category = "network";
     s_desc.name = "Network";
     s_desc.title = "Network";
-    s_desc.subtitle = "Ping, DNS, port scan, Wi-Fi survey, mDNS";
+    s_desc.subtitle = "Ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN";
     s_desc.init = nd_init;
     s_desc.show = nd_show;
     s_desc.hide = nd_hide;

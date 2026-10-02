@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.5.0",
+    "built": "Oct  2 2026 07:37:30",
+    "notes": "Coder's Toolkit, Wake-on-LAN, and power shortcuts (Sym+P sleep, Sym+Shift+R restart, Sym+Shift+Q shutdown)"
+  },
+  {
     "version": "0.4.6",
     "built": "Oct  2 2026 05:41:58",
     "notes": "Fix OTA: the 300 ms interrupt watchdog fired during the flash write, resetting the Tab5 mid-update. It now has 1 s headroom."
