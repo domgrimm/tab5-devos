@@ -1,12 +1,92 @@
 [
   {
     "version": "0.5.2",
-    "built": "Oct  3 2026 16:40:14",
+    "built": "Oct  3 2026 16:53:34",
     "notes": "Coder's Toolkit adds an IPv4 subnet calculator, a cron explainer (with the next runs) and a regex tester; JWT now verifies HS256/HS384/HS512 and shows claim dates, and Unix time converts bot"
+  },
+  {
+    "version": "0.5.1",
+    "built": "Oct  3 2026 15:29:42",
+    "notes": "Restart and shutdown now ask first with the same confirm/cancel dialog as Settings > Power (Sym+Shift+R / Sym+Shift+Q)."
   },
   {
     "version": "0.5.0",
     "built": "Oct  2 2026 07:37:30",
     "notes": "Coder's Toolkit, Wake-on-LAN, power shortcuts"
+  },
+  {
+    "version": "0.4.6",
+    "built": "Oct  2 2026 05:41:58",
+    "notes": "Fix OTA: the 300 ms interrupt watchdog fired during the flash write, resetting the Tab5 mid-update. It now has 1 s headroom."
+  },
+  {
+    "version": "0.4.5",
+    "built": "Oct  2 2026 05:28:05",
+    "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."
+  },
+  {
+    "version": "0.4.4",
+    "built": "Sep 29 2026 09:03:25",
+    "notes": "Fix OTA watchdog starvation by yielding more, v0.4.4"
+  },
+  {
+    "version": "0.4.3",
+    "built": "Sep 29 2026 08:47:24",
+    "notes": "Restart and shutdown buttons in Power page, Sleep renamed, v0.4.3"
+  },
+  {
+    "version": "0.4.2",
+    "built": "Sep 29 2026 07:15:08",
+    "notes": "One clipboard for every app: Sym+V pastes (text fields, Terminal, Editor); C in the Authenticator copies the code. Sym+S keyboard shortcuts, terminal bell, toasts, Docker SSH / web links, Se"
+  },
+  {
+    "version": "0.4.1",
+    "built": "Sep 28 2026 22:54:31",
+    "notes": "Fixes updates over Wi-Fi stopping with a watchdog reset while the new image was written. A Tab5 on 0.3.3 or 0.4.0 still updates with its old installer: install 0.4.1 once by cable from this "
+  },
+  {
+    "version": "0.4.0",
+    "built": "Sep 28 2026 21:55:47",
+    "notes": "Command palette: Sym+Space finds any app or command. Sym+I shows battery, memory, network and CPU over any app. Tapping Wi-Fi, battery or the clock in the top bar opens that part of Settings"
+  },
+  {
+    "version": "0.3.3",
+    "built": "Sep 28 2026 09:09:56",
+    "notes": "The camera works again (WireGuard and 2FA QR codes)."
+  },
+  {
+    "version": "0.3.2",
+    "built": "Sep 28 2026 08:45:11",
+    "notes": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again. Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.3.1",
+    "built": "Sep 28 2026 08:19:55",
+    "notes": "Updates over Wi-Fi install reliably; WireGuard no longer restarts the Tab5 on connect. Known issue: runs out of memory (fixed in 0.3.2)."
+  },
+  {
+    "version": "0.3.0",
+    "built": "Sep 28 2026 07:16:24",
+    "notes": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing). Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.2.1",
+    "built": "Sep 27 2026 12:22:46",
+    "notes": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported. Known issue: the camera doesn't start (fixed in 0.3.3)."
+  },
+  {
+    "version": "0.2.0",
+    "built": "Sep 27 2026 12:05:24",
+    "notes": "New Cricket app: ESPNcricinfo live scores, results by date, scorecards."
+  },
+  {
+    "version": "0.1.1",
+    "built": "Sep 27 2026 11:38:13",
+    "notes": "ADS-B: OpenStreetMap map under the radar (M toggles it)."
+  },
+  {
+    "version": "0.1.0",
+    "built": "Sep 27 2026 10:26:57",
+    "notes": "First public release."
   }
 ]
