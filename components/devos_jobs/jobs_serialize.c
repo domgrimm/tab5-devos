@@ -236,3 +236,13 @@ size_t jobs_serialize(const jobs_ast_t *ast, char *out, size_t cap)
     else b.out[b.cap - 1] = '\0';
     return b.len;
 }
+
+size_t jobs_serialize_expr(const jobs_node_t *e, char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    SB b = { out, cap, 0 };
+    emit_expr(&b, e);
+    if (b.len < b.cap) b.out[b.len] = '\0';
+    else b.out[b.cap - 1] = '\0';
+    return b.len;
+}

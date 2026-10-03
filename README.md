@@ -80,6 +80,13 @@ app or the screen is off, and is off entirely when Jobs is switched off in **Set
 Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are kept under
 `/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/examples/`.
 
+**Builder** is the default view (press **Sym+M** for Text). It has a trigger card, a step tree you
+can tap to select and **drag to reorder**, and a settings inspector generated from each action's
+schema; conditions, `set` values and expression-capable parameters can hold full expressions. The
+commands are on **Sym+key** so they work while typing in a field: **Sym+B** Builder, **Sym+M** Text,
+**Sym+C** validate, **Sym+A** apply, **Sym+G** enable, **Sym+R** run, **Sym+X** cancel, **Sym+Y**
+history, **Sym+N** new, **Sym+D** delete, **Sym+U** add a step, **Sym+K**/**Sym+J** move a step.
+
 ### Wake-on-LAN
 
 **Network > Wake-on-LAN** wakes a sleeping machine with a magic packet. Type its MAC address (any of `aa:bb:cc:dd:ee:ff`, `aa-bb-cc-dd-ee-ff`, `aabb.ccdd.eeff` or plain `aabbccddeeff`) and press **Wake**. Leave the "send to" box empty on the same Wi-Fi network (the packet is broadcast); type a host or IP (or a directed broadcast like `192.168.1.255`) to reach a machine on another subnet, or across Tailscale / WireGuard - the socket is routed through the tunnel like every other. Machines you have woken are remembered in `/.devos/wol.json`: pick one and **Enter** re-wakes it.

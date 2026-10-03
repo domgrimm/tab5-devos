@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool set_arg_lit(jobs_build_t *b, const jobs_node_t *action, const char *param, jobs_node_t *lit);
+
 static const jobs_node_t *find_arg(const jobs_node_t *action, const char *param)
 {
     for (const jobs_node_t *a = action->a; a; a = a->next)
@@ -257,6 +259,87 @@ bool jobs_build_set_wait(jobs_build_t *b, const jobs_node_t *stmt, int64_t ms)
     (void)b;
     if (!stmt || stmt->kind != JN_WAIT || ms <= 0) return false;
     ((jobs_node_t *)stmt)->u.i = ms;
+    return true;
+}
+
+int jobs_build_block_count(const jobs_node_t *block)
+{
+    int n = 0;
+    for (const jobs_node_t *s = block ? block->a : NULL; s; s = s->next) n++;
+    return n;
+}
+
+bool jobs_build_move_to(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int target)
+{
+    if (!block || !stmt) return false;
+    int count = jobs_build_block_count(block);
+    if (target < 0) target = 0;
+    if (target >= count) target = count - 1;
+    int idx = 0;
+    for (const jobs_node_t *s = block->a; s && s != stmt; s = s->next) idx++;
+    while (idx < target) { if (!jobs_build_move(b, block, stmt, 1)) return false; idx++; }
+    while (idx > target) { if (!jobs_build_move(b, block, stmt, -1)) return false; idx--; }
+    return true;
+}
+
+/* ---- conditions and advanced expressions ---- */
+const jobs_node_t *jobs_build_if_cond(const jobs_node_t *if_node) { return if_node ? if_node->a : NULL; }
+const jobs_node_t *jobs_build_set_value(const jobs_node_t *set_node) { return set_node ? set_node->a : NULL; }
+const jobs_node_t *jobs_build_arg_expr(const jobs_node_t *action, const char *param)
+{
+    const jobs_node_t *a = find_arg(action, param);
+    return a ? a->a : NULL;
+}
+
+static jobs_node_t *parse_expr_into(jobs_build_t *b, const char *text, const char **err)
+{
+    return jobs_parse_expr(text ? text : "", strlen(text ? text : ""), b->ast, err);
+}
+
+bool jobs_build_set_if_cond(jobs_build_t *b, const jobs_node_t *if_node, const char *text)
+{
+    if (!b || !if_node || if_node->kind != JN_IF) return false;
+    const char *err = NULL;
+    jobs_node_t *e = parse_expr_into(b, text, &err);
+    if (!e) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "bad condition"); return false; }
+    ((jobs_node_t *)if_node)->a = e;
+    return true;
+}
+
+bool jobs_build_set_set_value(jobs_build_t *b, const jobs_node_t *set_node, const char *text)
+{
+    if (!b || !set_node || set_node->kind != JN_SET) return false;
+    const char *err = NULL;
+    jobs_node_t *e = parse_expr_into(b, text, &err);
+    if (!e) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "bad value"); return false; }
+    ((jobs_node_t *)set_node)->a = e;
+    return true;
+}
+
+bool jobs_build_set_arg_expr(jobs_build_t *b, const jobs_node_t *action, const char *param, const char *text)
+{
+    if (!b || !action) return false;
+    const char *err = NULL;
+    jobs_node_t *e = parse_expr_into(b, text, &err);
+    if (!e) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "bad expression"); return false; }
+    return set_arg_lit(b, action, param, e);
+}
+
+const char *jobs_build_expr_text(const jobs_node_t *e)
+{
+    static char buf[256];
+    jobs_serialize_expr(e, buf, sizeof(buf));
+    return buf;
+}
+
+bool jobs_build_arg_is_expr(const jobs_node_t *action, const char *param)
+{
+    const jobs_node_t *a = find_arg(action, param);
+    if (!a || !a->a) return false;
+    const jobs_node_t *e = a->a;
+    if (e->kind == JN_EXPR_LIT) return false;
+    if (e->kind == JN_EXPR_STR) return false;
+    if (e->kind == JN_EXPR_REF) return false;
     return true;
 }
 

@@ -127,6 +127,37 @@ int main(void)
     CHECK(jobs_build_revalidate(&b));
     CHECK(jobs_build_rows(&b, rows, JOBS_BUILD_ROWS) == n - 1);
 
+    /* conditions and advanced expressions (editable in the Builder) */
+    {
+        const char *C =
+            "version 1;\njob \"c\" {\n trigger manual;\n"
+            " set x = 1;\n network.ping(host: \"a\") as p;\n"
+            " if p.ok { system.log(message: \"ok\"); }\n}\n";
+        jobs_build_t c;
+        memset(&c, 0, sizeof(c));
+        CHECK(jobs_build_load(&c, C, strlen(C)));
+        jobs_build_row_t r[JOBS_BUILD_ROWS];
+        int m = jobs_build_rows(&c, r, JOBS_BUILD_ROWS);
+        CHECK(m == 4);
+        CHECK(r[0].node->kind == JN_SET);
+        CHECK(jobs_build_set_set_value(&c, r[0].node, "json_get(\"{}\", \"n\")"));
+        CHECK(strstr(jobs_build_expr_text(jobs_build_set_value(r[0].node)), "json_get") != NULL);
+        CHECK(r[2].node->kind == JN_IF);
+        CHECK(jobs_build_set_if_cond(&c, r[2].node, "p.ok && x > 1"));
+        CHECK(strstr(jobs_build_expr_text(jobs_build_if_cond(r[2].node)), "p.ok") != NULL);
+        CHECK(jobs_build_revalidate(&c));
+        /* an expression-capable argument can hold a full expression (a call) */
+        CHECK(r[3].node->kind == JN_ACTION);
+        CHECK(jobs_build_set_arg_expr(&c, r[3].node, "message", "json_get(\"{}\", \"x\")"));
+        CHECK(jobs_build_arg_is_expr(r[3].node, "message"));
+        CHECK(jobs_build_revalidate(&c));
+        /* move_to reorders within a block (keeps definitions before uses) */
+        CHECK(jobs_build_block_count(c.ast->root->c) == 3);
+        CHECK(jobs_build_move_to(&c, c.ast->root->c, r[0].node, 1));
+        CHECK(jobs_build_revalidate(&c));
+        jobs_build_free(&c);
+    }
+
     /* the serialized draft is a valid, stable definition */
     char out1[2048], out2[2048];
     size_t l1 = jobs_build_source(&b, out1, sizeof(out1));

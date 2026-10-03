@@ -58,6 +58,22 @@ bool jobs_build_delete(jobs_build_t *b, const jobs_node_t *block, const jobs_nod
 bool jobs_build_move(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int dir);
 /* Replace a statement's expression (wait duration / set value) with a literal. */
 bool jobs_build_set_wait(jobs_build_t *b, const jobs_node_t *stmt, int64_t ms);
+/* Number of statements in a block. */
+int jobs_build_block_count(const jobs_node_t *block);
+/* Move a statement to a target index within its block. */
+bool jobs_build_move_to(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int target);
+
+/* ---- conditions and advanced expressions ---- */
+const jobs_node_t *jobs_build_if_cond(const jobs_node_t *if_node);
+const jobs_node_t *jobs_build_set_value(const jobs_node_t *set_node);
+const jobs_node_t *jobs_build_arg_expr(const jobs_node_t *action, const char *param);
+bool jobs_build_set_if_cond(jobs_build_t *b, const jobs_node_t *if_node, const char *text);
+bool jobs_build_set_set_value(jobs_build_t *b, const jobs_node_t *set_node, const char *text);
+bool jobs_build_set_arg_expr(jobs_build_t *b, const jobs_node_t *action, const char *param, const char *text);
+/* Canonical text of an expression (static buffer). */
+const char *jobs_build_expr_text(const jobs_node_t *e);
+/* 1 when the argument is a compound expression (not a literal/plain string). */
+bool jobs_build_arg_is_expr(const jobs_node_t *action, const char *param);
 
 /* ---- inspector: action parameters ---- */
 /* 1 when the named parameter's value is a simple literal (or absent) the

@@ -118,10 +118,15 @@ bool jobs_failed(const jobs_ast_t *ast);
 
 /* ---- pipeline (implemented in jobs_parse.c / jobs_validate.c / jobs_serialize.c) ---- */
 jobs_ast_t *jobs_parse(const char *src, size_t len, const jobs_limits_t *lim);
+/* Parse a single expression into an existing AST (for the Builder's condition
+ * and expression fields). Returns the node, or NULL with *err set. */
+jobs_node_t *jobs_parse_expr(const char *src, size_t len, jobs_ast_t *ast, const char **err);
 /* Type/schema/scope validation; adds diagnostics. true when the AST is executable. */
 bool jobs_validate(jobs_ast_t *ast);
 /* Canonical source; returns the length (or the needed length if it didn't fit). */
 size_t jobs_serialize(const jobs_ast_t *ast, char *out, size_t cap);
+/* Canonical text of one expression (for the Builder's fields). */
+size_t jobs_serialize_expr(const jobs_node_t *e, char *out, size_t cap);
 
 /* ---- helpers ---- */
 const char *jobs_trigger_name(jobs_trigger_kind_t k);

@@ -704,3 +704,21 @@ jobs_ast_t *jobs_parse(const char *src, size_t len, const jobs_limits_t *lim)
     if (!p.err) ast->root = root;
     return ast;
 }
+
+jobs_node_t *jobs_parse_expr(const char *src, size_t len, jobs_ast_t *ast, const char **err)
+{
+    if (err) *err = NULL;
+    if (!ast || !src) { if (err) *err = "no expression"; return NULL; }
+    P p;
+    memset(&p, 0, sizeof(p));
+    p.src = src;
+    p.len = len;
+    p.line = 1;
+    p.col = 1;
+    p.ast = ast;
+    next(&p);
+    jobs_node_t *e = parse_expr(&p);
+    if (p.err || !e) { if (err) *err = ast->diag_count ? ast->diag[0].msg : "bad expression"; return NULL; }
+    if (p.cur.kind != T_EOF) { if (err) *err = "unexpected text after the expression"; return NULL; }
+    return e;
+}
