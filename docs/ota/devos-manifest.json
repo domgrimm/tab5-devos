@@ -1,8 +1,8 @@
 {
-  "version": "0.5.2",
-  "url": "tab5-devos-0.5.2.bin",
-  "size": 2603312,
-  "sha256": "b1b71bdee2859584eb0fceaca7e51d3033265571db2a6f7cdf88643ebae14122",
-  "build": "b7df8f1f9a8aeb40550fe422d1b8078e6ccf0e1f0ae41c3eb5e77e372b340e13",
-  "notes": "Coder's Toolkit adds an IPv4 subnet calculator, a cron explainer (with the next runs) and a regex tester; JWT now verifies HS256/HS384/HS512 and shows claim dates, and Unix time converts bot"
+  "version": "0.5.3",
+  "url": "tab5-devos-0.5.3.bin",
+  "size": 2607760,
+  "sha256": "145feab163662f0215eff85c4dc2fa1f078a8bfbf0e7b635a756ab8f46561d88",
+  "build": "f6907d01a9e8744119a27795a0adbe6d333dbf63304908c41e781b48691e674e",
+  "notes": "File Sharing: paste text from the web page onto the Tab5's Universal Clipboard (also saved to /.devos/clipboard.txt), with a read-back button."
 }

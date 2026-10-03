@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.5.3",
+    "built": "Oct  3 2026 17:16:26",
+    "notes": "File Sharing: paste text from the web page onto the Tab5's Universal Clipboard (also saved to /.devos/clipboard.txt), with a read-back button."
+  },
+  {
     "version": "0.5.2",
     "built": "Oct  3 2026 16:53:34",
     "notes": "Coder's Toolkit adds an IPv4 subnet calculator, a cron explainer (with the next runs) and a regex tester; JWT now verifies HS256/HS384/HS512 and shows claim dates, and Unix time converts bot"
