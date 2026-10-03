@@ -21,6 +21,7 @@
 #include "devos_codeview.h"
 #include "devos_focus.h"
 #include "devos_icons.h"
+#include "devos_theme.h"
 #include "devos_toast.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@
 #define OUT_MAX 4096
 #define SRCMAX  (JOBS_MAX_SOURCE + 64)
 #define STEP_ROWS 32
-#define STEP_H 26
+#define STEP_H 30
 
 typedef enum { MODE_TEXT = 0, MODE_BUILDER } ui_mode_t;
 typedef enum { INSP_NONE = 0, INSP_ACTION, INSP_IF, INSP_SET, INSP_WAIT, INSP_CUSTOM } insp_t;
@@ -185,6 +186,31 @@ static void builder_sync(void)
 
 static void builder_inspector(void);
 
+/* Subtle selection: the current step gets a thin accent border and a faint
+ * raised background; the rest are transparent. Re-applied on theme change. */
+static void restyle_steps(void)
+{
+    const devos_palette_t *p = devos_theme_get();
+    for (int i = 0; i < s_ctx.rows_n && i < STEP_ROWS; i++) {
+        lv_obj_t *row = s_ctx.step_row[i];
+        if (i == s_ctx.bstep) {
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(row, p->surface_active, 0);
+            lv_obj_set_style_border_width(row, 1, 0);
+            lv_obj_set_style_border_color(row, p->accent_primary, 0);
+        } else {
+            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+        }
+    }
+}
+
+static void steps_theme_cb(const devos_palette_t *p, void *user)
+{
+    (void)p; (void)user;
+    if (s_ctx.mode == MODE_BUILDER) restyle_steps();
+}
+
 /* (Re)draw the step rows and rebuild the row cache. */
 static void refresh_steps(void)
 {
@@ -197,8 +223,6 @@ static void refresh_steps(void)
             snprintf(txt, sizeof(txt), "%*s%s", s_ctx.rows[i].depth * 2, "", s);
             devos_w_set_text(s_ctx.step_lbl[i], txt);
             lv_obj_set_y(s_ctx.step_row[i], i * STEP_H);
-            devos_w_track(s_ctx.step_row[i], i == s_ctx.bstep ? DEVOS_W_BTN_PRIMARY : DEVOS_W_PANEL_ALT);
-            devos_w_track(s_ctx.step_lbl[i], i == s_ctx.bstep ? DEVOS_W_TEXT_ON_ACCENT : DEVOS_W_TEXT);
             set_visible(s_ctx.step_row[i], true);
         } else {
             set_visible(s_ctx.step_row[i], false);
@@ -226,6 +250,7 @@ static void refresh_steps(void)
     /* keep the same node selected across a reorder */
     if (sel_node) for (int i = 0; i < s_ctx.rows_n; i++) if (s_ctx.rows[i].node == sel_node) s_ctx.bstep = i;
     if (s_ctx.bstep >= s_ctx.rows_n) s_ctx.bstep = s_ctx.rows_n ? s_ctx.rows_n - 1 : 0;
+    restyle_steps();
 }
 
 static void builder_refresh(void)
@@ -725,10 +750,12 @@ static void jobs_init(void)
     lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_CLICKABLE);
     for (int i = 0; i < STEP_ROWS; i++) {
         lv_obj_t *row = lv_obj_create(s_ctx.step_list);
-        lv_obj_set_size(row, 736, STEP_H - 2);
+        lv_obj_set_size(row, 736, STEP_H - 4);
         lv_obj_set_pos(row, 0, i * STEP_H);
         lv_obj_set_style_radius(row, 4, 0);
         lv_obj_set_style_pad_all(row, 2, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row, step_row_cb, LV_EVENT_ALL, (void *)(intptr_t)i);
@@ -736,7 +763,6 @@ static void jobs_init(void)
         s_ctx.step_lbl[i] = devos_w_label(row, NULL, DEVOS_W_TEXT, "");
         lv_obj_set_pos(s_ctx.step_lbl[i], 4, 2);
         lv_obj_set_width(s_ctx.step_lbl[i], 720);
-        devos_w_track(row, DEVOS_W_PANEL_ALT);
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -827,6 +853,7 @@ static void jobs_init(void)
     refresh_list();
     load_selected();
     set_mode(MODE_BUILDER);                 /* Builder is the default */
+    devos_theme_add_listener(steps_theme_cb, NULL);
     say("Builder: pick a step, edit its settings, Sym+U adds a step. Sym+M for Text.");
     lv_timer_create(tick_cb, 250, NULL);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_HIDDEN);
