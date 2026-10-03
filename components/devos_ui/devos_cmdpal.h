@@ -37,7 +37,8 @@ void devos_cmdpal_init(void);
 void devos_cmdpal_add(const devos_command_t *cmd);
 void devos_cmdpal_open(void);
 /* Open with `query` in the box (NULL = empty). run_first runs the best match
- * at once. */
+ * at once - the Sym+R / Sym+Q shortcuts use it to land on restart / shutdown
+ * and raise their confirmation. */
 void devos_cmdpal_open_with(const char *query, bool run_first);
 void devos_cmdpal_close(void);
 bool devos_cmdpal_is_open(void);

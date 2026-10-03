@@ -1,0 +1,5 @@
+{
+  "version": "0.3.0",
+  "built": "Sep 28 2026 07:16:24",
+  "notes": "File Sharing: add and remove files on the SD card from a browser (Settings > File Sharing). Known issue: the camera doesn't start (fixed in 0.3.3)."
+}
