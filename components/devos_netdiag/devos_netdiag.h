@@ -48,6 +48,25 @@ void devos_ping_stats(devos_ping_stats_t *out);
 int devos_ping_history(float *out, int max);
 uint32_t devos_ping_generation(void);
 
+/* ------------------------------------------------------------------ probe
+ * A request-specific one-shot ICMP echo for Jobs. Unlike the ping engine it
+ * owns its socket, id and deadline, so it never disturbs a running ping in
+ * the Network app. One probe at a time (a second submit is refused). */
+typedef struct {
+    bool ok;
+    char ip[48];
+    int latency_ms;                 /* -1 when lost */
+    char error[64];                 /* "" on success */
+} devos_probe_result_t;
+
+/* Start a probe; returns a handle > 0, -1 on bad input, -2 when one is already
+ * running. */
+int devos_probe_submit(const char *host, int timeout_ms);
+/* state: 0 running, 1 done, 2 failed; -1 on a stale handle. */
+int devos_probe_poll(int handle, int *state, devos_probe_result_t *out);
+void devos_probe_cancel(int handle);
+void devos_probe_release(int handle);
+
 /* ------------------------------------------------------------------ dns */
 enum {
     DEVOS_DNS_A = 1, DEVOS_DNS_NS = 2, DEVOS_DNS_CNAME = 5, DEVOS_DNS_SOA = 6, DEVOS_DNS_PTR = 12,

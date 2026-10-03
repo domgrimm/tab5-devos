@@ -71,7 +71,10 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_hashfile
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_actions
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_events
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_jobs
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_err
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/jobs_providers
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_audio
     )
@@ -148,6 +151,7 @@ else()
         components/devos_netdiag/nd_dns.c
         components/devos_netdiag/nd_scan.c
         components/devos_netdiag/nd_wol.c
+        components/devos_netdiag/nd_probe.c
         components/devos_docker/devos_docker.c
         components/devos_adsb/devos_adsb.c
         components/devos_maptiles/devos_maptiles.c
@@ -155,10 +159,15 @@ else()
         components/devos_crypto/devos_crypto.c
         components/devos_hashfile/devos_hashfile.c
         components/devos_actions/devos_actions.c
+        components/devos_events/devos_events.c
         components/devos_jobs/jobs_model.c
         components/devos_jobs/jobs_parse.c
         components/devos_jobs/jobs_validate.c
         components/devos_jobs/jobs_serialize.c
+        main/jobs_providers/jobs_providers.c
+        main/jobs_providers/jobs_system.c
+        main/jobs_providers/jobs_http.c
+        main/jobs_providers/jobs_network.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c
     )

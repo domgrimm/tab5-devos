@@ -24,6 +24,10 @@ set(APP_SRCS
     "apps/app_template/app_template.c"
     "apps/app_coder/app_coder.c"
     "apps/app_coder/coder_core.c"
+    "jobs_providers/jobs_providers.c"
+    "jobs_providers/jobs_system.c"
+    "jobs_providers/jobs_http.c"
+    "jobs_providers/jobs_network.c"
 )
 
 idf_component_register(
@@ -40,6 +44,7 @@ idf_component_register(
         "apps/app_settings"
         "apps/app_template"
         "apps/app_coder"
+        "jobs_providers"
     REQUIRES
         devos_core
         devos_ui
@@ -69,6 +74,8 @@ idf_component_register(
         devos_totp
         devos_crypto
         devos_hashfile
+        devos_actions
+        devos_events
         devos_audio
         lvgl
         nvs_flash

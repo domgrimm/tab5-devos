@@ -62,6 +62,10 @@ typedef void (*devos_event_cb_t)(const devos_event_t *ev, void *user);
  * Returns a subscription id > 0, or -1. Delivery is on the caller's task. */
 int devos_events_subscribe(const char *pattern, devos_event_cb_t cb, void *user);
 void devos_events_unsubscribe(int sub_id);
+/* Deliver up to `max` queued events (0 = all) to the subscribers present at
+ * the start of the call. Callbacks run on this task, outside the lock. Returns
+ * the number of events drained. */
+int devos_events_drain(int max);
 
 typedef struct {
     uint32_t published, delivered, dropped, coalesced;

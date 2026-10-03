@@ -42,6 +42,23 @@ devos_time_source_t devos_sysmon_time_source(void);
 /* Local time of the last successful NTP sync (0 if never). */
 time_t devos_sysmon_last_sync(void);
 
+/* Compact, locked snapshot for engines that are not the GUI task (the Jobs
+ * scheduler). Never read GUI-owned telemetry from a worker. Plain fields, no
+ * LVGL. On the simulator the hardware samples are zeroed. */
+typedef struct {
+    bool     battery_valid, battery_present, charging;
+    uint8_t  battery_percent;
+    bool     wifi_connected;
+    char     wifi_ssid[33];
+    char     local_ip[20];
+    int8_t   wifi_rssi;
+    bool     time_valid;
+    uint32_t uptime_s;
+    uint8_t  cpu_core0, cpu_core1;
+    uint32_t psram_free_kb, sram_free_kb, sram_largest_kb;
+} devos_sysmon_snapshot_t;
+void devos_sysmon_get_snapshot(devos_sysmon_snapshot_t *out);
+
 /* Time zones offered in Settings; index into this list is persisted. */
 const devos_timezone_t *devos_sysmon_timezones(int *count);
 int  devos_sysmon_timezone_index(void);

@@ -355,6 +355,38 @@ void devos_sysmon_init(void)
     xTaskCreatePinnedToCore(sysmon_task, "sysmon", 6144, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
 }
 
+void devos_sysmon_get_snapshot(devos_sysmon_snapshot_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    snapshot_t n;
+    memset(&n, 0, sizeof(n));
+#ifdef ESP_PLATFORM
+    if (s_lock) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        n = s_snap;
+        xSemaphoreGive(s_lock);
+    }
+#else
+    n = s_snap;
+#endif
+    out->battery_valid = n.bat_valid;
+    out->battery_present = n.bat_present;
+    out->charging = n.charging;
+    out->battery_percent = n.pct;
+    out->wifi_connected = n.wifi.connected;
+    snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", n.wifi.ssid);
+    snprintf(out->local_ip, sizeof(out->local_ip), "%s", n.wifi.ip);
+    out->wifi_rssi = n.wifi.rssi;
+    out->time_valid = devos_sysmon_time_source() != DEVOS_TIME_UNSET;
+    out->uptime_s = n.uptime_s;
+    out->cpu_core0 = n.cpu[0];
+    out->cpu_core1 = n.cpu[1];
+    out->psram_free_kb = n.psram_free_kb;
+    out->sram_free_kb = n.sram_free_kb;
+    out->sram_largest_kb = n.sram_largest_kb;
+}
+
 void devos_sysmon_apply(void)
 {
     if (!s_lock) return;

@@ -2,16 +2,22 @@
 
 /* devos_actions: the typed action contract shared by the Jobs executor, the
  * Jobs GUI builder and every app that exposes automatable operations
- * (AGENTS.md "Jobs-compatible actions and events").
+ * (AGENTS.md invariant 10).
  *
  * This header is deliberately free of LVGL and devos_core.h: the Jobs engine
  * compiles and is unit-tested on the host. Schemas are static and immutable;
  * registration is done once at boot from a provider hook, not from an app's
  * LVGL init(). The registry rejects duplicates and overflow.
  *
- * Phase 1 ships the schema registry and the value model. The asynchronous
- * operation contract (start/poll/cancel/release) is declared here and
- * implemented by the providers in Phase 2. */
+ * Two layers:
+ *   - the schema registry (id, typed parameters/outputs, effect) used by the
+ *     Builder and the validator;
+ *   - the operation runtime (start/poll/cancel/release) with generation-tagged
+ *     handles, used by the scheduler. Providers supply the handlers.
+ *
+ * The runtime is driven from the Jobs scheduler task (Core 0); it is not a
+ * general thread-safe pool. Handles are slot+generation so a stale reference
+ * is rejected rather than acting on a reused slot. */
 
 #include "devos_err.h"
 #include <stdbool.h>
@@ -22,7 +28,8 @@
 extern "C" {
 #endif
 
-#define DEVOS_ACTIONS_MAX 64
+#define DEVOS_ACTIONS_MAX       64   /* registered schemas */
+#define DEVOS_ACTION_OPS_MAX    16   /* outstanding operations */
 
 /* ---- typed values (also the Jobs expression value model) ---- */
 typedef enum {
@@ -74,6 +81,49 @@ typedef struct {
     const char *help;
 } devos_action_out_t;
 
+/* ---- asynchronous operation contract ---- */
+typedef struct { uint32_t slot; uint32_t gen; } devos_action_handle_t;
+#define DEVOS_ACTION_HANDLE_NONE ((devos_action_handle_t){ 0, 0 })
+
+typedef struct {
+    devos_value_t *args;        /* named values, in descriptor param order */
+    int arg_count;
+    const char *run_id;         /* correlation, for traces; may be NULL */
+} devos_action_args_t;
+
+typedef struct {
+    void *user;                 /* provider context (e.g. the provider engine) */
+} devos_action_context_t;
+
+typedef enum {
+    DEVOS_ACT_PENDING = 0,      /* submitted, no final result yet */
+    DEVOS_ACT_DONE,             /* provider completed; typed output available */
+    DEVOS_ACT_FAILED,           /* could not execute (invalid/unavailable/...) */
+    DEVOS_ACT_CANCELLED,        /* confirmed local cancellation */
+    DEVOS_ACT_UNKNOWN,          /* cancelled/timed out after a mutating send */
+} devos_action_state_t;
+
+typedef struct {
+    devos_action_state_t state;
+    devos_value_t *outs;        /* descriptor-ordered outputs, provider-owned */
+    int out_count;
+    char error[96];             /* diagnostic when FAILED/CANCELLED */
+    int64_t duration_ms;
+} devos_action_result_t;
+
+/* Provider handlers. `start` may return DEVOS_ERR_INVALID_STATE when the
+ * provider is busy/at capacity (admission); the runtime then reports it as a
+ * failed start. `available` (optional) reports readiness with a reason.
+ * `poll` fills *state and, when done, *result (provider-owned until release).
+ * `release` frees the op exactly once. */
+typedef struct {
+    devos_err_t (*start)(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op);
+    devos_err_t (*poll)(void *op, devos_action_state_t *state, devos_action_result_t *result);
+    devos_err_t (*cancel)(void *op);
+    void        (*release)(void *op);
+    bool        (*available)(char *reason, size_t cap);   /* NULL = always */
+} devos_action_ops_t;
+
 typedef struct {
     const char *id;             /* "http.request" */
     uint16_t schema_version;
@@ -88,6 +138,7 @@ typedef struct {
     devos_effect_t effect;
     bool retry_safe;
     int recommended_timeout_ms;
+    const devos_action_ops_t *ops;   /* NULL = schema only (no runtime) */
 } devos_action_descriptor_t;
 
 /* ---- registry (frozen once Jobs definitions are validated) ---- */
@@ -98,45 +149,18 @@ const devos_action_descriptor_t *devos_actions_at(int index);
 /* Tests only: forget every registration. */
 void devos_actions_reset(void);
 
-/* ---- asynchronous operation contract (implemented by providers, Phase 2) ----
- * A handle carries a slot generation so a stale reference is rejected rather
- * than acting on a reused slot. start() copies/owns the arguments until the
- * operation completes; poll() snapshots state; release() frees exactly once. */
-typedef struct { uint32_t slot; uint32_t gen; } devos_action_handle_t;
-#define DEVOS_ACTION_HANDLE_NONE ((devos_action_handle_t){ 0, 0 })
-
-typedef struct {
-    devos_value_t *args;        /* named values, see the descriptor's params */
-    int arg_count;
-    const char *run_id;         /* correlation, for traces */
-} devos_action_args_t;
-
-typedef struct {
-    void *user;                 /* provider context */
-} devos_action_context_t;
-
-typedef enum {
-    DEVOS_ACT_PENDING = 0,      /* submitted, no final result yet */
-    DEVOS_ACT_DONE,             /* provider completed; typed output available */
-    DEVOS_ACT_FAILED,           /* could not execute (invalid/unavailable/...) */
-    DEVOS_ACT_CANCELLED,        /* confirmed local cancellation */
-    DEVOS_ACT_UNKNOWN,          /* cancelled/timed out after a mutating send */
-} devos_action_state_t;
-
-typedef struct {
-    devos_action_state_t state;
-    devos_value_t *outs;        /* descriptor-ordered outputs */
-    int out_count;
-    char error[96];             /* diagnostic when FAILED/CANCELLED */
-    int64_t duration_ms;
-} devos_action_result_t;
-
+/* ---- operation runtime ---- */
 devos_err_t devos_action_start(const char *action_id, const devos_action_args_t *args,
                                const devos_action_context_t *ctx, devos_action_handle_t *out);
 devos_err_t devos_action_poll(devos_action_handle_t handle, devos_action_state_t *state,
                               devos_action_result_t *result);
 devos_err_t devos_action_cancel(devos_action_handle_t handle);
 void devos_action_release(devos_action_handle_t handle);
+
+/* Readiness of an action's provider, with a reason when unavailable. */
+bool devos_actions_available(const char *id, char *reason, size_t cap);
+/* Outstanding operations (admission headroom). */
+int devos_actions_outstanding(void);
 
 #ifdef __cplusplus
 }

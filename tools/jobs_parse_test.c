@@ -2,7 +2,7 @@
  * (components/devos_jobs). Pure logic - no LVGL, no network. Fake action
  * schemas are registered through the same devos_actions API providers use.
  *
- *   gcc -O2 -Icomponents/devos_jobs -Icomponents/devos_actions \
+ *   gcc -O2 -Icomponents/devos_jobs -Icomponents/devos_actions -Icomponents/devos_err \
  *       tools/jobs_parse_test.c \
  *       components/devos_jobs/jobs_model.c components/devos_jobs/jobs_parse.c \
  *       components/devos_jobs/jobs_validate.c components/devos_jobs/jobs_serialize.c \
