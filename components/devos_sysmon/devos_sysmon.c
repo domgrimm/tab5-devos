@@ -68,6 +68,16 @@ static const devos_timezone_t s_zones[] = {
 static int s_tz_index = 0;
 static volatile devos_time_source_t s_time_src = DEVOS_TIME_UNSET;
 static volatile time_t s_last_sync = 0;
+static volatile uint32_t s_tz_gen = 0;
+
+/* Local UTC offset at a UTC instant, from the ambient TZ (standard C). */
+static int32_t local_offset_at(time_t u)
+{
+    struct tm ut;
+    if (gmtime_r(&u, &ut) == NULL) return 0;
+    ut.tm_isdst = -1;
+    return (int32_t)((int64_t)u - (int64_t)mktime(&ut));
+}
 
 /* 2024-01-01T00:00:00Z: anything earlier means the clock was never set. */
 #define TIME_VALID_AFTER 1704067200
@@ -89,6 +99,7 @@ int devos_sysmon_timezone_index(void) { return s_tz_index; }
 void devos_sysmon_set_timezone_index(int index)
 {
     if (index < 0 || index >= ZONE_COUNT) return;
+    if (index != s_tz_index) s_tz_gen++;
     s_tz_index = index;
     apply_timezone();
 #ifdef ESP_PLATFORM
@@ -379,6 +390,10 @@ void devos_sysmon_get_snapshot(devos_sysmon_snapshot_t *out)
     snprintf(out->local_ip, sizeof(out->local_ip), "%s", n.wifi.ip);
     out->wifi_rssi = n.wifi.rssi;
     out->time_valid = devos_sysmon_time_source() != DEVOS_TIME_UNSET;
+    time_t now = time(NULL);
+    out->wall_unix_s = (int64_t)now;
+    out->tz_offset_s = local_offset_at(now);
+    out->tz_generation = s_tz_gen;
     out->uptime_s = n.uptime_s;
     out->cpu_core0 = n.cpu[0];
     out->cpu_core1 = n.cpu[1];
@@ -496,6 +511,10 @@ void devos_sysmon_get_snapshot(devos_sysmon_snapshot_t *out)
     snprintf(out->local_ip, sizeof(out->local_ip), "%s", w.ip);
     out->wifi_rssi = w.rssi;
     out->time_valid = true;
+    time_t now = time(NULL);
+    out->wall_unix_s = (int64_t)now;
+    out->tz_offset_s = local_offset_at(now);
+    out->tz_generation = s_tz_gen;
     out->uptime_s = (uint32_t)(time(NULL) - s_boot);
     out->cpu_core0 = t->cpu_load_core0;
     out->cpu_core1 = t->cpu_load_core1;

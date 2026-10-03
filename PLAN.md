@@ -509,7 +509,10 @@ them be built either from a schema-driven GUI Builder or as text - both over one
 *   **Events (`devos_events`).** Bounded typed topics (`system.boot`, Wi-Fi connect/disconnect,
     battery-below, `mqtt.message`, ...) with sequence, timestamps, provider and correlation id;
     publish is nonblocking, drops are counted, and payloads are copied (never a pointer into a
-    reused ring). `system.boot` fires once per normal boot, after the ready barrier.
+    reused ring). `system.boot` fires once per normal boot, after the ready barrier. The
+    `jobs_events` bridge in `main/` produces the system topics (boot, Wi-Fi/battery transitions
+    from the 1 Hz loop); an event trigger takes an optional `where` filter over `event.*` and a
+    bounded `debounce`.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -819,7 +822,22 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       Builder cannot render shows a custom-node card. Add / delete / move steps. All commands are on
       `Sym+<key>` so they work while typing in a field. `components/devos_jobs/jobs_build.c`,
       `tools/jobs_build_test.c`.
-- [ ] **Phase 6** - daily/weekdays schedules and boot/Wi-Fi/battery events.
+- [x] **Phase 6** - calendar and system-event triggers. `jobs_schedule` now runs device-local
+      `daily`/`weekdays` `"HH:MM"` occurrences on a wall clock supplied by the sysmon snapshot
+      (with a DST-correct local-offset hook from the device's POSIX zone): one occurrence per local
+      date, DST-gap dates skipped, fall-back run once, missed occurrences not caught up, an invalid
+      clock blocks scheduling, and a timezone change (`tz_generation`) recomputes the deadline. The
+      portable `policy(overlap: "skip"|"queue_one", cooldown)` is honoured for automatic admission
+      (Run now bypasses it). `devos_events` now carries system topics (`system.boot`,
+      `network.wifi_connected`/`disconnected`, `system.battery_below`) registered by the
+      `jobs_events` bridge, which publishes boot once after the ready barrier (never during a
+      safe/reverted pause) and Wi-Fi/battery transitions from main's 1 Hz loop (initial Wi-Fi state
+      is not a transition; an invalid/absent battery never fires; hysteresis re-arms). Event
+      triggers take an optional `where` filter over `event.topic`/`payload`/`seq`/`truncated` and a
+      bounded `debounce`; the Builder's trigger card now edits Event topic + `where`. Event overflow
+      is bounded (16-entry queue) and drops are counted, surfaced in the Jobs telemetry tile.
+      `tools/jobs_schedule_test.c` (58 checks) covers daily/weekdays, DST, clock/timezone changes,
+      event match/filter/debounce and the bridge semantics.
 - [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
 - [ ] **Phase 8** - Docker background operation integration.
 - [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional

@@ -81,6 +81,30 @@ int main(void)
     CHECK(jobs_build_set_trigger_duration(&b, 120000));
     CHECK(jobs_build_trigger(&b)->u.i == 120000);
 
+    /* trigger card: an event trigger (topic + optional where) round-trips */
+    CHECK(jobs_build_set_trigger_kind(&b, JTRIG_EVENT));
+    CHECK(strcmp(jobs_build_trigger_event_topic(jobs_build_trigger(&b)), "system.boot") == 0);
+    CHECK(jobs_build_set_trigger_event(&b, "network.wifi_connected"));
+    CHECK(strcmp(jobs_build_trigger_event_topic(jobs_build_trigger(&b)), "network.wifi_connected") == 0);
+    CHECK(jobs_build_set_trigger_where(&b, "contains(event.payload, \"home\")"));
+    CHECK(strstr(jobs_build_trigger_where_text(jobs_build_trigger(&b)), "contains") != NULL);
+    CHECK(jobs_build_revalidate(&b));
+    {
+        char ev[1024];
+        size_t el = jobs_build_source(&b, ev, sizeof(ev));
+        CHECK(strstr(ev, "trigger event \"network.wifi_connected\"") != NULL);
+        CHECK(strstr(ev, "where") != NULL);
+        jobs_build_t e2;
+        memset(&e2, 0, sizeof(e2));
+        CHECK(jobs_build_load(&e2, ev, el));
+        CHECK(jobs_build_trigger(&e2)->sub == JTRIG_EVENT);
+        jobs_build_free(&e2);
+    }
+    CHECK(jobs_build_set_trigger_where(&b, ""));       /* clearing the filter is fine */
+    CHECK(jobs_build_revalidate(&b));
+    CHECK(jobs_build_set_trigger_kind(&b, JTRIG_EVERY));   /* back for the rest of the test */
+    CHECK(jobs_build_set_trigger_duration(&b, 120000));
+
     /* inspector: edit a literal argument */
     CHECK(jobs_build_arg_text(rows[0].node, "host") && strcmp(jobs_build_arg_text(rows[0].node, "host"), "nas.local") == 0);
     CHECK(jobs_build_arg_is_simple(rows[0].node, "host"));

@@ -33,7 +33,9 @@ static void sched_task(void *arg)
 bool jobs_platform_start_scheduler(void (*fn)(void *), void *arg)
 {
     (void)arg;
-    return xTaskCreatePinnedToCore(sched_task, "jobs", 6144, (void *)fn, 3, NULL,
+    /* 8 KiB: the tick drains the bounded event queue (devos_events_drain copies
+     * a batch to its stack before running callbacks outside the lock). */
+    return xTaskCreatePinnedToCore(sched_task, "jobs", 8192, (void *)fn, 3, NULL,
                                    DEVOS_CORE_NET_CRYPTO) == pdPASS;
 }
 #else

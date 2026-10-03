@@ -53,6 +53,11 @@ typedef struct {
     char     local_ip[20];
     int8_t   wifi_rssi;
     bool     time_valid;
+    /* Wall clock for daily/weekdays schedules: UTC seconds and the local
+     * offset at that instant; tz_generation bumps on a timezone change. */
+    int64_t  wall_unix_s;
+    int32_t  tz_offset_s;
+    uint32_t tz_generation;
     uint32_t uptime_s;
     uint8_t  cpu_core0, cpu_core1;
     uint32_t psram_free_kb, sram_free_kb, sram_largest_kb;

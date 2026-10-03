@@ -50,6 +50,12 @@ jobs_node_t *jobs_build_trigger(jobs_build_t *b);
 bool jobs_build_set_trigger_kind(jobs_build_t *b, int kind);
 bool jobs_build_set_trigger_duration(jobs_build_t *b, int64_t ms);
 bool jobs_build_set_trigger_time(jobs_build_t *b, const char *hhmm);   /* daily/weekdays */
+/* Event trigger: topic (e.g. "system.boot") and an optional `where` filter. */
+bool jobs_build_set_trigger_event(jobs_build_t *b, const char *topic);
+bool jobs_build_set_trigger_where(jobs_build_t *b, const char *expr);
+const char *jobs_build_trigger_event_topic(const jobs_node_t *t);
+/* Canonical text of the trigger's `where` ("" when none). */
+const char *jobs_build_trigger_where_text(const jobs_node_t *t);
 
 /* ---- steps ---- */
 /* Append an action built from its schema (all params defaulted) to `block`. */

@@ -125,7 +125,8 @@ bool jobs_build_set_trigger_kind(jobs_build_t *b, int kind)
 {
     jobs_node_t *t = jobs_build_trigger(b);
     if (!t) return false;
-    if (kind != JTRIG_MANUAL && kind != JTRIG_EVERY && kind != JTRIG_DAILY && kind != JTRIG_WEEKDAYS)
+    if (kind != JTRIG_MANUAL && kind != JTRIG_EVERY && kind != JTRIG_DAILY &&
+        kind != JTRIG_WEEKDAYS && kind != JTRIG_EVENT)
         return false;
     int old = t->sub;
     t->sub = (uint8_t)kind;
@@ -135,8 +136,46 @@ bool jobs_build_set_trigger_kind(jobs_build_t *b, int kind)
         /* only read the old string when the old kind also stored one */
         const char *keep = (old == JTRIG_DAILY || old == JTRIG_WEEKDAYS) ? t->u.str.s : NULL;
         if (!keep || !keep[0]) t->u.str.s = jobs_pool_str(b->ast, "08:00", 5);
+    } else if (kind == JTRIG_EVENT) {
+        const char *keep = (old == JTRIG_EVENT) ? t->u.str.s : NULL;
+        if (!keep || !keep[0]) t->u.str.s = jobs_pool_str(b->ast, "system.boot", 11);
     }
     return true;
+}
+
+bool jobs_build_set_trigger_event(jobs_build_t *b, const char *topic)
+{
+    jobs_node_t *t = jobs_build_trigger(b);
+    if (!t || t->sub != JTRIG_EVENT || !topic || !topic[0]) return false;
+    const char *copy = jobs_pool_str(b->ast, topic, (uint32_t)strlen(topic));
+    if (!copy) return false;
+    t->u.str.s = copy;
+    return true;
+}
+
+bool jobs_build_set_trigger_where(jobs_build_t *b, const char *expr)
+{
+    jobs_node_t *t = jobs_build_trigger(b);
+    if (!t || t->sub != JTRIG_EVENT) return false;
+    if (!expr || !expr[0]) { t->b = NULL; return true; }   /* clear the filter */
+    const char *err = NULL;
+    jobs_node_t *e = jobs_parse_expr(expr, strlen(expr), b->ast, &err);
+    if (!e) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "invalid expression"); return false; }
+    t->b = e;
+    return true;
+}
+
+const char *jobs_build_trigger_event_topic(const jobs_node_t *t)
+{
+    return (t && t->sub == JTRIG_EVENT) ? t->u.str.s : NULL;
+}
+
+const char *jobs_build_trigger_where_text(const jobs_node_t *t)
+{
+    static char buf[192];
+    buf[0] = '\0';
+    if (t && t->sub == JTRIG_EVENT && t->b) jobs_serialize_expr(t->b, buf, sizeof(buf));
+    return buf;
 }
 
 bool jobs_build_set_trigger_duration(jobs_build_t *b, int64_t ms)

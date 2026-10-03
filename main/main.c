@@ -39,10 +39,12 @@
 #include "apps/app_jobs/app_jobs.h"
 #include "jobs_providers/jobs_providers.h"
 #include "devos_jobs.h"
+#include "devos_events.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef ESP_PLATFORM
@@ -364,6 +366,18 @@ static void forget_removed_apps(void)
         }                                                               \
     } while (0)
 
+/* DST-correct local UTC offset for the Jobs scheduler, from the ambient TZ
+ * (sysmon sets it from the persisted zone). Standard C: off = u - mktime(gmtime(u)). */
+static int32_t jobs_tz_offset_at(int64_t utc_s, void *user)
+{
+    (void)user;
+    time_t u = (time_t)utc_s;
+    struct tm ut;
+    if (gmtime_r(&u, &ut) == NULL) return 0;
+    ut.tm_isdst = -1;
+    return (int32_t)((int64_t)utc_s - (int64_t)mktime(&ut));
+}
+
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
 static void jobs_sync_system(void)
@@ -381,6 +395,9 @@ static void jobs_sync_system(void)
     memcpy(j.local_ip, s.local_ip, sizeof(j.local_ip));
     j.wifi_rssi = s.wifi_rssi;
     j.time_valid = s.time_valid;
+    j.wall_unix_s = s.wall_unix_s;
+    j.tz_offset_s = s.tz_offset_s;
+    j.tz_generation = s.tz_generation;
     j.uptime_s = s.uptime_s;
     j.cpu_core0 = s.cpu_core0;
     j.cpu_core1 = s.cpu_core1;
@@ -388,6 +405,7 @@ static void jobs_sync_system(void)
     j.sram_free_kb = s.sram_free_kb;
     j.sram_largest_kb = s.sram_largest_kb;
     devos_jobs_set_system(&j);
+    jobs_events_poll(&j);     /* Wi-Fi/battery transitions -> typed events */
 }
 
 static void devos_system_bringup(void)
@@ -453,15 +471,25 @@ static void devos_system_bringup(void)
 
     /* 6c. Jobs action providers: static typed schemas with lazy handlers,
      * registered independently of whether the Jobs app is switched on
-     * (AGENTS.md invariant 10). Nothing here starts a task or a radio. */
+     * (AGENTS.md invariant 10). Nothing here starts a task or a radio. The
+     * event registry must exist first so topic schemas can be registered. */
+    devos_events_init();
     jobs_providers_register_all();
 
     /* 6d. Jobs engine: scheduler + durable storage. Started only when the app
      * is on; automatic runs stay paused after a safe/reverted boot, and a
-     * restart reports a running job. */
+     * restart reports a running job. The DST-correct offset comes from the
+     * device's POSIX zone, which sysmon has already applied. */
+    devos_jobs_set_offset_fn(jobs_tz_offset_at, NULL);
     START_ENGINE("jobs", devos_jobs_init());
     if (devos_core_apps_boot_kind() != DEVOS_APPS_BOOT_NORMAL) devos_jobs_set_safe_pause(true);
     devos_core_add_restart_check(devos_jobs_restart_check);
+
+    /* Ready barrier passed and automatic execution is not recovery-paused:
+     * emit system.boot exactly once so boot-triggered jobs can run. During a
+     * safe/reverted boot the event is not emitted at all. */
+    if (devos_jobs_state() == DEVOS_JOBS_READY && !devos_jobs_safe_paused())
+        jobs_events_publish_boot(false);
 
     /* 7. SSH & PTY Engine bring-up */
     printf("[devOS] 7/8 Initializing SSH Subsystem...\n");

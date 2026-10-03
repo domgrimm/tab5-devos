@@ -16,6 +16,7 @@
 #include "devos_jobs.h"
 #include "jobs_build.h"
 #include "devos_actions.h"
+#include "devos_events.h"
 #include "devos_config.h"
 #include "devos_widgets.h"
 #include "devos_codeview.h"
@@ -43,7 +44,7 @@ typedef struct {
     lv_obj_t *btn_new, *btn_validate, *btn_apply, *btn_enable, *btn_run, *btn_cancel, *btn_hist, *btn_del;
     /* Builder */
     lv_obj_t *bld;
-    lv_obj_t *dd_kind, *ta_trig;
+    lv_obj_t *dd_kind, *ta_trig, *ta_where;
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
     lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
@@ -252,11 +253,19 @@ static void builder_refresh(void)
     jobs_node_t *t = jobs_build_trigger(&s_ctx.build);
     if (t) {
         int kind = t->sub;
-        lv_dropdown_set_selected(s_ctx.dd_kind, (uint32_t)(kind == JTRIG_EVERY ? 1 : kind == JTRIG_DAILY ? 2 : kind == JTRIG_WEEKDAYS ? 3 : 0));
-        char v[32] = "";
+        lv_dropdown_set_selected(s_ctx.dd_kind,
+            (uint32_t)(kind == JTRIG_EVERY ? 1 : kind == JTRIG_DAILY ? 2 :
+                       kind == JTRIG_WEEKDAYS ? 3 : kind == JTRIG_EVENT ? 4 : 0));
+        char v[64] = "";
         if (kind == JTRIG_EVERY) fmt_dur(t->u.i, v, sizeof(v));
-        else if (kind == JTRIG_DAILY || kind == JTRIG_WEEKDAYS) snprintf(v, sizeof(v), "%s", t->u.str.s ? t->u.str.s : "08:00");
+        else if (kind == JTRIG_DAILY || kind == JTRIG_WEEKDAYS)
+            snprintf(v, sizeof(v), "%s", t->u.str.s ? t->u.str.s : "08:00");
+        else if (kind == JTRIG_EVENT)
+            snprintf(v, sizeof(v), "%s", jobs_build_trigger_event_topic(t) ? jobs_build_trigger_event_topic(t) : "");
         lv_textarea_set_text(s_ctx.ta_trig, v);
+        lv_textarea_set_text(s_ctx.ta_where, jobs_build_trigger_where_text(t));
+        if (kind == JTRIG_EVENT) lv_obj_remove_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
     }
     refresh_steps();
     builder_inspector();
@@ -388,10 +397,15 @@ static void builder_commit_trigger(void)
 {
     int kind = (int)lv_dropdown_get_selected(s_ctx.dd_kind);
     jobs_build_set_trigger_kind(&s_ctx.build, kind == 1 ? JTRIG_EVERY : kind == 2 ? JTRIG_DAILY :
-                                                 kind == 3 ? JTRIG_WEEKDAYS : JTRIG_MANUAL);
+                                                 kind == 3 ? JTRIG_WEEKDAYS : kind == 4 ? JTRIG_EVENT : JTRIG_MANUAL);
     const char *v = lv_textarea_get_text(s_ctx.ta_trig);
     if (kind == 1) { int64_t ms = parse_dur(v); if (ms > 0) jobs_build_set_trigger_duration(&s_ctx.build, ms); }
     else if (kind == 2 || kind == 3) jobs_build_set_trigger_time(&s_ctx.build, v);
+    else if (kind == 4) {
+        jobs_build_set_trigger_event(&s_ctx.build, v);
+        if (!jobs_build_set_trigger_where(&s_ctx.build, lv_textarea_get_text(s_ctx.ta_where)))
+            say(s_ctx.build.diag);
+    }
     builder_sync();
 }
 
@@ -655,7 +669,15 @@ static void cancel_cb(lv_event_t *e) { LV_UNUSED(e); act_cancel(); }
 static void hist_cb(lv_event_t *e) { LV_UNUSED(e); act_history(); }
 static void new_cb(lv_event_t *e) { LV_UNUSED(e); act_new(); }
 static void del_cb(lv_event_t *e) { LV_UNUSED(e); act_delete(); }
-static void kind_cb(lv_event_t *e) { LV_UNUSED(e); builder_commit_trigger(); }
+static void kind_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    int kind = (int)lv_dropdown_get_selected(s_ctx.dd_kind);
+    jobs_build_set_trigger_kind(&s_ctx.build, kind == 1 ? JTRIG_EVERY : kind == 2 ? JTRIG_DAILY :
+                                                 kind == 3 ? JTRIG_WEEKDAYS : kind == 4 ? JTRIG_EVENT : JTRIG_MANUAL);
+    builder_sync();
+    builder_refresh();   /* show the new kind's default value/fields */
+}
 static void param_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.bparam = (int)lv_dropdown_get_selected(s_ctx.dd_param); builder_inspector(); }
 static void expr_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.insp_expr = lv_dropdown_get_selected(s_ctx.dd_expr) == 1; builder_inspector(); }
 static void val_cb(lv_event_t *e) { LV_UNUSED(e); builder_commit_value(); }
@@ -717,13 +739,17 @@ static void jobs_init(void)
     lv_obj_remove_flag(s_ctx.bld, LV_OBJ_FLAG_SCROLLABLE);
 
     mk_label(s_ctx.bld, "Trigger", DEVOS_W_TEXT_DIM, 0, 0);
-    s_ctx.dd_kind = devos_w_dd(s_ctx.bld, "Manual\nEvery\nDaily\nWeekdays", 170);
+    s_ctx.dd_kind = devos_w_dd(s_ctx.bld, "Manual\nEvery\nDaily\nWeekdays\nEvent", 150);
     lv_obj_set_pos(s_ctx.dd_kind, 0, 18);
     lv_obj_add_event_cb(s_ctx.dd_kind, kind_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_ctx.ta_trig = devos_w_ta(s_ctx.bld, true, 220, 36);
-    lv_obj_set_pos(s_ctx.ta_trig, 180, 18);
-    lv_textarea_set_max_length(s_ctx.ta_trig, 24);
-    lv_obj_add_event_cb(s_ctx.ta_trig, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    s_ctx.ta_trig = devos_w_ta(s_ctx.bld, true, 190, 36);
+    lv_obj_set_pos(s_ctx.ta_trig, 160, 18);
+    lv_textarea_set_max_length(s_ctx.ta_trig, 48);
+    /* Committed on Enter / Apply, never per keystroke. */
+    s_ctx.ta_where = devos_w_ta(s_ctx.bld, true, 380, 36);
+    lv_obj_set_pos(s_ctx.ta_where, 360, 18);
+    lv_textarea_set_max_length(s_ctx.ta_where, 160);
+    lv_obj_add_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
 
     mk_label(s_ctx.bld, "Steps  (tap to select, drag to reorder)", DEVOS_W_TEXT_DIM, 0, 56);
     s_ctx.step_list = lv_obj_create(s_ctx.bld);
@@ -820,6 +846,7 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.dd_job);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_kind);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_trig);
+    devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_add);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_param);
@@ -884,7 +911,8 @@ static bool jobs_key(uint32_t key, uint8_t mods)
     cur = devos_focus_get(&s_ctx.focus);
     bool in_field = cur && lv_obj_check_type(cur, &lv_textarea_class);
     if (in_field && cur == s_ctx.ta_val && (key == '\r' || key == '\n')) { builder_commit_value(); return true; }
-    if (in_field && cur == s_ctx.ta_trig && (key == '\r' || key == '\n')) { builder_commit_trigger(); return true; }
+    if (in_field && (cur == s_ctx.ta_trig || cur == s_ctx.ta_where) &&
+        (key == '\r' || key == '\n')) { builder_commit_trigger(); return true; }
 
     /* Sym+<key> commands work anywhere, including inside a text field. */
     if (mods & DEVOS_MOD_FN) {
@@ -943,8 +971,12 @@ static int jobs_telemetry(char lines[3][64])
         }
     snprintf(lines[0], sizeof(lines[0]), "* %d of %d enabled", on, total);
     snprintf(lines[1], sizeof(lines[1]), "* %d running", running);
-    snprintf(lines[2], sizeof(lines[2]), "* %s", devos_jobs_safe_paused() ? "paused (recovery)" :
-                                                          devos_jobs_paused() ? "paused" : "ready");
+    devos_events_stats_t es;
+    devos_events_stats(&es);
+    const char *state = devos_jobs_safe_paused() ? "paused (recovery)" :
+                        devos_jobs_paused() ? "paused" : "ready";
+    if (es.dropped) snprintf(lines[2], sizeof(lines[2]), "* %s, %u event drops", state, (unsigned)es.dropped);
+    else            snprintf(lines[2], sizeof(lines[2]), "* %s", state);
     return 3;
 }
 
@@ -958,7 +990,9 @@ static const char *jobs_shortcuts(void)
            "Builder\n"
            "Up / Down\tPick a step (tap to select)\n"
            "Sym+U / Sym+D\tAdd / delete a step\n"
-           "Sym+K / Sym+J\tMove the step up / down (or drag it)\n";
+           "Sym+K / Sym+J\tMove the step up / down (or drag it)\n"
+           "Trigger\tManual / Every / Daily / Weekdays / Event\n"
+           "Event\ttype the topic, then a where filter (event.*)\n";
 }
 
 devos_app_descriptor_t *app_jobs_get_descriptor(void)

@@ -32,7 +32,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
-| **Jobs** | Persistent automation: a keyboard-first job list and Text editor over a small language (manual/interval triggers, typed actions, `if`/`wait`), Validate/Apply/Enable/Run now/Cancel, diagnostics and run history. Keeps running while the app is hidden or the screen is off |
+| **Jobs** | Persistent automation: a keyboard-first job list and Text editor over a small language (manual / interval / daily / weekdays / event triggers, typed actions, `if`/`wait`), Validate/Apply/Enable/Run now/Cancel, diagnostics and run history. Keeps running while the app is hidden or the screen is off |
 | **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
 Global keys, from any app: **Sym + Space** command palette (type part of an app or command, Enter runs it), **Sym + I** system info (power, memory, network, CPU), **Sym + S** keyboard shortcuts (everywhere, and for the app you're in), **Sym + V** paste (one clipboard for every app: Ctrl + C in the Editor or C in the Authenticator copies, Sym + V pastes into any text field or the Terminal), **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + P** screen off (sleep), **Sym + Shift + R** restart (asks first), **Sym + Shift + Q** shut down (asks first), **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier, and **Aa** is Shift. In the top bar, a tap on the Wi-Fi name, the battery, the clock or the **Shared** mark opens that part of Settings.
@@ -80,7 +80,17 @@ app or the screen is off, and is off entirely when Jobs is switched off in **Set
 Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are kept under
 `/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/examples/`.
 
-**Builder** is the default view (press **Sym+M** for Text). It has a trigger card, a step tree you
+A job has exactly one trigger: `manual`, `every <dur>` (phase-anchored, missed periods skipped),
+`daily "HH:MM"` or `weekdays "HH:MM"` (device-local time; one run per local date, DST-safe, and
+blocked while the clock is not set), or `event "topic"` (with an optional `where` filter over
+`event.topic`, `event.payload`, `event.seq` and `event.truncated`, and a bounded `debounce`). The
+system events are `system.boot` (once per normal boot), `network.wifi_connected` /
+`network.wifi_disconnected`, and `system.battery_below` (a valid, present pack crossing the low
+threshold; an absent or invalid battery never fires). An optional `policy(overlap: "skip" |
+"queue_one", cooldown: 5m)` controls automatic admission; **Run now** bypasses the cooldown.
+
+**Builder** is the default view (press **Sym+M** for Text). It has a trigger card (Manual / Every /
+Daily / Weekdays / Event, with the event topic and an optional `where` filter), a step tree you
 can tap to select and **drag to reorder**, and a settings inspector generated from each action's
 schema; conditions, `set` values and expression-capable parameters can hold full expressions. The
 commands are on **Sym+key** so they work while typing in a field: **Sym+B** Builder, **Sym+M** Text,

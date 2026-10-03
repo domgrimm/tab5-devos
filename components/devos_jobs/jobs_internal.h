@@ -5,6 +5,7 @@
 
 #include "devos_jobs.h"
 #include "devos_actions.h"
+#include "devos_events.h"
 #include "jobs_model.h"
 
 #ifdef __cplusplus
@@ -16,6 +17,7 @@ extern "C" {
 #define JOBS_RUN_ID_MAX   20
 #define JOBS_VAR_NAME_MAX 40
 #define JOBS_RUN_STRPOOL  1024
+#define JOBS_EV_PAYLOAD_MAX 256   /* bounded copy of a triggering event payload */
 
 /* ---- interpreter frames ---- */
 typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT } jobs_frame_kind_t;
@@ -33,6 +35,19 @@ typedef struct {
     char name[JOBS_VAR_NAME_MAX];
     devos_value_t v;
 } jobs_var_t;
+
+/* A bounded copy of a triggering event, kept on the job so `where` can read
+ * it. Never a pointer into the event queue's reused buffer. */
+typedef struct {
+    bool pending;
+    bool valid;
+    char topic[DEVOS_EVENTS_TOPIC_MAX];
+    char payload[JOBS_EV_PAYLOAD_MAX];
+    uint32_t payload_len;
+    uint32_t seq;
+    bool truncated;
+    int64_t arrival_ms;
+} jobs_pending_event_t;
 
 typedef struct {
     bool active;
@@ -52,6 +67,8 @@ typedef struct {
     char strpool[JOBS_RUN_STRPOOL];   /* interpolated/output strings, run-scoped */
     size_t strpool_used;
     const jobs_node_t *cur;         /* current node, for the UI/trace */
+    jobs_pending_event_t ev;        /* triggering event copy, for event.* in the body */
+    bool ev_valid;
 } jobs_run_t;
 
 typedef struct {
@@ -65,10 +82,32 @@ typedef struct {
     int64_t interval_ms;
     int64_t next_due_ms;
     bool has_next;
+
+    /* daily/weekdays (wall clock) */
+    int trig_hh, trig_mm;
+    int64_t next_wall_s;            /* UTC seconds of the next occurrence */
+    bool next_wall_valid;
+    int32_t claim_date;             /* local YYYYMMDD already claimed (dedupe) */
+    uint32_t seen_tz_gen;           /* tz_generation the deadline was computed for */
+
+    /* event trigger */
+    int sub_id;                     /* devos_events subscription, 0 = none */
+    char event_topic[DEVOS_EVENTS_TOPIC_MAX];
+    bool include_retained;
+    int64_t ev_debounce_ms;
+    int64_t ev_last_accept_ms;
+    jobs_pending_event_t ev;
+
+    /* policy */
+    int64_t cooldown_ms;
+    int64_t last_start_ms;
+    bool overlap_queue_one;
+    bool pending_run;               /* queue_one: a trigger arrived while running */
+
     jobs_run_t run;
     char last_result[64];
     int64_t last_run_ms;
-    uint32_t skipped;               /* coalesced triggers */
+    uint32_t skipped;               /* coalesced/skipped triggers */
 } jobs_job_t;
 
 typedef struct {
@@ -81,6 +120,12 @@ typedef struct {
     devos_jobs_state_t state;
     devos_jobs_system_t sys;
     uint32_t run_seq;
+    /* scratch for evaluating a trigger's `where` before a run exists */
+    jobs_run_t trig_run;
+    jobs_pending_event_t cur_event; /* immutable copy visible to event.* refs */
+    bool cur_event_valid;
+    devos_jobs_offset_fn offset_fn; /* DST-correct local offset, optional */
+    void *offset_user;
 } jobs_engine_t;
 
 extern jobs_engine_t g_jobs;
@@ -89,9 +134,19 @@ extern jobs_engine_t g_jobs;
 void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision);
 void jobs_run_tick(jobs_job_t *j, int64_t now_ms);
 void jobs_run_cancel(jobs_job_t *j);
+/* Evaluate an event trigger's optional `where` against g_jobs.cur_event.
+ * true when it matches (or there is no `where`). */
+bool jobs_trigger_where_matches(jobs_job_t *j);
+/* Read the portable policy: timeout / cooldown (ms) and overlap==queue_one. */
+void jobs_policy_read(const jobs_ast_t *ast, int64_t *timeout_ms, int64_t *cooldown_ms, bool *queue_one);
 
 /* jobs_schedule.c */
 jobs_job_t *jobs_find(const char *id);
+/* (Re)compute a daily/weekdays job's next wall-clock occurrence. Returns false
+ * when the clock is invalid or no occurrence could be found. */
+bool jobs_calendar_recompute(jobs_job_t *j);
+void jobs_event_subscribe(jobs_job_t *j);
+void jobs_event_unsubscribe(jobs_job_t *j);
 
 #ifdef __cplusplus
 }

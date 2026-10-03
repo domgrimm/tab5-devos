@@ -221,6 +221,30 @@ exactly once; a stale handle (slot generation) is rejected.
 * **Tests.** Cover schema/validation, operation ownership, overload, cancellation and the
   disabled-provider state, and confirm Jobs and the app UI run at the same time without disruption.
 
+### Triggering jobs from your events
+
+Register the topic schema so the Builder and validator understand its fields, then publish a
+bounded copy (never a pointer into a buffer you will reuse):
+
+```c
+static const devos_event_schema_t DOOR_S = {
+    .topic = "myapp.doorbell",
+    .fields = "pressed:boolean,source:string",
+    .description = "The doorbell button was pressed",
+};
+devos_events_register_topic(&DOOR_S);                       /* from the boot hook */
+
+devos_event_t ev = {0};
+snprintf(ev.topic, sizeof(ev.topic), "myapp.doorbell");
+snprintf(ev.provider, sizeof(ev.provider), "myapp");
+devos_events_publish(&ev, "{\"pressed\":true}", 15);        /* payload is copied */
+```
+
+A job then writes `trigger event "myapp.doorbell" where contains(event.payload, "true");`. The
+core system topics - `system.boot`, `network.wifi_connected` / `network.wifi_disconnected` and
+`system.battery_below` - are produced by the `jobs_events` bridge in `main/`; a new core system
+transition belongs there, while an app's own transitions belong in the owning engine.
+
 A UI-only app (no automatable operations) declares that intent in its README/descriptor notes and
 registers nothing. "Jobs-compatible" is a tested contract, not a label applied automatically.
 

@@ -97,17 +97,27 @@ static bool resolve_path(jobs_run_t *r, const char *path, devos_value_t *out, ch
         snprintf(err, errcap, "unknown system field '%s'", path + 7);
         return false;
     }
-    if (strncmp(path, "event.", 6) == 0) { snprintf(err, errcap, "event data is not available here"); return false; }
+    if (strncmp(path, "event.", 6) == 0) {
+        const jobs_pending_event_t *ev = r->ev_valid ? &r->ev
+                                      : g_jobs.cur_event_valid ? &g_jobs.cur_event : NULL;
+        if (!ev) { snprintf(err, errcap, "event data is not available here"); return false; }
+        const char *f = path + 6;
+        if (strcmp(f, "topic") == 0)     { out->type = DEVOS_VAL_STR; out->v.str.s = ev->topic; out->v.str.len = (uint32_t)strlen(ev->topic); return true; }
+        if (strcmp(f, "payload") == 0)   { out->type = DEVOS_VAL_STR; out->v.str.s = ev->payload; out->v.str.len = ev->payload_len; return true; }
+        if (strcmp(f, "seq") == 0)       { out->type = DEVOS_VAL_INT; out->v.i = ev->seq; return true; }
+        if (strcmp(f, "truncated") == 0) { out->type = DEVOS_VAL_BOOL; out->v.b = ev->truncated; return true; }
+        snprintf(err, errcap, "unknown event field '%s'", f);
+        return false;
+    }
     snprintf(err, errcap, "unknown variable '%s'", path);
     return false;
 }
 
 /* ---- expressions ---- */
-static bool eval(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap);
+static bool eval(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap);
 
-static bool eval_str(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
+static bool eval_str(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
 {
-    jobs_run_t *r = &j->run;
     char buf[JOBS_RUN_STRPOOL];
     size_t o = 0;
     buf[0] = '\0';
@@ -137,14 +147,14 @@ static bool eval_str(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, ch
     return true;
 }
 
-static bool eval_call(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
+static bool eval_call(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
 {
     const char *fn = e->u.str.s;
     int argc = 0;
     for (const jobs_node_t *a = e->a; a; a = a->next) argc++;
     if (strcmp(fn, "contains") == 0 && argc == 2) {
         devos_value_t a, b;
-        if (!eval(j, e->a, &a, err, errcap) || !eval(j, e->a->next, &b, err, errcap)) return false;
+        if (!eval(r, e->a, &a, err, errcap) || !eval(r, e->a->next, &b, err, errcap)) return false;
         if (a.type != DEVOS_VAL_STR || b.type != DEVOS_VAL_STR) { snprintf(err, errcap, "contains() wants strings"); return false; }
         char sub[128], hay[512];
         val_to_text(&b, sub, sizeof(sub));
@@ -173,17 +183,17 @@ static bool as_bool(const devos_value_t *v, bool *b)
     return true;
 }
 
-static bool eval(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
+static bool eval(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
 {
     if (!e) { out->type = DEVOS_VAL_NULL; return true; }
     switch (e->kind) {
     case JN_EXPR_LIT: *out = e->u.lit; return true;
-    case JN_EXPR_STR: return eval_str(j, e, out, err, errcap);
-    case JN_EXPR_REF: return resolve_path(&j->run, e->u.str.s, out, err, errcap);
-    case JN_EXPR_CALL: return eval_call(j, e, out, err, errcap);
+    case JN_EXPR_STR: return eval_str(r, e, out, err, errcap);
+    case JN_EXPR_REF: return resolve_path(r, e->u.str.s, out, err, errcap);
+    case JN_EXPR_CALL: return eval_call(r, e, out, err, errcap);
     case JN_EXPR_UNARY: {
         devos_value_t a;
-        if (!eval(j, e->a, &a, err, errcap)) return false;
+        if (!eval(r, e->a, &a, err, errcap)) return false;
         bool b;
         if (!as_bool(&a, &b)) { snprintf(err, errcap, "'!' wants a boolean"); return false; }
         out->type = DEVOS_VAL_BOOL;
@@ -192,14 +202,14 @@ static bool eval(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *
     }
     case JN_EXPR_BINARY: {
         devos_value_t a;
-        if (!eval(j, e->a, &a, err, errcap)) return false;
+        if (!eval(r, e->a, &a, err, errcap)) return false;
         if (e->sub == JOP_AND || e->sub == JOP_OR) {
             bool ba;
             if (!as_bool(&a, &ba)) { snprintf(err, errcap, "'%s' wants booleans", jobs_op_name((jobs_op_t)e->sub)); return false; }
             if (e->sub == JOP_AND && !ba) { out->type = DEVOS_VAL_BOOL; out->v.b = false; return true; }
             if (e->sub == JOP_OR && ba)  { out->type = DEVOS_VAL_BOOL; out->v.b = true; return true; }
             devos_value_t b;
-            if (!eval(j, e->b, &b, err, errcap)) return false;
+            if (!eval(r, e->b, &b, err, errcap)) return false;
             bool bb;
             if (!as_bool(&b, &bb)) { snprintf(err, errcap, "'%s' wants booleans", jobs_op_name((jobs_op_t)e->sub)); return false; }
             out->type = DEVOS_VAL_BOOL;
@@ -207,7 +217,7 @@ static bool eval(jobs_job_t *j, const jobs_node_t *e, devos_value_t *out, char *
             return true;
         }
         devos_value_t b;
-        if (!eval(j, e->b, &b, err, errcap)) return false;
+        if (!eval(r, e->b, &b, err, errcap)) return false;
         out->type = DEVOS_VAL_BOOL;
         if (e->sub == JOP_EQ || e->sub == JOP_NE) {
             bool eq;
@@ -249,14 +259,14 @@ static const jobs_node_t *find_arg(const jobs_node_t *action, const char *name)
     return NULL;
 }
 
-static bool build_args(jobs_job_t *j, const jobs_node_t *action, const devos_action_descriptor_t *d,
+static bool build_args(jobs_run_t *r, const jobs_node_t *action, const devos_action_descriptor_t *d,
                        devos_value_t *av, char *err, size_t errcap)
 {
     for (int i = 0; i < d->param_count; i++) {
         av[i].type = DEVOS_VAL_NULL;
         const jobs_node_t *arg = find_arg(action, d->params[i].name);
         if (!arg) continue;
-        if (!eval(j, arg->a, &av[i], err, errcap)) return false;
+        if (!eval(r, arg->a, &av[i], err, errcap)) return false;
     }
     return true;
 }
@@ -275,15 +285,55 @@ static bool bind_outputs(jobs_job_t *j, const jobs_node_t *action, const devos_a
 }
 
 /* ---- run lifecycle ---- */
-static int64_t policy_timeout_ms(const jobs_ast_t *ast)
+static int64_t policy_dur_arg(const jobs_ast_t *ast, const char *name)
 {
     const jobs_node_t *pol = ast->root ? ast->root->b : NULL;
     for (const jobs_node_t *a = pol ? pol->a : NULL; a; a = a->next) {
-        if (strcmp(a->u.str.s, "timeout") == 0 && a->a && a->a->kind == JN_EXPR_LIT &&
+        if (strcmp(a->u.str.s, name) == 0 && a->a && a->a->kind == JN_EXPR_LIT &&
             a->a->u.lit.type == DEVOS_VAL_DURATION)
             return a->a->u.lit.v.ms;
     }
-    return JOBS_DEFAULT_RUN_MS;
+    return -1;
+}
+
+void jobs_policy_read(const jobs_ast_t *ast, int64_t *timeout_ms, int64_t *cooldown_ms, bool *queue_one)
+{
+    if (timeout_ms) *timeout_ms = JOBS_DEFAULT_RUN_MS;
+    if (cooldown_ms) *cooldown_ms = 0;
+    if (queue_one) *queue_one = false;
+    if (!ast || !ast->root) return;
+    int64_t t = policy_dur_arg(ast, "timeout");
+    if (timeout_ms && t > 0) *timeout_ms = t;
+    int64_t c = policy_dur_arg(ast, "cooldown");
+    if (cooldown_ms && c >= 0) *cooldown_ms = c;
+    if (queue_one) {
+        const jobs_node_t *pol = ast->root->b;
+        for (const jobs_node_t *a = pol ? pol->a : NULL; a; a = a->next) {
+            if (strcmp(a->u.str.s, "overlap") == 0 && a->a) {
+                const char *s = a->a->kind == JN_EXPR_LIT && a->a->u.lit.type == DEVOS_VAL_STR
+                                    ? a->a->u.lit.v.str.s : NULL;
+                if (s && strcmp(s, "queue_one") == 0) *queue_one = true;
+            }
+        }
+    }
+}
+
+/* Evaluate a trigger's optional `where` against the copied triggering event.
+ * `j` is the job; g_jobs.cur_event must hold the event. Returns true when it
+ * matches (or there is no `where`). On evaluation error the trigger is
+ * rejected (false) so a broken filter cannot silently run. */
+bool jobs_trigger_where_matches(jobs_job_t *j)
+{
+    const jobs_node_t *where = j->ast && j->ast->root && j->ast->root->a ? j->ast->root->a->b : NULL;
+    if (!where) return true;
+    jobs_run_t *r = &g_jobs.trig_run;
+    memset(r, 0, sizeof(*r));
+    char err[64];
+    devos_value_t v;
+    if (!eval(r, where, &v, err, sizeof(err))) return false;
+    bool b;
+    if (!as_bool(&v, &b)) return false;
+    return b;
 }
 
 void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision)
@@ -296,13 +346,26 @@ void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t 
     jobs_ast_retain(j->ast);
     r->revision = revision;
     r->started_ms = now_ms;
-    int64_t tmo = policy_timeout_ms(j->ast);
+    int64_t tmo = JOBS_DEFAULT_RUN_MS;
+    jobs_policy_read(j->ast, &tmo, NULL, NULL);
     r->deadline_ms = now_ms + (tmo > 0 ? tmo : JOBS_DEFAULT_RUN_MS);
     const jobs_node_t *body = j->ast->root ? j->ast->root->c : NULL;
     r->frames[0].kind = FRAME_BLOCK;
     r->frames[0].block = body;
     r->frames[0].cursor = body ? body->a : NULL;
     r->nframes = 1;
+    /* Event-triggered run: keep the triggering event so the body can read
+     * event.topic/payload/seq/truncated (the trigger `where` already ran). A
+     * manual run of an event job gets a synthetic event with just the topic. */
+    if (j->trigger_kind == JTRIG_EVENT) {
+        if (g_jobs.cur_event_valid) {
+            r->ev = g_jobs.cur_event;
+        } else {
+            memset(&r->ev, 0, sizeof(r->ev));
+            snprintf(r->ev.topic, sizeof(r->ev.topic), "%s", j->event_topic);
+        }
+        r->ev_valid = true;
+    }
 }
 
 static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
@@ -396,7 +459,7 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
             const devos_action_descriptor_t *d = devos_actions_find(s->u.str.s);
             if (!d || d->param_count > JOBS_MAX_ARGS) { finish_run(j, false, "unknown action", now_ms); return; }
             devos_value_t av[JOBS_MAX_ARGS];
-            if (!build_args(j, s, d, av, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+            if (!build_args(r, s, d, av, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
             devos_action_args_t a = { .args = av, .arg_count = d->param_count, .run_id = r->run_id };
             devos_action_handle_t h;
             devos_err_t rc = devos_action_start(s->u.str.s, &a, NULL, &h);
@@ -410,13 +473,13 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
         }
         case JN_SET: {
             devos_value_t v;
-            if (!eval(j, s->a, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+            if (!eval(r, s->a, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
             if (!var_set(r, s->u.str.s, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
             break;
         }
         case JN_IF: {
             devos_value_t v;
-            if (!eval(j, s->a, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+            if (!eval(r, s->a, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
             bool cond;
             if (!as_bool(&v, &cond)) { finish_run(j, false, "'if' wants a boolean", now_ms); return; }
             const jobs_node_t *branch = cond ? s->b : s->c;

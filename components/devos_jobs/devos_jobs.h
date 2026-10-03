@@ -82,11 +82,24 @@ typedef struct {
     char     local_ip[20];
     int8_t   wifi_rssi;
     bool     time_valid;
+    /* Wall clock for daily/weekdays schedules. `wall_unix_s` is UTC seconds;
+     * local time = wall_unix_s + tz_offset_s. `tz_generation` bumps on a
+     * timezone or wall-clock change so the scheduler recomputes deadlines. */
+    int64_t  wall_unix_s;
+    int32_t  tz_offset_s;
+    uint32_t tz_generation;
     uint32_t uptime_s;
     uint8_t  cpu_core0, cpu_core1;
     uint32_t psram_free_kb, sram_free_kb, sram_largest_kb;
 } devos_jobs_system_t;
 void devos_jobs_set_system(const devos_jobs_system_t *s);
+
+/* Optional: the local UTC offset at a given UTC instant, for DST-correct
+ * daily/weekdays occurrences. The boot bridge installs one built on the
+ * device's POSIX timezone; host tests inject a fake. NULL means "use the
+ * snapshot's tz_offset_s for every instant". */
+typedef int32_t (*devos_jobs_offset_fn)(int64_t utc_s, void *user);
+void devos_jobs_set_offset_fn(devos_jobs_offset_fn fn, void *user);
 
 /* Advance the scheduler once (interval deadlines, running jobs, waits). The
  * target calls this from its Core 0 task; host tests drive it with a fake
