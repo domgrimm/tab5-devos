@@ -44,6 +44,7 @@ typedef struct {
     lv_obj_t *bld;
     lv_obj_t *dd_kind, *ta_trig;
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
+    lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
     lv_obj_t *dd_param, *dd_expr, *ta_val, *dd_choice, *lbl_custom;
     jobs_build_t build;
@@ -202,6 +203,25 @@ static void refresh_steps(void)
             set_visible(s_ctx.step_row[i], false);
         }
     }
+    /* size the list to its content so the controls below don't leave a gap */
+    int lh = s_ctx.rows_n * STEP_H + 6;
+    if (lh < STEP_H + 6) lh = STEP_H + 6;
+    if (lh > 130) lh = 130;
+    lv_obj_set_height(s_ctx.step_list, lh);
+    int add_y = 72 + lh + 8;
+    lv_obj_set_y(s_ctx.dd_add, add_y);
+    lv_obj_set_y(s_ctx.btn_add, add_y);
+    lv_obj_set_y(s_ctx.btn_bdel, add_y);
+    lv_obj_set_y(s_ctx.btn_up, add_y);
+    lv_obj_set_y(s_ctx.btn_dn, add_y);
+    int set_y = add_y + 34;
+    lv_obj_set_y(s_ctx.lbl_settings, set_y);
+    lv_obj_set_y(s_ctx.dd_param, set_y + 18);
+    lv_obj_set_y(s_ctx.dd_expr, set_y + 18);
+    lv_obj_set_y(s_ctx.dd_choice, set_y + 18);
+    lv_obj_set_y(s_ctx.ta_val, set_y + 58);
+    lv_obj_set_y(s_ctx.lbl_custom, set_y + 98);
+
     /* keep the same node selected across a reorder */
     if (sel_node) for (int i = 0; i < s_ctx.rows_n; i++) if (s_ctx.rows[i].node == sel_node) s_ctx.bstep = i;
     if (s_ctx.bstep >= s_ctx.rows_n) s_ctx.bstep = s_ctx.rows_n ? s_ctx.rows_n - 1 : 0;
@@ -683,24 +703,23 @@ static void jobs_init(void)
     s_ctx.bld = lv_obj_create(scr);
     lv_obj_remove_style_all(s_ctx.bld);
     lv_obj_set_pos(s_ctx.bld, 20, 138);
-    lv_obj_set_size(s_ctx.bld, 760, 356);
+    lv_obj_set_size(s_ctx.bld, 760, 366);
     lv_obj_remove_flag(s_ctx.bld, LV_OBJ_FLAG_SCROLLABLE);
 
     mk_label(s_ctx.bld, "Trigger", DEVOS_W_TEXT_DIM, 0, 0);
     s_ctx.dd_kind = devos_w_dd(s_ctx.bld, "Manual\nEvery\nDaily\nWeekdays", 170);
-    lv_obj_set_pos(s_ctx.dd_kind, 0, 20);
+    lv_obj_set_pos(s_ctx.dd_kind, 0, 18);
     lv_obj_add_event_cb(s_ctx.dd_kind, kind_cb, LV_EVENT_VALUE_CHANGED, NULL);
     s_ctx.ta_trig = devos_w_ta(s_ctx.bld, true, 220, 36);
-    lv_obj_set_pos(s_ctx.ta_trig, 180, 20);
+    lv_obj_set_pos(s_ctx.ta_trig, 180, 18);
     lv_textarea_set_max_length(s_ctx.ta_trig, 24);
     lv_obj_add_event_cb(s_ctx.ta_trig, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    mk_label(s_ctx.bld, "Steps  (tap to select, drag to reorder)", DEVOS_W_TEXT_DIM, 0, 62);
+    mk_label(s_ctx.bld, "Steps  (tap to select, drag to reorder)", DEVOS_W_TEXT_DIM, 0, 56);
     s_ctx.step_list = lv_obj_create(s_ctx.bld);
     lv_obj_remove_style_all(s_ctx.step_list);
-    lv_obj_set_pos(s_ctx.step_list, 0, 82);
-    lv_obj_set_size(s_ctx.step_list, 740, 150);
-    lv_obj_set_style_bg_color(s_ctx.step_list, lv_color_hex(0x000000), 0);
+    lv_obj_set_pos(s_ctx.step_list, 0, 72);
+    lv_obj_set_size(s_ctx.step_list, 740, 130);
     lv_obj_set_style_bg_opa(s_ctx.step_list, LV_OPA_TRANSP, 0);
     lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_CLICKABLE);
     for (int i = 0; i < STEP_ROWS; i++) {
@@ -718,34 +737,34 @@ static void jobs_init(void)
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
 
-    s_ctx.dd_add = devos_w_dd(s_ctx.bld, "", 300);
-    lv_obj_set_pos(s_ctx.dd_add, 0, 244);
-    s_ctx.btn_add = devos_w_btn(s_ctx.bld, "Add  [Sym+U]", 120, add_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_add, 310, 244);
-    s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Delete  [Sym+D]", 130, bdel_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_bdel, 440, 244);
-    s_ctx.btn_up = devos_w_btn(s_ctx.bld, "Up  [Sym+K]", 110, up_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_up, 580, 244);
-    s_ctx.btn_dn = devos_w_btn(s_ctx.bld, "Down  [Sym+J]", 130, dn_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_dn, 700, 244);
+    s_ctx.dd_add = devos_w_dd(s_ctx.bld, "", 260);
+    lv_obj_set_pos(s_ctx.dd_add, 0, 206);
+    s_ctx.btn_add = devos_w_btn(s_ctx.bld, "Add  [Sym+U]", 110, add_cb, NULL, NULL);
+    lv_obj_set_pos(s_ctx.btn_add, 270, 206);
+    s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Delete  [Sym+D]", 110, bdel_cb, NULL, NULL);
+    lv_obj_set_pos(s_ctx.btn_bdel, 390, 206);
+    s_ctx.btn_up = devos_w_btn(s_ctx.bld, "Up  [Sym+K]", 90, up_cb, NULL, NULL);
+    lv_obj_set_pos(s_ctx.btn_up, 510, 206);
+    s_ctx.btn_dn = devos_w_btn(s_ctx.bld, "Down  [Sym+J]", 90, dn_cb, NULL, NULL);
+    lv_obj_set_pos(s_ctx.btn_dn, 610, 206);
 
-    mk_label(s_ctx.bld, "Step settings", DEVOS_W_TEXT_DIM, 0, 290);
-    s_ctx.dd_param = devos_w_dd(s_ctx.bld, "", 200);
-    lv_obj_set_pos(s_ctx.dd_param, 0, 310);
+    s_ctx.lbl_settings = mk_label(s_ctx.bld, "Step settings", DEVOS_W_TEXT_DIM, 0, 238);
+    s_ctx.dd_param = devos_w_dd(s_ctx.bld, "", 180);
+    lv_obj_set_pos(s_ctx.dd_param, 0, 256);
     lv_obj_add_event_cb(s_ctx.dd_param, param_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_ctx.dd_expr = devos_w_dd(s_ctx.bld, "Literal\nExpression", 150);
-    lv_obj_set_pos(s_ctx.dd_expr, 210, 310);
+    s_ctx.dd_expr = devos_w_dd(s_ctx.bld, "Literal\nExpression", 140);
+    lv_obj_set_pos(s_ctx.dd_expr, 190, 256);
     lv_obj_add_event_cb(s_ctx.dd_expr, expr_cb, LV_EVENT_VALUE_CHANGED, NULL);
     s_ctx.dd_choice = devos_w_dd(s_ctx.bld, "", 180);
-    lv_obj_set_pos(s_ctx.dd_choice, 370, 310);
+    lv_obj_set_pos(s_ctx.dd_choice, 340, 256);
     lv_obj_add_event_cb(s_ctx.dd_choice, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_ctx.lbl_custom = devos_w_label(s_ctx.bld, NULL, DEVOS_W_TEXT_MUTED, "");
-    lv_obj_set_pos(s_ctx.lbl_custom, 0, 350);
-    lv_obj_set_width(s_ctx.lbl_custom, 740);
     s_ctx.ta_val = devos_w_ta(s_ctx.bld, true, 740, 36);
-    lv_obj_set_pos(s_ctx.ta_val, 0, 368);
+    lv_obj_set_pos(s_ctx.ta_val, 0, 296);
     lv_textarea_set_max_length(s_ctx.ta_val, 240);
     lv_obj_add_event_cb(s_ctx.ta_val, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    s_ctx.lbl_custom = devos_w_label(s_ctx.bld, NULL, DEVOS_W_TEXT_MUTED, "");
+    lv_obj_set_pos(s_ctx.lbl_custom, 0, 336);
+    lv_obj_set_width(s_ctx.lbl_custom, 740);
 
     /* shared toolbar */
     s_ctx.btn_validate = devos_w_btn(scr, "Validate  [Sym+C]", 150, validate_cb, NULL, NULL);
