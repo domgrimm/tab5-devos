@@ -43,6 +43,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_settings
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_template
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_coder
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_jobs
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_core
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_ui
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_storage
@@ -106,6 +107,7 @@ else()
         main/apps/app_template/app_template.c
         main/apps/app_coder/app_coder.c
         main/apps/app_coder/coder_core.c
+        main/apps/app_jobs/app_jobs.c
         components/devos_core/devos_core.c
         components/devos_core/devos_apps.c
         components/devos_core/devos_clipboard.c

@@ -250,6 +250,14 @@ void devos_icon_coder(lv_layer_t *layer, const lv_area_t *area, lv_color_t color
     line(&p, 112, 24, 88, 176, 16);                     /* the slash */
 }
 
+void devos_icon_jobs(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
+{
+    pen_t p = pen(layer, area, color);
+    frame(&p, 22, 22, 178, 178, 26, 14);                /* a job card */
+    static const int16_t bolt[] = { 112, 44, 74, 110, 102, 110, 86, 158, 128, 92, 100, 92, 112, 44 };
+    polyline(&p, bolt, 7, 14);                          /* automation */
+}
+
 /* ------------------------------------------------------------------ widget */
 static void icon_draw_cb(lv_event_t *e)
 {

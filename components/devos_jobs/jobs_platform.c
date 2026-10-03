@@ -83,3 +83,5 @@ void jobs_platform_set_clock(jobs_clock_fn fn, void *user)
     s_clock = fn;
     s_clock_user = user;
 }
+
+bool jobs_platform_clock_overridden(void) { return s_clock != NULL; }

@@ -151,7 +151,7 @@ tab5-devos/
 │   │   ├── app_cricket/           # Cricket: live scores, results by date, scorecards
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
 │   │   ├── app_settings/          # Wi-Fi setup, file sharing, display, power, system telemetry
-│   │   ├── app_jobs/              # Jobs: builder, text view, run trace, history (Phase 5)
+│   │   ├── app_jobs/              # Jobs: keyboard-first job list, Text editor, run history
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h

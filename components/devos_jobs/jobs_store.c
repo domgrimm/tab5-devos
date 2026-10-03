@@ -433,6 +433,24 @@ void jobs_store_history_append_async(const char *id, const char *line)
 
 uint32_t jobs_store_history_dropped(void) { return s_hdrop; }
 
+int jobs_store_history_read(const char *id, char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!s_st.available || !id) return 0;
+    char path[JOBS_STORE_PATH_MAX];
+    path_join(path, sizeof(path), ".devos/jobs/history/%s.jsonl", id);
+    char *buf = NULL;
+    size_t len = 0;
+    if (!read_file(path, &buf, &len)) return 0;
+    size_t n = len < cap - 1 ? len : cap - 1;
+    /* keep the newest bytes when truncating */
+    memcpy(out, buf + (len - n), n);
+    out[n] = '\0';
+    free(buf);
+    return (int)n;
+}
+
 #ifdef ESP_PLATFORM
 static void store_worker_task(void *arg)
 {

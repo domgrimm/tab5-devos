@@ -36,10 +36,13 @@
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
 #include "apps/app_coder/app_coder.h"
+#include "apps/app_jobs/app_jobs.h"
 #include "jobs_providers/jobs_providers.h"
+#include "devos_jobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #ifdef ESP_PLATFORM
@@ -63,6 +66,8 @@ static uint32_t esp_tick_get_cb(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
+
+static void jobs_sync_system(void);   /* defined below; used by the 1 Hz tick */
 
 static void gui_task(void *arg)
 {
@@ -90,6 +95,7 @@ static void gui_task(void *arg)
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000ULL);
         if (now != last_telemetry_tick) {
             devos_sysmon_apply();
+            jobs_sync_system();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             devos_toast_watch();                /* Wi-Fi / VPN / battery notices */
@@ -358,6 +364,32 @@ static void forget_removed_apps(void)
         }                                                               \
     } while (0)
 
+/* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
+ * the engine). Called from the 1 Hz GUI tick. */
+static void jobs_sync_system(void)
+{
+    devos_sysmon_snapshot_t s;
+    devos_sysmon_get_snapshot(&s);
+    devos_jobs_system_t j;
+    memset(&j, 0, sizeof(j));
+    j.battery_valid = s.battery_valid;
+    j.battery_present = s.battery_present;
+    j.charging = s.charging;
+    j.battery_percent = s.battery_percent;
+    j.wifi_connected = s.wifi_connected;
+    memcpy(j.wifi_ssid, s.wifi_ssid, sizeof(j.wifi_ssid));
+    memcpy(j.local_ip, s.local_ip, sizeof(j.local_ip));
+    j.wifi_rssi = s.wifi_rssi;
+    j.time_valid = s.time_valid;
+    j.uptime_s = s.uptime_s;
+    j.cpu_core0 = s.cpu_core0;
+    j.cpu_core1 = s.cpu_core1;
+    j.psram_free_kb = s.psram_free_kb;
+    j.sram_free_kb = s.sram_free_kb;
+    j.sram_largest_kb = s.sram_largest_kb;
+    devos_jobs_set_system(&j);
+}
+
 static void devos_system_bringup(void)
 {
     printf("\n==================================================\n");
@@ -423,6 +455,13 @@ static void devos_system_bringup(void)
      * registered independently of whether the Jobs app is switched on
      * (AGENTS.md invariant 10). Nothing here starts a task or a radio. */
     jobs_providers_register_all();
+
+    /* 6d. Jobs engine: scheduler + durable storage. Started only when the app
+     * is on; automatic runs stay paused after a safe/reverted boot, and a
+     * restart reports a running job. */
+    START_ENGINE("jobs", devos_jobs_init());
+    if (devos_core_apps_boot_kind() != DEVOS_APPS_BOOT_NORMAL) devos_jobs_set_safe_pause(true);
+    devos_core_add_restart_check(devos_jobs_restart_check);
 
     /* 7. SSH & PTY Engine bring-up */
     printf("[devOS] 7/8 Initializing SSH Subsystem...\n");
@@ -493,6 +532,7 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering Coder's Toolkit...\n");
     devos_core_register_app(app_coder_get_descriptor());
+    devos_core_register_app(app_jobs_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif
@@ -645,6 +685,7 @@ int main(int argc, char **argv)
         uint32_t now = SDL_GetTicks();
         if (now - last_telemetry_tick >= 1000) {
             devos_sysmon_apply();
+            jobs_sync_system();
             devos_power_poll(++sim_seconds);
             devos_top_bar_update();
             devos_toast_watch();                /* Wi-Fi / VPN / battery notices */

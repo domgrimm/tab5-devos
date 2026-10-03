@@ -99,6 +99,12 @@ bool devos_jobs_ready(void);
 int devos_jobs_count(void);
 bool devos_jobs_summary_at(int index, devos_job_summary_t *out);
 bool devos_jobs_run(devos_jobs_run_t *out);
+/* Canonical source of a job's active revision (serialized AST). */
+devos_err_t devos_jobs_source(const char *id, char *out, size_t cap, size_t *out_len);
+/* Parse + validate without applying; the first diagnostic goes to diag. */
+devos_err_t devos_jobs_check(const char *source, size_t len, char *diag, size_t cap);
+/* Recent run-history lines for a job (newest last), bounded. Returns bytes. */
+int devos_jobs_history(const char *id, char *out, size_t cap);
 
 /* ---- commands (bounded; return an admission result) ----
  * The UI enqueues these and gets completion through the snapshot API. They do

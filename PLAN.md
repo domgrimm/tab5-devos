@@ -805,9 +805,14 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       `restart_check` reports a lost run; history is written through a Core 1 worker so the scheduler
       never blocks on SD. Failure injected at every commit boundary leaves the previous revision
       authoritative (`tools/jobs_store_test.c`, 73 checks).
-- [ ] **Phase 5** - first complete GUI + Text release: list, schema-driven Builder, dedicated Text
-      view, diagnostics, Apply/Enable, Run/Cancel, trace/history, icon/telemetry/palette. **Gate:
-      README, PLAN and AGENTS updated and the Template compatibility fixture added.**
+- [x] **Phase 5 (Text release)** - `app_jobs`: keyboard-first job list (dropdown), a Text editor over
+      the language, Validate / Apply (conflict-checked) / Enable / Run now / Cancel / History,
+      diagnostics and run output, telemetry, a shortcut sheet and a vector icon. The engine starts at
+      boot (`START_ENGINE("jobs", ...)`) with a 1 Hz sysmon snapshot bridge, a safe/reverted-boot pause
+      and a restart check; Settings > Apps disables the engine. README, PLAN and AGENTS updated; the
+      future-app compatibility fixture added (`tools/jobs_compat_test.c`).
+- [ ] **Phase 5 (Builder)** - the schema-driven Builder (trigger card, step tree, inspector, opaque
+      custom-node card) sharing the one AST with the Text view.
 - [ ] **Phase 6** - daily/weekdays schedules and boot/Wi-Fi/battery events.
 - [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
 - [ ] **Phase 8** - Docker background operation integration.

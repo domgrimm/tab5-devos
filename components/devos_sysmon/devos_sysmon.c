@@ -480,4 +480,28 @@ void devos_sysmon_apply(void)
     devos_telemetry_update(&t);
 }
 
+void devos_sysmon_get_snapshot(devos_sysmon_snapshot_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    const devos_telemetry_t *t = devos_telemetry_get();
+    out->battery_valid = t->battery_valid;
+    out->battery_present = t->battery_present;
+    out->charging = t->battery_charging;
+    out->battery_percent = t->battery_percent;
+    devos_wifi_status_t w;
+    devos_net_wifi_get_status(&w);
+    out->wifi_connected = w.state == DEVOS_WIFI_STATE_CONNECTED;
+    snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", w.ssid);
+    snprintf(out->local_ip, sizeof(out->local_ip), "%s", w.ip);
+    out->wifi_rssi = w.rssi;
+    out->time_valid = true;
+    out->uptime_s = (uint32_t)(time(NULL) - s_boot);
+    out->cpu_core0 = t->cpu_load_core0;
+    out->cpu_core1 = t->cpu_load_core1;
+    out->psram_free_kb = t->free_psram_kb;
+    out->sram_free_kb = t->free_sram_kb;
+    out->sram_largest_kb = t->sram_largest_kb;
+}
+
 #endif /* ESP_PLATFORM */

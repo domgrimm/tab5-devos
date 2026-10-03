@@ -17,6 +17,8 @@ void jobs_platform_init(void);
 /* Override the clock (host tests); NULL restores the real monotonic clock. */
 void jobs_platform_set_clock(jobs_clock_fn fn, void *user);
 int64_t jobs_now_ms(void);
+/* True when a test has injected a clock (so the scheduler must not auto-run). */
+bool jobs_platform_clock_overridden(void);
 
 void jobs_lock(void);
 void jobs_unlock(void);

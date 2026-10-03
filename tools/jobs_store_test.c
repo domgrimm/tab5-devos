@@ -70,6 +70,8 @@ int main(void)
     char dir[] = "/tmp/devos_jobstest.XXXXXX";
     if (!mkdtemp(dir) || chdir(dir) != 0) { perror("scratch"); return 1; }
     const char *ROOT = "./sim_sdcard";
+    jobs_platform_set_clock(fake_now, NULL);   /* no auto-scheduler; drive ticks by hand */
+    s_now = 1000;
 
     CHECK(jobs_store_init(ROOT));
     jobs_store_status_t st;

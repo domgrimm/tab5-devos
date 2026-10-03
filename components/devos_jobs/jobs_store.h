@@ -71,6 +71,8 @@ bool jobs_store_worker_start(void);
 void jobs_store_worker_stop(void);
 void jobs_store_history_append_async(const char *id, const char *line);
 uint32_t jobs_store_history_dropped(void);
+/* Copy the recent history file (bounded, newest last) into out; bytes copied. */
+int jobs_store_history_read(const char *id, char *out, size_t cap);
 
 /* Tests: fail the Nth filesystem step (0 = never). */
 void jobs_store_fail_after(int step);

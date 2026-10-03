@@ -54,7 +54,6 @@ static void start_run(jobs_job_t *j, int64_t now)
 }
 
 /* ---- lifecycle ---- */
-#ifdef ESP_PLATFORM
 static void scheduler_loop(void *arg)
 {
     (void)arg;
@@ -63,7 +62,6 @@ static void scheduler_loop(void *arg)
         jobs_platform_sleep_ms(50);
     }
 }
-#endif
 
 /* Load callback: parse + validate a stored revision, then install it. */
 static bool load_cb(const char *id, const char *source, size_t len, bool enabled,
@@ -107,13 +105,13 @@ bool devos_jobs_init(void)
         jobs_store_worker_start();           /* Core 1 history writes */
         jobs_store_load(load_cb, NULL);
     }
-#ifdef ESP_PLATFORM
-    if (!jobs_platform_start_scheduler(scheduler_loop, NULL)) {
+    /* Run the scheduler unless a test has injected a fake clock (then the test
+     * drives devos_jobs_tick() itself). Works on target and in the simulator. */
+    if (!jobs_platform_clock_overridden() && !jobs_platform_start_scheduler(scheduler_loop, NULL)) {
         g_jobs.state = DEVOS_JOBS_OFF;
         g_jobs.ready = false;
         return false;
     }
-#endif
     return true;
 }
 
@@ -330,6 +328,35 @@ const char *devos_jobs_restart_check(void)
         if (j->used && j->run.active && !j->run.cancelling) return "a job is running";
     }
     return NULL;
+}
+
+devos_err_t devos_jobs_check(const char *source, size_t len, char *diag, size_t cap)
+{
+    if (diag && cap) diag[0] = '\0';
+    jobs_ast_t *ast = jobs_parse(source, len, NULL);
+    if (!ast) { if (diag && cap) snprintf(diag, cap, "out of memory"); return DEVOS_ERR_NO_MEM; }
+    if (!jobs_validate(ast)) {
+        if (diag && cap)
+            snprintf(diag, cap, "%s", ast->diag_count ? ast->diag[0].msg : "invalid definition");
+        jobs_ast_free(ast);
+        return DEVOS_ERR_INVALID_ARG;
+    }
+    jobs_ast_free(ast);
+    return DEVOS_OK;
+}
+
+devos_err_t devos_jobs_source(const char *id, char *out, size_t cap, size_t *out_len)
+{
+    jobs_job_t *j = jobs_find(id);
+    if (!j || !j->ast) return DEVOS_ERR_NOT_FOUND;
+    size_t n = jobs_serialize(j->ast, out, cap);
+    if (out_len) *out_len = n;
+    return DEVOS_OK;
+}
+
+int devos_jobs_history(const char *id, char *out, size_t cap)
+{
+    return jobs_store_history_read(id, out, cap);
 }
 
 void devos_jobs_tick(void)

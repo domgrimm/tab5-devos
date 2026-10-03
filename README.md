@@ -32,6 +32,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
+| **Jobs** | Persistent automation: a keyboard-first job list and Text editor over a small language (manual/interval triggers, typed actions, `if`/`wait`), Validate/Apply/Enable/Run now/Cancel, diagnostics and run history. Keeps running while the app is hidden or the screen is off |
 | **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
 Global keys, from any app: **Sym + Space** command palette (type part of an app or command, Enter runs it), **Sym + I** system info (power, memory, network, CPU), **Sym + S** keyboard shortcuts (everywhere, and for the app you're in), **Sym + V** paste (one clipboard for every app: Ctrl + C in the Editor or C in the Authenticator copies, Sym + V pastes into any text field or the Terminal), **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + P** screen off (sleep), **Sym + Shift + R** restart (asks first), **Sym + Shift + Q** shut down (asks first), **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier, and **Aa** is Shift. In the top bar, a tap on the Wi-Fi name, the battery, the clock or the **Shared** mark opens that part of Settings.
@@ -53,6 +54,31 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
   curl -u devos:PASSWORD -H 'X-Devos: 1' --data-binary 'text for the Tab5' 'http://192.168.1.50/api/clipboard'
   ```
   `POST /api/mkdir?path=`, `POST /api/rename?path=&to=` and `DELETE ...&recursive=1` (a folder and its contents) cover the rest; `POST /api/clipboard` puts the body on the Tab5's clipboard (`GET` reads it back); `components/devos_fileshare/devos_fileshare.h` lists it all.
+
+### Jobs
+
+**Jobs** is a small automation app. Open it, pick a job (or press **N** for a new one) and edit its
+source in the Text view:
+
+```text
+version 1;
+job "NAS health check" {
+    trigger every 5m;
+    network.ping(host: "nas.local", timeout: 3s) as nas;
+    if !nas.ok {
+        system.notify(message: "NAS offline", level: "warning");
+    } else {
+        system.log(message: "NAS responded in ${nas.latency_ms} ms");
+    }
+}
+```
+
+**V** validates, **A** applies (transactionally, with a conflict check), **E** enables, **R** runs
+now, **X** cancels, **H** shows run history. A job is disabled until you enable it, and an interval
+job first runs one interval after it is enabled. The engine keeps running while you are in another
+app or the screen is off, and is off entirely when Jobs is switched off in **Settings > Apps**.
+Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are kept under
+`/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/examples/`.
 
 ### Wake-on-LAN
 
