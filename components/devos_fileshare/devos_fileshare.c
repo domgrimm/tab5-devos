@@ -1,6 +1,7 @@
 /* devos_fileshare: see devos_fileshare.h. */
 #include "devos_fileshare.h"
 #include "devos_config.h"
+#include "devos_clipboard.h"   /* the Universal Clipboard (no LVGL) */
 #include "devos_crypto.h"
 #include "devos_json.h"
 #include "devos_net.h"
@@ -330,6 +331,14 @@ static void send_ok(req_t *r, int code)
     if (send_head(r, code, "application/json", (long long)(sizeof(ok) - 1), NULL)) {
         devos_net_socket_send_all(r->fd, ok, sizeof(ok) - 1);
     }
+}
+
+/* {"ok":true,"length":N} - a change that reports how much it kept. */
+static void send_ok_len(req_t *r, int code, size_t len)
+{
+    char body[48];
+    int n = snprintf(body, sizeof(body), "{\"ok\":true,\"length\":%u}\n", (unsigned)len);
+    if (send_head(r, code, "application/json", n, NULL)) devos_net_socket_send_all(r->fd, body, (size_t)n);
 }
 
 /* ------------------------------------------------------------------ files */
@@ -740,6 +749,100 @@ static void do_rename(req_t *r)
     note(r, "Renamed %.60s to %.60s", from, to);
 }
 
+/* ---- Universal Clipboard: text pasted from the browser ----
+ * The text is handed to devos_clipboard_set (so the Tab5's own apps can paste
+ * it) and also written to /.devos/clipboard.txt, which survives a restart and
+ * is visible in the file list. */
+
+#define CLIP_FILE  ROOT "/.devos/clipboard.txt"
+
+/* Copy a body that may have arrived with the headers (r->io can't be used:
+ * it already holds those bytes) into the clipboard and the file. */
+static void do_clipboard_put(req_t *r)
+{
+    if (r->chunked || !r->has_len) {
+        send_text(r, 411, "Content-Length needed");
+        return;
+    }
+    if (r->content_len > DEVOS_CLIPBOARD_MAX) {
+        send_text(r, 413, "The clipboard holds at most 64 KB");
+        return;
+    }
+    size_t n = r->hdr_len - r->body_off;
+    if (n > r->content_len) n = (size_t)r->content_len;
+    const char *first = r->hdr + r->body_off;
+    uint64_t got = n;
+
+    size_t kept = devos_clipboard_set(first, n);      /* header bytes, then chunks */
+
+    mkdir(ROOT "/.devos", 0755);                      /* usually already there */
+    FILE *f = fopen(CLIP_FILE, "wb");
+    if (!f) {
+        send_text(r, 500, "Couldn't write the clipboard file");
+        return;
+    }
+    setvbuf(f, NULL, _IONBF, 0);
+    bool io_err = false;
+    if (got) io_err = fwrite(first, 1, (size_t)got, f) != (size_t)got;
+    if (!io_err && got < r->content_len && r->expect_continue) {
+        static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
+        devos_net_socket_send_all(r->fd, cont, sizeof(cont) - 1);
+    }
+    /* absorb the rest in IO_CHUNK pieces, feeding editor and file together */
+    while (!io_err && got < r->content_len) {
+        if (!want()) { io_err = true; break; }
+        uint64_t left = r->content_len - got;
+        size_t room = left < IO_CHUNK ? (size_t)left : IO_CHUNK;
+        int k = devos_net_socket_recv(r->fd, r->io, room, 0);
+        if (k <= 0) { io_err = true; break; }
+        if (fwrite(r->io, 1, (size_t)k, f) != (size_t)k) io_err = true;
+        got += (uint64_t)k;
+        if (kept < DEVOS_CLIPBOARD_MAX) {
+            /* append: re-set with the old text plus the new piece */
+            const char *old = devos_clipboard_get(&kept);
+            char *merged = malloc(kept + (size_t)k + 1);
+            if (merged) {
+                memcpy(merged, old, kept);
+                memcpy(merged + kept, r->io, (size_t)k);
+                kept = devos_clipboard_set(merged, kept + (size_t)k);
+                free(merged);
+            }
+        }
+    }
+    if (fclose(f) != 0) io_err = true;
+    if (io_err) {
+        send_text(r, 400, "Clipboard paste cut off");
+        return;
+    }
+    LOCK();
+    s_st.clipboards++;
+    UNLOCK();
+    send_ok_len(r, 200, kept);
+    char sz[24];
+    fmt_size(got, sz, sizeof(sz));
+    if (got) note(r, "Copied %s to the devOS clipboard", sz, "");
+    else     note(r, "Cleared the devOS clipboard%s", "", "");
+}
+
+/* The current clipboard, as JSON ({"text":...,"length":N}). */
+static void do_clipboard_get(req_t *r)
+{
+    size_t len = 0;
+    const char *text = devos_clipboard_get(&len);
+    char *esc = big_calloc(len * 6 + 8);
+    if (!esc) { send_text(r, 500, "Out of memory"); return; }
+    devos_json_escape(text, esc, len * 6 + 8);
+    size_t body = strlen(esc) + 40;
+    char *json = big_calloc(body);
+    if (!json) { free(esc); send_text(r, 500, "Out of memory"); return; }
+    int n = snprintf(json, body, "{\"text\":\"%s\",\"length\":%u}\n", esc, (unsigned)len);
+    if (send_head(r, 200, "application/json; charset=utf-8", n, NULL)) {
+        devos_net_socket_send_all(r->fd, json, (size_t)n);
+    }
+    free(json);
+    free(esc);
+}
+
 /* ------------------------------------------------------------------ requests */
 static int read_headers(req_t *r)
 {
@@ -872,6 +975,10 @@ static void handle(req_t *r)
     } else if (strcmp(t, "/api/rename") == 0) {
         if (strcmp(m, "POST") != 0) send_text(r, 405, "POST only");
         else if (path_arg(r, "path", 0) && path_arg(r, "to", 1)) do_rename(r);
+    } else if (strcmp(t, "/api/clipboard") == 0) {
+        if (get) do_clipboard_get(r);
+        else if (strcmp(m, "POST") == 0) do_clipboard_put(r);
+        else send_text(r, 405, "GET or POST");
     } else {
         send_text(r, 404, "Not found");
     }

@@ -182,13 +182,11 @@ bool devos_core_open_with(const char *uid, const char *action, const char *arg);
 bool devos_core_take_intent(const char *uid, char *action, size_t action_cap, char *arg, size_t arg_cap);
 
 /* Clipboard: one piece of text for every app (UI task only). The Editor's
- * cut / copy and the Authenticator's C put text in; the Editor's paste, the
- * Terminal's Sym+V and Sym+V / Ctrl+V in any text field (devos_focus) take
- * it out. Up to DEVOS_CLIPBOARD_MAX bytes, kept in PSRAM. set() returns the
- * length kept (0 on failure or for ""); get() never returns NULL. */
-#define DEVOS_CLIPBOARD_MAX (64 * 1024)
-size_t devos_clipboard_set(const char *text, size_t len);
-const char *devos_clipboard_get(size_t *len);
+ * cut / copy, the Authenticator's C and the File Sharing web page put text
+ * in; the Editor's paste, the Terminal's Sym+V and Sym+V / Ctrl+V in any text
+ * field (devos_focus) take it out. The API lives in devos_clipboard.h (no
+ * LVGL) so engines with no UI can use it; it is included here. */
+#include "devos_clipboard.h"
 
 /* Telemetry API */
 const devos_telemetry_t *devos_telemetry_get(void);
