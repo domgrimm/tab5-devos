@@ -785,8 +785,15 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       local fixture (200 / 503 / timeout / truncation / admission / cancel); the request-specific
       `devos_probe_*` ICMP engine (own socket/id/deadline, never touches the ping singleton) and the
       `network.ping` adapter. Event producers (Wi-Fi/battery/MQTT) are Phase 6/7.
-- [ ] **Phase 3** - Core 0 scheduler and interpreter vertical slice (manual/interval, wait,
-      overlap, budgets, cancel, generation snapshots, ready barrier, global pause).
+- [x] **Phase 3** - scheduler and interpreter vertical slice. `jobs_platform` (injectable monotonic
+      clock, lock, Core 0 scheduler task); `jobs_runtime` (explicit frame-stack interpreter:
+      action start/poll, output binding, `set`, `if/else` branches on typed results, `wait`,
+      per-run string pool, 256-step budget, run deadline, cancellation, retained revision);
+      `jobs_schedule` (job registry, interval triggers phase-anchored with missed-period skipping,
+      run-now overlap refusal, global pause, ready barrier, summaries and the run snapshot).
+      `tools/jobs_runtime_test.c` (39 checks) with a fake clock and fake providers: negative-result
+      branching, two jobs advancing while one waits, first-run-after-one-interval, cancel,
+      revision retain/release and pause.
 - [ ] **Phase 4** - durable storage and recovery: Core 1 storage worker, immutable revisions +
       referenced catalog, history rotation, drafts, conflicts, SD degraded mode, safe-start pause.
 - [ ] **Phase 5** - first complete GUI + Text release: list, schema-driven Builder, dedicated Text

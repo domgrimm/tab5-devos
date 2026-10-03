@@ -48,7 +48,16 @@ jobs_ast_t *jobs_ast_new(const jobs_limits_t *lim)
     ast->arena_cap = (size_t)ast->lim.max_nodes * sizeof(jobs_node_t);
     ast->pool_cap = ast->lim.max_source + 64;
     ast->lang_version = JOBS_LANG_VERSION;
+    ast->refs = 1;
     return ast;
+}
+
+void jobs_ast_retain(jobs_ast_t *ast) { if (ast) ast->refs++; }
+
+void jobs_ast_release(jobs_ast_t *ast)
+{
+    if (!ast) return;
+    if (--ast->refs <= 0) jobs_ast_free(ast);
 }
 
 void jobs_ast_free(jobs_ast_t *ast)

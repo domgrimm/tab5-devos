@@ -99,12 +99,17 @@ typedef struct jobs_ast {
     int diag_count;
     int node_count;
     int lang_version;
+    int refs;                    /* owners; freed at 0 (engine + active runs) */
     jobs_limits_t lim;
 } jobs_ast_t;
 
 /* ---- arena ---- */
 jobs_ast_t *jobs_ast_new(const jobs_limits_t *lim);
 void jobs_ast_free(jobs_ast_t *ast);
+/* Reference counting: an active run retains the revision it started with, so
+ * applying a new revision never frees memory a run still reads. */
+void jobs_ast_retain(jobs_ast_t *ast);
+void jobs_ast_release(jobs_ast_t *ast);
 jobs_node_t *jobs_node_new(jobs_ast_t *ast, jobs_node_kind_t kind, uint32_t off, uint32_t len, int line, int col);
 /* Copy a string into the AST pool; returns a NUL-terminated pointer or NULL. */
 const char *jobs_pool_str(jobs_ast_t *ast, const char *s, uint32_t len);

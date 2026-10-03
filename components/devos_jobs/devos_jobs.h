@@ -72,6 +72,29 @@ devos_jobs_state_t devos_jobs_state(void);
 bool devos_jobs_paused(void);
 void devos_jobs_set_paused(bool paused);
 
+/* Engine-facing system snapshot (a bridge copies it from devos_sysmon so the
+ * engine never touches the GUI telemetry or I2C). */
+typedef struct {
+    bool     battery_valid, battery_present, charging;
+    uint8_t  battery_percent;
+    bool     wifi_connected;
+    char     wifi_ssid[33];
+    char     local_ip[20];
+    int8_t   wifi_rssi;
+    bool     time_valid;
+    uint32_t uptime_s;
+    uint8_t  cpu_core0, cpu_core1;
+    uint32_t psram_free_kb, sram_free_kb, sram_largest_kb;
+} devos_jobs_system_t;
+void devos_jobs_set_system(const devos_jobs_system_t *s);
+
+/* Advance the scheduler once (interval deadlines, running jobs, waits). The
+ * target calls this from its Core 0 task; host tests drive it with a fake
+ * clock. Safe when the engine is off. */
+void devos_jobs_tick(void);
+/* True once load/validation finished and automatic dispatch may start. */
+bool devos_jobs_ready(void);
+
 /* ---- read-only snapshots (safe when OFF) ---- */
 int devos_jobs_count(void);
 bool devos_jobs_summary_at(int index, devos_job_summary_t *out);

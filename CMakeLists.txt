@@ -164,6 +164,9 @@ else()
         components/devos_jobs/jobs_parse.c
         components/devos_jobs/jobs_validate.c
         components/devos_jobs/jobs_serialize.c
+        components/devos_jobs/jobs_platform.c
+        components/devos_jobs/jobs_runtime.c
+        components/devos_jobs/jobs_schedule.c
         main/jobs_providers/jobs_providers.c
         main/jobs_providers/jobs_system.c
         main/jobs_providers/jobs_http.c
