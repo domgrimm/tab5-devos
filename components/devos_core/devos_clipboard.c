@@ -1,5 +1,6 @@
-/* devos_clipboard: see devos_core.h. */
-#include "devos_core.h"
+/* devos_clipboard: see devos_clipboard.h. LVGL-free, so non-UI engines
+ * (devos_fileshare) can build it too. */
+#include "devos_clipboard.h"
 
 #include <stdlib.h>
 #include <string.h>

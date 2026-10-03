@@ -41,7 +41,7 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
 
 ### File sharing
 
-**Settings > File Sharing** turns the SD card into a web page. Switch it on and the panel shows an address (`http://192.168.1.50`) and a password. Open the address in a browser on any computer or phone on the same network (or over Tailscale / WireGuard) to browse the card, upload files and whole folders (button or drag and drop), download, rename, make folders and delete. The Editor sees the changes the next time you open it.
+**Settings > File Sharing** turns the SD card into a web page. Switch it on and the panel shows an address (`http://192.168.1.50`) and a password. Open the address in a browser on any computer or phone on the same network (or over Tailscale / WireGuard) to browse the card, upload files and whole folders (button or drag and drop), download, rename, make folders and delete. The Editor sees the changes the next time you open it. The page also has a **Send text to the devOS clipboard** box: paste text there and press **Copy to devOS clipboard** to put it on the Tab5's one Universal Clipboard, ready to paste into the Editor, Terminal or any text field (it is also kept in `/.devos/clipboard.txt` and can be loaded back into the box).
 
 - **A new password every time** sharing starts: eight random characters, any user name. Sharing is always off after a restart, and an amber **Shared** mark sits in the top bar while it's on.
 - **Plain HTTP.** The password keeps others out, but the traffic isn't encrypted: use it on a network you trust, or over Tailscale / WireGuard, which are.
@@ -51,8 +51,9 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
   curl -u devos:PASSWORD -H 'X-Devos: 1' -T notes.md 'http://192.168.1.50/api/file?path=/notes/notes.md'
   curl -u devos:PASSWORD -o notes.md 'http://192.168.1.50/api/file?path=/notes/notes.md'
   curl -u devos:PASSWORD -H 'X-Devos: 1' -X DELETE 'http://192.168.1.50/api/file?path=/notes/notes.md'
+  curl -u devos:PASSWORD -H 'X-Devos: 1' --data-binary 'text for the Tab5' 'http://192.168.1.50/api/clipboard'
   ```
-  `POST /api/mkdir?path=`, `POST /api/rename?path=&to=` and `DELETE ...&recursive=1` (a folder and its contents) cover the rest; `components/devos_fileshare/devos_fileshare.h` lists it all.
+  `POST /api/mkdir?path=`, `POST /api/rename?path=&to=` and `DELETE ...&recursive=1` (a folder and its contents) cover the rest; `POST /api/clipboard` puts the body on the Tab5's clipboard (`GET` reads it back); `components/devos_fileshare/devos_fileshare.h` lists it all.
 
 ### Wake-on-LAN
 
@@ -100,7 +101,7 @@ Memory follows the same split. The 32 MB PSRAM holds big things: LVGL draw buffe
 - **App switcher:** shows one app's screen at a time and calls `hide()` on the old app, then `show()` on the new one.
 - **Key dispatcher:** every key goes first to the system overlays (the command palette and the system info panel, which take the keyboard while they're open), then to the global shortcuts, then to the active app's `handle_key()`. An unhandled `Esc` goes to the Home Screen.
 - **Intents:** one app can ask another to do something. `devos_core_open_with("terminal", "ssh", "pi@host")` switches to the Terminal, whose `show()` picks the request up with `devos_core_take_intent()`. The Network app uses this to SSH or ping a host it found, Docker to SSH into a container or open its web port in REST, and the palette to open a file in the Editor (`"open"`, `"notes/welcome.md"`).
-- **Clipboard:** one piece of text shared by every app (`devos_clipboard_set` / `_get`, in PSRAM).
+- **Clipboard:** one piece of text shared by every app *and* the File Sharing web page (`devos_clipboard_set` / `_get`, in PSRAM; the API is in `devos_clipboard.h`, which has no LVGL, so non-UI engines can use it too).
 - **Telemetry:** a 1 Hz snapshot (battery, Wi-Fi, IP, VPN state, SD, heap, CPU, clock) fed by `devos_sysmon` and drawn by the top bar and tiles.
 - **App switches:** an app switched off in Settings is never initialised and its engine never starts, so it costs no RAM. Changes apply on restart. If a new set of switches fails to boot twice, devOS reverts to the last set that worked. Holding a finger on the screen at power-on switches every app back on.
 
@@ -357,7 +358,7 @@ components/
   devos_net/         Wi-Fi, DNS/mDNS, socket layer + VPN routing
   devos_http/        HTTP(S) client
   devos_storage/     MicroSD mount and scaffolding
-  devos_fileshare/   the SD card as a web page (HTTP server + the page itself)
+  devos_fileshare/   the SD card as a web page (HTTP server + the page itself; also pastes text into the clipboard)
   devos_power/       active / dim / sleep
   devos_ota/         update check and install
   devos_sysmon/      1 Hz telemetry, clock, time zones

@@ -7,9 +7,11 @@
  *     components/devos_fileshare/devos_fileshare.c components/devos_fileshare/fileshare_page.c \
  *     components/devos_net/devos_net.c components/devos_storage/devos_storage.c \
  *     components/devos_crypto/devos_crypto.c components/devos_json/devos_json.c \
+ *     components/devos_core/devos_clipboard.c \
  *     -Icomponents/devos_fileshare -Icomponents/devos_net -Icomponents/devos_storage \
  *     -Icomponents/devos_crypto -Icomponents/devos_json -Icomponents/devos_tailnet \
- *     -Icomponents/devos_config/include -DDEVOS_FILESHARE_PORT=18480 -lpthread && /tmp/fileshare_test
+ *     -Icomponents/devos_core -Icomponents/devos_config/include \
+ *     -DDEVOS_FILESHARE_PORT=18480 -lpthread && /tmp/fileshare_test
  *
  * It makes (and leaves) its own scratch directory under /tmp and runs there.
  */
@@ -26,6 +28,7 @@
 
 #include "devos_fileshare.h"
 #include "devos_storage.h"
+#include "devos_clipboard.h"
 
 /* devos_net's resolver asks the tailnet first; not here */
 int devos_tailnet_resolve(const char *name, char *out_ip, size_t out_len)
@@ -367,6 +370,72 @@ int main(void)
     CHECK(simple("DELETE", "/api/file?path=/gone", &r) == 404);
     free(r.body);
 
+    /* Universal Clipboard: the page sends text, the Tab5 (and a file) keep it */
+    CHECK(http("GET", "/api/clipboard", s_pw, false, NULL, 0, NULL, &r) == 200);
+    CHECK(strstr(r.body, "\"text\":\"\"") && strstr(r.body, "\"length\":0"));
+    free(r.body);
+    CHECK(http("POST", "/api/clipboard", s_pw, false, "no csrf", 7, NULL, &r) == 403);
+    free(r.body);
+    CHECK(http("POST", "/api/clipboard", s_pw, true, "hello clipboard", 15, NULL, &r) == 200);
+    CHECK(strstr(r.body, "\"ok\":true") && strstr(r.body, "\"length\":15"));
+    free(r.body);
+    CHECK(devos_clipboard_get(NULL) && strcmp(devos_clipboard_get(NULL), "hello clipboard") == 0);
+    got = slurp("sim_sdcard/.devos/clipboard.txt", NULL);
+    CHECK(got && strcmp(got, "hello clipboard") == 0);
+    free(got);
+    /* read-back returns exactly what was set */
+    CHECK(simple("GET", "/api/clipboard", &r) == 200);
+    CHECK(strstr(r.body, "\"text\":\"hello clipboard\"") && strstr(r.body, "\"length\":15"));
+    free(r.body);
+    /* special characters survive JSON round-trip */
+    {
+        char *txt = "quote \" backslash \\ newline \n tab \t end";
+        CHECK(http("POST", "/api/clipboard", s_pw, true, txt, strlen(txt), NULL, &r) == 200);
+        free(r.body);
+        CHECK(devos_clipboard_get(NULL) && strcmp(devos_clipboard_get(NULL), txt) == 0);
+        CHECK(simple("GET", "/api/clipboard", &r) == 200);
+        CHECK(strstr(r.body, "\\\"") && strstr(r.body, "\\\\") && strstr(r.body, "\\n"));
+        free(r.body);
+        got = slurp("sim_sdcard/.devos/clipboard.txt", NULL);
+        CHECK(got && strcmp(got, txt) == 0);
+        free(got);
+    }
+    /* an empty paste clears it (both the clipboard and the file) */
+    CHECK(http("POST", "/api/clipboard", s_pw, true, "", 0, NULL, &r) == 200);
+    CHECK(strstr(r.body, "\"length\":0"));
+    free(r.body);
+    CHECK(strcmp(devos_clipboard_get(NULL), "") == 0);
+    CHECK(exists("sim_sdcard/.devos/clipboard.txt") && slurp("sim_sdcard/.devos/clipboard.txt", NULL)[0] == '\0');
+    free(slurp("sim_sdcard/.devos/clipboard.txt", NULL));
+    /* a paste that spans several IO_CHUNK reads (headers + body split) */
+    {
+        size_t many = 100 * 1024;                    /* > 64 KB: exceeds the cap */
+        char *bulk = malloc(many);
+        for (size_t i = 0; i < many; i++) bulk[i] = (char)('a' + (i % 26));
+        CHECK(http("POST", "/api/clipboard", s_pw, true, bulk, many, NULL, &r) == 413);
+        free(r.body);
+        /* just under the cap, arriving in pieces: kept in full and on the card */
+        size_t okn = 40000;
+        char *under = malloc(okn);
+        for (size_t i = 0; i < okn; i++) under[i] = (char)('A' + (i % 26));
+        CHECK(http("POST", "/api/clipboard", s_pw, true, under, okn, NULL, &r) == 200);
+        CHECK(strstr(r.body, "\"length\":40000"));
+        free(r.body);
+        size_t cl = 0;
+        const char *ct = devos_clipboard_get(&cl);
+        CHECK(cl == okn && ct && memcmp(ct, under, okn) == 0);
+        char *file = slurp("sim_sdcard/.devos/clipboard.txt", NULL);
+        CHECK(file && strlen(file) == okn && memcmp(file, under, okn) == 0);
+        free(file);
+        free(bulk);
+        free(under);
+    }
+    CHECK(simple("DELETE", "/api/clipboard", &r) == 405);
+    free(r.body);
+    CHECK(simple("GET", "/api/clipboard", &r) == 200);   /* still the 40 KB paste */
+    CHECK(strstr(r.body, "\"length\":40000"));
+    free(r.body);
+
     /* odds and ends */
     CHECK(simple("GET", "/nope", &r) == 404);
     free(r.body);
@@ -389,6 +458,7 @@ int main(void)
 
     devos_fileshare_status(&st);
     CHECK(st.uploads == 6 && st.downloads == 5 && st.deletes == 3);
+    CHECK(st.clipboards == 4);                   /* hello, special chars, empty, 40 KB */
     CHECK(st.bytes_in >= big && st.bytes_out >= big);
     CHECK(strcmp(st.last_client, "127.0.0.1") == 0 && st.last[0]);
     printf("  last: %s (%s)  requests %u\n", st.last, st.last_client, st.requests);

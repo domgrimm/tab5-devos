@@ -449,6 +449,12 @@ services in the REST client).
 *   The page (`fileshare_page.c`, plain HTML + JS, no external files): breadcrumbs, upload
     files / folders by button or drag and drop with progress, download, rename, new folder,
     delete, hidden-file toggle, free space; follows the browser's light / dark setting.
+*   **Send text to the devOS clipboard**: the page has a text box and a **Copy to devOS
+    clipboard** button that `POST`s the text to `/api/clipboard`; the server puts it on the
+    Tab5's one Universal Clipboard (`devos_clipboard_set`, so the Editor, Terminal and every
+    text field can paste it) and writes it to `/.devos/clipboard.txt`, which survives a restart.
+    `GET /api/clipboard` returns the current text so the page can **Load current** it back into
+    the box. Capped at the 64 KB clipboard size; the body is limited to it too.
 *   Settings shows the address (Wi-Fi, else a tunnel address), the password, a curl example,
     live activity and free space; the top bar shows an amber **Shared** mark while it's on.
     `tools/fileshare_test.c` drives the server end to end over loopback sockets.

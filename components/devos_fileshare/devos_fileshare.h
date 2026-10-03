@@ -21,6 +21,9 @@
  *   DELETE /api/file?path=/p[&recursive=1] delete a file, or a folder (recursive: with its contents)
  *   POST   /api/mkdir?path=/dir            new folder
  *   POST   /api/rename?path=/a&to=/b       rename / move
+ *   GET    /api/clipboard                  {"text","length"} - the devOS clipboard
+ *   POST   /api/clipboard                  body becomes the devOS clipboard (and
+ *                                          /.devos/clipboard.txt); replies {"ok":true,"length":N}
  *
  * Every request except GET needs an "X-Devos: 1" header, which a web page
  * on another site can't send without asking first (CSRF). Paths are
@@ -49,7 +52,7 @@ typedef struct {
     char password[12];                 /* "" when off */
     char error[96];                    /* why it stopped / couldn't start ("" = fine) */
     int clients;                       /* connections being served now */
-    uint32_t requests, uploads, downloads, deletes;
+    uint32_t requests, uploads, downloads, deletes, clipboards;
     uint64_t bytes_in, bytes_out;      /* file data uploaded / downloaded */
     int64_t last_time;                 /* time() of the last change / download, 0 = none */
     char last[128];                    /* "Uploaded /notes/a.md (12 KB)" */
