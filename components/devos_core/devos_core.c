@@ -124,6 +124,15 @@ devos_app_descriptor_t *devos_core_known_app_at(int index)
     return index >= 0 && index < known_count ? known_apps[index] : NULL;
 }
 
+devos_app_descriptor_t *devos_core_find_known_app(const char *uid)
+{
+    if (!uid) return NULL;
+    for (int i = 0; i < known_count; i++) {
+        if (known_apps[i] && known_apps[i]->uid && strcmp(known_apps[i]->uid, uid) == 0) return known_apps[i];
+    }
+    return NULL;
+}
+
 static void init_app(devos_app_descriptor_t *app)
 {
     if (!app->init) return;

@@ -144,7 +144,7 @@ tab5-devos/
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
 └── tools/
-    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, palette, ota, vterm, crypto, cricket, fileshare).
+    ├── *_test.c                   # Host-side unit tests (md_preview, modular_launcher, apps_mask, palette, ota, vterm, crypto, fileshare).
     │                              # Run from an ISOLATED CWD — engine tests persist
     │                              # sim config JSON relative to CWD. See each file's
     │                              # header for its exact gcc line.

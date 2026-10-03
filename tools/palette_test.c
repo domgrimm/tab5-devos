@@ -25,7 +25,6 @@ static const char *const E[][2] = {
     { "REST", "rest REST network REST & webhook client" },
     { "Docker", "docker Docker network Containers" },
     { "ADS-B Radar", "adsb ADS-B network Aircraft overhead" },
-    { "Cricket", "cricket Cricket tools Live scores" },
     { "Authenticator", "totp 2FA security Offline TOTP codes" },
     { "Home Screen", "launcher Launcher system" },
     { "Share the SD card (File Sharing)", "File Sharing share sharing sd card files web browser upload download" },
@@ -73,7 +72,6 @@ int main(void)
     expect("doc", "Docker");
     expect("totp", "Authenticator");
     expect("auth", "Authenticator");
-    expect("cric", "Cricket");
     expect("adsb", "ADS-B Radar");
     expect("radar", "ADS-B Radar");
     expect("theme", "Switch to the light theme");

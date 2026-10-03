@@ -2,8 +2,9 @@
  *
  * Stored in NVS namespace "apps" (simulator: <sd>/.devos/apps.cfg), strings:
  *   off    comma-separated uids switched off - what the next boot uses
- *   good   the last "off" that kept the Home Screen up for 15 s
- *   tries  boots started with an "off" that isn't "good" yet
+ *   on     comma-separated uids switched on that default to off (hidden apps)
+ *   good   the last "off"/"on" that kept the Home Screen up for 15 s
+ *   tries  boots started with masks that aren't "good" yet
  *   cost   uid=sram/psram,... bytes each app took at start (last measured)
  * A changed mask gets MAX_TRIES boots to reach devos_core_apps_boot_ok();
  * after that the next boot puts "good" back. */
@@ -25,8 +26,10 @@
 #define COST_CAP   1536
 #define MAX_TRIES  2
 
-static char s_off_now[MASK_CAP];        /* this boot */
+static char s_off_now[MASK_CAP];        /* this boot: uids switched off */
 static char s_off_next[MASK_CAP];       /* after the next restart */
+static char s_on_now[MASK_CAP];         /* this boot: default-off apps switched on */
+static char s_on_next[MASK_CAP];        /* after the next restart */
 static bool s_loaded;
 static devos_apps_boot_t s_boot_kind = DEVOS_APPS_BOOT_NORMAL;
 
@@ -87,15 +90,15 @@ static bool kv_get(const char *key, char *out, size_t cap)
 
 static void kv_set(const char *key, const char *val)
 {
-    static const char *const keys[] = { "off", "good", "tries", "cost" };
-    static char vals[4][COST_CAP];
-    for (int i = 0; i < 4; i++) {
+    static const char *const keys[] = { "off", "on", "good", "good_on", "tries", "cost" };
+    static char vals[6][COST_CAP];
+    for (int i = 0; i < 6; i++) {
         if (strcmp(keys[i], key) == 0) snprintf(vals[i], sizeof(vals[i]), "%s", val);
         else kv_get(keys[i], vals[i], sizeof(vals[i]));
     }
     FILE *f = fopen(APPS_FILE, "w");
     if (!f) return;
-    for (int i = 0; i < 4; i++) fprintf(f, "%s=%s\n", keys[i], vals[i]);
+    for (int i = 0; i < 6; i++) fprintf(f, "%s=%s\n", keys[i], vals[i]);
     fclose(f);
 }
 #endif
@@ -272,25 +275,34 @@ void devos_core_apps_load(bool safe_start)
     if (s_loaded) return;
     s_loaded = true;
     char good[MASK_CAP], tries_s[12];
+    char good_on[MASK_CAP] = "";
     kv_get("off", s_off_now, sizeof(s_off_now));
+    kv_get("on", s_on_now, sizeof(s_on_now));
     kv_get("good", good, sizeof(good));        /* none yet: all on */
+    kv_get("good_on", good_on, sizeof(good_on));
     kv_get("tries", tries_s, sizeof(tries_s));
 
     if (safe_start) {
         printf("[devOS] Safe start: every app switched back on\n");
         s_off_now[0] = '\0';
+        s_on_now[0] = '\0';
         kv_set("off", "");
+        kv_set("on", "");
         kv_set("good", "");
+        kv_set("good_on", "");
         kv_set("tries", "0");
         s_boot_kind = DEVOS_APPS_BOOT_SAFE;
-    } else if (!mask_equal(s_off_now, good)) {
+    } else if (!mask_equal(s_off_now, good) || !mask_equal(s_on_now, good_on)) {
         int tries = atoi(tries_s) + 1;
         if (tries > MAX_TRIES) {
-            printf("[devOS] Apps: the new switches (off: %s) never reached the Home Screen; "
-                   "putting back the last ones that did (off: %s)\n",
-                   s_off_now[0] ? s_off_now : "none", good[0] ? good : "none");
+            printf("[devOS] Apps: the new switches (off: %s, on: %s) never reached the Home Screen; "
+                   "putting back the last ones that did (off: %s, on: %s)\n",
+                   s_off_now[0] ? s_off_now : "none", s_on_now[0] ? s_on_now : "none",
+                   good[0] ? good : "none", good_on[0] ? good_on : "none");
             snprintf(s_off_now, sizeof(s_off_now), "%s", good);
+            snprintf(s_on_now, sizeof(s_on_now), "%s", good_on);
             kv_set("off", good);
+            kv_set("on", good_on);
             kv_set("tries", "0");
             s_boot_kind = DEVOS_APPS_BOOT_REVERTED;
         } else {
@@ -299,7 +311,9 @@ void devos_core_apps_load(bool safe_start)
         }
     }
     snprintf(s_off_next, sizeof(s_off_next), "%s", s_off_now);
+    snprintf(s_on_next, sizeof(s_on_next), "%s", s_on_now);
     if (s_off_now[0]) printf("[devOS] Apps switched off: %s\n", s_off_now);
+    if (s_on_now[0]) printf("[devOS] Hidden apps switched on: %s\n", s_on_now);
     costs_load();
 }
 
@@ -310,41 +324,64 @@ bool devos_core_app_required(const char *uid)
     return !uid || !*uid || strcmp(uid, "launcher") == 0 || strcmp(uid, "settings") == 0;
 }
 
+/* A hidden (default-off) app is off until its uid appears in the "on" mask.
+ * The "off" mask still wins, so switching it off from Settings holds. */
+static bool mask_enabled(const char *off, const char *on, const char *uid)
+{
+    if (mask_has(off, uid)) return false;
+    if (mask_has(on, uid)) return true;
+    devos_app_descriptor_t *a = devos_core_find_known_app(uid);
+    return a ? !a->default_off : true;
+}
+
 bool devos_core_app_enabled(const char *uid)
 {
-    return devos_core_app_required(uid) || !mask_has(s_off_now, uid);
+    return devos_core_app_required(uid) || mask_enabled(s_off_now, s_on_now, uid);
 }
 
 bool devos_core_app_enabled_next(const char *uid)
 {
-    return devos_core_app_required(uid) || !mask_has(s_off_next, uid);
+    return devos_core_app_required(uid) || mask_enabled(s_off_next, s_on_next, uid);
 }
 
 void devos_core_set_app_enabled_next(const char *uid, bool on)
 {
     if (devos_core_app_required(uid) || devos_core_app_enabled_next(uid) == on) return;
-    mask_set(s_off_next, sizeof(s_off_next), uid, !on);
+    devos_app_descriptor_t *a = devos_core_find_known_app(uid);
+    bool hidden = a && a->default_off;
+    if (on) {
+        /* switch off the "off" entry, and (for a hidden app) add an "on" one */
+        mask_set(s_off_next, sizeof(s_off_next), uid, false);
+        if (hidden) mask_set(s_on_next, sizeof(s_on_next), uid, true);
+    } else {
+        mask_set(s_off_next, sizeof(s_off_next), uid, true);
+        if (hidden) mask_set(s_on_next, sizeof(s_on_next), uid, false);
+    }
     kv_set("off", s_off_next);
+    kv_set("on", s_on_next);
     kv_set("tries", "0");                      /* a fresh mask gets its own tries */
 }
 
 bool devos_core_apps_restart_pending(void)
 {
-    return !mask_equal(s_off_now, s_off_next);
+    return !mask_equal(s_off_now, s_off_next) || !mask_equal(s_on_now, s_on_next);
 }
 
 void devos_core_apps_boot_ok(void)
 {
-    char good[MASK_CAP];
-    kv_get("good", good, sizeof(good));
-    if (!mask_equal(good, s_off_now)) {
+    char good_off[MASK_CAP], good_on[MASK_CAP];
+    kv_get("good", good_off, sizeof(good_off));
+    kv_get("good_on", good_on, sizeof(good_on));
+    if (!mask_equal(good_off, s_off_now) || !mask_equal(good_on, s_on_now)) {
         kv_set("good", s_off_now);
+        kv_set("good_on", s_on_now);
         printf("[devOS] Apps: these switches boot fine; kept as the fallback\n");
     }
     /* the running mask proved itself; a pending one keeps its own count */
     char tries_s[12];
     kv_get("tries", tries_s, sizeof(tries_s));
-    if (mask_equal(s_off_now, s_off_next) && tries_s[0] && strcmp(tries_s, "0") != 0) kv_set("tries", "0");
+    if (mask_equal(s_off_now, s_off_next) && mask_equal(s_on_now, s_on_next) &&
+        tries_s[0] && strcmp(tries_s, "0") != 0) kv_set("tries", "0");
     costs_save_if_changed();
 }
 

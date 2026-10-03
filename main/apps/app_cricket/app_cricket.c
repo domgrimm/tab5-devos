@@ -593,5 +593,6 @@ devos_app_descriptor_t *app_cricket_get_descriptor(void)
     s_desc.handle_key = cricket_key;
     s_desc.get_telemetry_lines = cricket_telemetry;
     s_desc.get_shortcuts = cricket_shortcuts;
+    s_desc.default_off = true;                      /* hidden: off until enabled in Settings > Apps */
     return &s_desc;
 }

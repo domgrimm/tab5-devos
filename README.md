@@ -31,7 +31,6 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop |
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
-| **Cricket** | Live scores, results and full scorecards from ESPNcricinfo, for today or any day back to the first Test in 1877 |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
 | **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
@@ -120,7 +119,7 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 | `devos_hashfile` | Streams a file off the SD card through a hash on core 0, with progress and result getters |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 
-The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_hashfile`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
+The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_netdiag`, `devos_hashfile`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
 
 ### Keyboard first
 
@@ -325,7 +324,7 @@ Your keyboard stands in for the Tab5's; as a PC keyboard has no Sym key, **Ctrl 
 
 ### Tests
 
-Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, command palette search, OTA, terminal emulator, crypto and the Coder's Toolkit core, cricket parsers, Wake-on-LAN packets, and an end-to-end run of the file-sharing server over real sockets). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
+Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, command palette search, OTA, terminal emulator, crypto and the Coder's Toolkit core, Wake-on-LAN packets, and an end-to-end run of the file-sharing server over real sockets). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
 
 ---
 
@@ -366,7 +365,6 @@ components/
   devos_mqtt/  devos_docker/  devos_adsb/                          feature engines
   devos_netdiag/     ping, DNS, port scan, mDNS, Wi-Fi survey, Wake-on-LAN
   devos_maptiles/    OpenStreetMap tiles: fetch one at a time, cache on SD
-  devos_cricket/     ESPNcricinfo match lists and scorecards
   devos_hashfile/    stream a file off the SD card through a hash (core 0)
   devos_totp/  devos_wireguard/  devos_tailnet/  devos_audio/  devos_qr/
   libssh2_port/      SSH client glue (libssh2 from the component registry)
