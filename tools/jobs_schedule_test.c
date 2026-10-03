@@ -322,6 +322,51 @@ int main(void)
         CHECK(st.published == before + 2);             /* fires again after re-arm */
     }
 
+    /* ================= VPN event bridge ================= */
+    /* Tailscale/WireGuard transitions only; the state was primed false above. */
+    {
+        devos_events_stats_t st; devos_events_stats(&st);
+        uint32_t before = st.published;
+        devos_jobs_system_t s; memset(&s, 0, sizeof(s));
+        s.wifi_connected = true;                       /* keep Wi-Fi steady */
+        s.tailscale_online = true;
+        snprintf(s.tailscale_ip, sizeof(s.tailscale_ip), "100.64.0.5");
+        snprintf(s.tailscale_hostname, sizeof(s.tailscale_hostname), "tab5");
+        jobs_events_poll(&s);
+        devos_events_stats(&st);
+        CHECK(st.published == before + 1);             /* tailscale connected */
+        s.wireguard_online = true;
+        snprintf(s.wireguard_name, sizeof(s.wireguard_name), "home");
+        snprintf(s.wireguard_address, sizeof(s.wireguard_address), "10.8.0.2/24");
+        jobs_events_poll(&s);
+        devos_events_stats(&st);
+        CHECK(st.published == before + 2);             /* wireguard up */
+        s.wireguard_online = false;
+        jobs_events_poll(&s);
+        devos_events_stats(&st);
+        CHECK(st.published == before + 3);             /* wireguard down */
+        s.tailscale_online = false;
+        jobs_events_poll(&s);
+        devos_events_stats(&st);
+        CHECK(st.published == before + 4);             /* tailscale disconnected */
+        jobs_events_poll(&s);
+        devos_events_stats(&st);
+        CHECK(st.published == before + 4);             /* steady state: no repeat */
+    }
+
+    /* a job can trigger on a VPN topic and read the payload */
+    disable_all();
+    apply_ok("wgjob", "version 1;\njob \"wgjob\" {\n"
+                      " trigger event \"network.wireguard_up\" where contains(event.payload, \"home\");\n"
+                      " system.log(message: \"tunnel ${event.topic}\");\n}\n");
+    CHECK(devos_jobs_set_enabled("wgjob", true) == DEVOS_OK);
+    base = log_count();
+    { devos_event_t ev; memset(&ev, 0, sizeof(ev));
+      snprintf(ev.topic, sizeof(ev.topic), "network.wireguard_up");
+      devos_events_publish(&ev, "{\"name\":\"home\"}", 15); }
+    devos_jobs_tick();
+    CHECK(strcmp(last_log(), "tunnel network.wireguard_up") == 0);
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

@@ -81,6 +81,15 @@ typedef struct {
     char     wifi_ssid[33];
     char     local_ip[20];
     int8_t   wifi_rssi;
+    /* VPN status for network.tailscale_* / network.wireguard_* events and the
+     * matching system.* expression fields. Filled by the boot bridge from the
+     * owning engine's thread-safe getter (never GUI telemetry). */
+    bool     tailscale_online;
+    char     tailscale_ip[16];
+    char     tailscale_hostname[40];
+    bool     wireguard_online;
+    char     wireguard_name[32];
+    char     wireguard_address[32];
     bool     time_valid;
     /* Wall clock for daily/weekdays schedules. `wall_unix_s` is UTC seconds;
      * local time = wall_unix_s + tz_offset_s. `tz_generation` bumps on a

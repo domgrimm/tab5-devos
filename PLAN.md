@@ -507,12 +507,12 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     outcome-unknown. The Builder and the validator read the same schemas - there is no hand-coded
     GUI parameter table.
 *   **Events (`devos_events`).** Bounded typed topics (`system.boot`, Wi-Fi connect/disconnect,
-    battery-below, `mqtt.message`, ...) with sequence, timestamps, provider and correlation id;
-    publish is nonblocking, drops are counted, and payloads are copied (never a pointer into a
-    reused ring). `system.boot` fires once per normal boot, after the ready barrier. The
-    `jobs_events` bridge in `main/` produces the system topics (boot, Wi-Fi/battery transitions
-    from the 1 Hz loop); an event trigger takes an optional `where` filter over `event.*` and a
-    bounded `debounce`.
+    Tailscale connect/disconnect, WireGuard up/down, battery-below, `mqtt.message`, ...) with
+    sequence, timestamps, provider and correlation id; publish is nonblocking, drops are counted,
+    and payloads are copied (never a pointer into a reused ring). `system.boot` fires once per
+    normal boot, after the ready barrier. The `jobs_events` bridge in `main/` produces the system
+    topics (boot, Wi-Fi/battery/VPN transitions from the 1 Hz loop); an event trigger takes an
+    optional `where` filter over `event.*` and a bounded `debounce`.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -838,6 +838,13 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       is bounded (16-entry queue) and drops are counted, surfaced in the Jobs telemetry tile.
       `tools/jobs_schedule_test.c` (58 checks) covers daily/weekdays, DST, clock/timezone changes,
       event match/filter/debounce and the bridge semantics.
+- [x] **Phase 6b** - VPN/network-status events. `network.tailscale_connected` / `_disconnected`
+      and `network.wireguard_up` / `_down` are registered by the `jobs_events` bridge and published
+      on real transitions (the first snapshot primes; the engines are read through
+      `devos_tailnet_get_info` / `devos_wg_get_info`, safe when off). The engine snapshot gains
+      `tailscale_online`/`ip`/`hostname` and `wireguard_online`/`name`/`address`, also readable as
+      `system.tailscale_*` / `system.wireguard_*` in expressions. `tools/jobs_schedule_test.c` now
+      covers the VPN transitions and a `network.wireguard_up` triggered job.
 - [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
 - [ ] **Phase 8** - Docker background operation integration.
 - [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional

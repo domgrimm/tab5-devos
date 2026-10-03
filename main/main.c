@@ -394,6 +394,18 @@ static void jobs_sync_system(void)
     memcpy(j.wifi_ssid, s.wifi_ssid, sizeof(j.wifi_ssid));
     memcpy(j.local_ip, s.local_ip, sizeof(j.local_ip));
     j.wifi_rssi = s.wifi_rssi;
+    /* VPN status straight from the owning engines' thread-safe getters (safe
+     * when the engine is off / never initialised). */
+    devos_ts_info_t ts;
+    devos_tailnet_get_info(&ts);
+    j.tailscale_online = (ts.state == DEVOS_TS_CONNECTED);
+    snprintf(j.tailscale_ip, sizeof(j.tailscale_ip), "%s", ts.ip);
+    snprintf(j.tailscale_hostname, sizeof(j.tailscale_hostname), "%s", ts.hostname);
+    devos_wg_info_t wg;
+    devos_wg_get_info(&wg);
+    j.wireguard_online = (wg.state == DEVOS_WG_UP);
+    snprintf(j.wireguard_name, sizeof(j.wireguard_name), "%s", wg.name);
+    snprintf(j.wireguard_address, sizeof(j.wireguard_address), "%s", wg.address);
     j.time_valid = s.time_valid;
     j.wall_unix_s = s.wall_unix_s;
     j.tz_offset_s = s.tz_offset_s;

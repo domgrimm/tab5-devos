@@ -18,6 +18,8 @@
 static bool s_wifi_seen;         /* the first snapshot is not a transition */
 static bool s_wifi_conn;
 static bool s_batt_armed = true;
+static bool s_vpn_seen;          /* Tailscale/WireGuard, same rule */
+static bool s_ts_conn, s_wg_up;
 
 static const devos_event_schema_t BOOT_S = {
     .topic = "system.boot",
@@ -39,6 +41,26 @@ static const devos_event_schema_t BATT_LOW_S = {
     .fields = "percent:int,charging:boolean",
     .description = "Battery dropped to/below the low threshold (valid, present)",
 };
+static const devos_event_schema_t TS_UP_S = {
+    .topic = "network.tailscale_connected",
+    .fields = "ip:string,hostname:string",
+    .description = "Tailscale reached CONNECTED (transition only)",
+};
+static const devos_event_schema_t TS_DOWN_S = {
+    .topic = "network.tailscale_disconnected",
+    .fields = "hostname:string",
+    .description = "Tailscale left CONNECTED (transition only)",
+};
+static const devos_event_schema_t WG_UP_S = {
+    .topic = "network.wireguard_up",
+    .fields = "name:string,address:string",
+    .description = "A WireGuard tunnel completed its handshake (transition only)",
+};
+static const devos_event_schema_t WG_DOWN_S = {
+    .topic = "network.wireguard_down",
+    .fields = "name:string",
+    .description = "A WireGuard tunnel went down (transition only)",
+};
 
 void jobs_events_register(void)
 {
@@ -46,6 +68,10 @@ void jobs_events_register(void)
     devos_events_register_topic(&WIFI_UP_S);
     devos_events_register_topic(&WIFI_DOWN_S);
     devos_events_register_topic(&BATT_LOW_S);
+    devos_events_register_topic(&TS_UP_S);
+    devos_events_register_topic(&TS_DOWN_S);
+    devos_events_register_topic(&WG_UP_S);
+    devos_events_register_topic(&WG_DOWN_S);
 }
 
 static void publish(const char *topic, const char *provider, const char *payload)
@@ -97,5 +123,34 @@ void jobs_events_poll(const devos_jobs_system_t *s)
         } else if (!s_batt_armed && s->battery_percent >= JOBS_BATT_REARM_PCT) {
             s_batt_armed = true;
         }
+    }
+
+    /* VPN: Tailscale/WireGuard transitions only; the first snapshot primes. */
+    if (!s_vpn_seen) {
+        s_vpn_seen = true;
+        s_ts_conn = s->tailscale_online;
+        s_wg_up = s->wireguard_online;
+        return;
+    }
+    char payload[160];
+    if (s->tailscale_online != s_ts_conn) {
+        s_ts_conn = s->tailscale_online;
+        if (s->tailscale_online)
+            snprintf(payload, sizeof(payload), "{\"ip\":\"%.15s\",\"hostname\":\"%.39s\"}",
+                     s->tailscale_ip, s->tailscale_hostname);
+        else
+            snprintf(payload, sizeof(payload), "{\"hostname\":\"%.39s\"}", s->tailscale_hostname);
+        publish(s->tailscale_online ? "network.tailscale_connected"
+                                    : "network.tailscale_disconnected", "tailnet", payload);
+    }
+    if (s->wireguard_online != s_wg_up) {
+        s_wg_up = s->wireguard_online;
+        if (s->wireguard_online)
+            snprintf(payload, sizeof(payload), "{\"name\":\"%.31s\",\"address\":\"%.31s\"}",
+                     s->wireguard_name, s->wireguard_address);
+        else
+            snprintf(payload, sizeof(payload), "{\"name\":\"%.31s\"}", s->wireguard_name);
+        publish(s->wireguard_online ? "network.wireguard_up"
+                                    : "network.wireguard_down", "wireguard", payload);
     }
 }

@@ -241,9 +241,11 @@ devos_events_publish(&ev, "{\"pressed\":true}", 15);        /* payload is copied
 ```
 
 A job then writes `trigger event "myapp.doorbell" where contains(event.payload, "true");`. The
-core system topics - `system.boot`, `network.wifi_connected` / `network.wifi_disconnected` and
-`system.battery_below` - are produced by the `jobs_events` bridge in `main/`; a new core system
-transition belongs there, while an app's own transitions belong in the owning engine.
+core system topics - `system.boot`, `network.wifi_connected` / `network.wifi_disconnected`,
+`network.tailscale_connected` / `network.tailscale_disconnected`, `network.wireguard_up` /
+`network.wireguard_down` and `system.battery_below` - are produced by the `jobs_events` bridge in
+`main/`; a new core system transition belongs there, while an app's own transitions belong in the
+owning engine.
 
 A UI-only app (no automatable operations) declares that intent in its README/descriptor notes and
 registers nothing. "Jobs-compatible" is a tested contract, not a label applied automatically.

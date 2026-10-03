@@ -78,6 +78,12 @@ static bool sys_ref(const char *field, devos_value_t *out)
     if (strcmp(field, "wifi_ssid") == 0)       { out->type = DEVOS_VAL_STR; out->v.str.s = s->wifi_ssid; out->v.str.len = (uint32_t)strlen(s->wifi_ssid); return true; }
     if (strcmp(field, "local_ip") == 0)        { out->type = DEVOS_VAL_STR; out->v.str.s = s->local_ip; out->v.str.len = (uint32_t)strlen(s->local_ip); return true; }
     if (strcmp(field, "wifi_rssi") == 0)       { out->type = DEVOS_VAL_INT; out->v.i = s->wifi_rssi; return true; }
+    if (strcmp(field, "tailscale_online") == 0)   { out->type = DEVOS_VAL_BOOL; out->v.b = s->tailscale_online; return true; }
+    if (strcmp(field, "tailscale_ip") == 0)       { out->type = DEVOS_VAL_STR; out->v.str.s = s->tailscale_ip; out->v.str.len = (uint32_t)strlen(s->tailscale_ip); return true; }
+    if (strcmp(field, "tailscale_hostname") == 0) { out->type = DEVOS_VAL_STR; out->v.str.s = s->tailscale_hostname; out->v.str.len = (uint32_t)strlen(s->tailscale_hostname); return true; }
+    if (strcmp(field, "wireguard_online") == 0)   { out->type = DEVOS_VAL_BOOL; out->v.b = s->wireguard_online; return true; }
+    if (strcmp(field, "wireguard_name") == 0)     { out->type = DEVOS_VAL_STR; out->v.str.s = s->wireguard_name; out->v.str.len = (uint32_t)strlen(s->wireguard_name); return true; }
+    if (strcmp(field, "wireguard_address") == 0)  { out->type = DEVOS_VAL_STR; out->v.str.s = s->wireguard_address; out->v.str.len = (uint32_t)strlen(s->wireguard_address); return true; }
     if (strcmp(field, "uptime_s") == 0)        { out->type = DEVOS_VAL_INT; out->v.i = s->uptime_s; return true; }
     if (strcmp(field, "time_valid") == 0)      { out->type = DEVOS_VAL_BOOL; out->v.b = s->time_valid; return true; }
     if (strcmp(field, "psram_free_kb") == 0)   { out->type = DEVOS_VAL_INT; out->v.i = s->psram_free_kb; return true; }
