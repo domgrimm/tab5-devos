@@ -794,8 +794,15 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       `tools/jobs_runtime_test.c` (39 checks) with a fake clock and fake providers: negative-result
       branching, two jobs advancing while one waits, first-run-after-one-interval, cancel,
       revision retain/release and pause.
-- [ ] **Phase 4** - durable storage and recovery: Core 1 storage worker, immutable revisions +
-      referenced catalog, history rotation, drafts, conflicts, SD degraded mode, safe-start pause.
+- [x] **Phase 4** - durable storage and recovery. `jobs_store` writes an immutable revision then
+      rotates the catalog through `.prev`; load picks a complete, valid generation with newest-first
+      previous fallback; the public `jobs/<id>.job` is a non-authoritative projection (external edits
+      are candidates, never auto-run); bounded, rotated history; the storage bootstrap scaffolds the
+      Jobs folders and disabled example starters. SD absent / write failure degrades to RAM-only
+      without crashing. Engine load/apply/enable/delete persist through the store. Failure injected
+      at every commit boundary leaves the previous revision authoritative (`tools/jobs_store_test.c`,
+      51 checks). Remaining: the Core 1 storage-worker offload, explicit draft checkpoints, base-revision
+      conflict detection, safe-start automatic pause, and restart/shutdown quiescence.
 - [ ] **Phase 5** - first complete GUI + Text release: list, schema-driven Builder, dedicated Text
       view, diagnostics, Apply/Enable, Run/Cancel, trace/history, icon/telemetry/palette. **Gate:
       README, PLAN and AGENTS updated and the Template compatibility fixture added.**

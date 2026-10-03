@@ -83,6 +83,30 @@ static const char *WELCOME_MD_CONTENT =
 /* Saved SSH hosts start empty: add them from the Terminal app. */
 static const char *BOOKMARKS_JSON_CONTENT = "[\n]\n";
 
+/* Disabled Jobs starters (imported explicitly, never scheduled by discovery). */
+static const char *JOB_EXAMPLE_NAS =
+    "version 1;\n"
+    "job \"NAS health check\" {\n"
+    "    trigger every 5m;\n"
+    "    network.ping(host: \"nas.local\", timeout: 3s) as nas;\n"
+    "    if !nas.ok {\n"
+    "        system.notify(message: \"NAS offline\", level: \"warning\");\n"
+    "    } else {\n"
+    "        system.log(message: \"NAS responded in ${nas.latency_ms} ms\");\n"
+    "    }\n"
+    "}\n";
+
+static const char *JOB_EXAMPLE_WEB =
+    "version 1;\n"
+    "job \"Website monitor\" {\n"
+    "    trigger every 2m;\n"
+    "    http.request(method: \"GET\", url: \"https://example.com/health\",\n"
+    "                 timeout: 10s, max_body: 4096) as response;\n"
+    "    if !response.ok || response.status != 200 {\n"
+    "        system.notify(message: \"Website failed: ${response.status}\", level: \"error\");\n"
+    "    }\n"
+    "}\n";
+
 static void make_dir_if_missing(const char *path)
 {
     struct stat st;
@@ -132,6 +156,20 @@ bool devos_storage_bootstrap(const char *mount_point)
     snprintf(path_buf, sizeof(path_buf), "%s/.devos/logs", mount_point);
     make_dir_if_missing(path_buf);
 
+    /* Jobs: public source + examples, and the private revision/catalog tree. */
+    snprintf(path_buf, sizeof(path_buf), "%s/jobs", mount_point);
+    make_dir_if_missing(path_buf);
+    snprintf(path_buf, sizeof(path_buf), "%s/jobs/examples", mount_point);
+    make_dir_if_missing(path_buf);
+    snprintf(path_buf, sizeof(path_buf), "%s/.devos/jobs", mount_point);
+    make_dir_if_missing(path_buf);
+    snprintf(path_buf, sizeof(path_buf), "%s/.devos/jobs/revisions", mount_point);
+    make_dir_if_missing(path_buf);
+    snprintf(path_buf, sizeof(path_buf), "%s/.devos/jobs/history", mount_point);
+    make_dir_if_missing(path_buf);
+    snprintf(path_buf, sizeof(path_buf), "%s/.devos/jobs/drafts", mount_point);
+    make_dir_if_missing(path_buf);
+
     /* 3. Scaffold starter template files */
     snprintf(path_buf, sizeof(path_buf), "%s/notes/welcome.md", mount_point);
     write_file_if_missing(path_buf, WELCOME_MD_CONTENT);
@@ -147,6 +185,12 @@ bool devos_storage_bootstrap(const char *mount_point)
 
     snprintf(path_buf, sizeof(path_buf), "%s/.devos/config.json", mount_point);
     write_file_if_missing(path_buf, "{\n  \"theme\": \"dark\"\n}\n");
+
+    snprintf(path_buf, sizeof(path_buf), "%s/jobs/examples/nas-check.job", mount_point);
+    write_file_if_missing(path_buf, JOB_EXAMPLE_NAS);
+
+    snprintf(path_buf, sizeof(path_buf), "%s/jobs/examples/website-monitor.job", mount_point);
+    write_file_if_missing(path_buf, JOB_EXAMPLE_WEB);
 
     return true;
 }

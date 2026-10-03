@@ -5,11 +5,12 @@
  * run-now overlap refusal, cancel, and revision retain/release.
  *
  *   gcc -O2 -Icomponents/devos_jobs -Icomponents/devos_actions -Icomponents/devos_err \
- *       -Imain/jobs_providers tools/jobs_runtime_test.c \
+ *       -Icomponents/devos_json -Imain/jobs_providers tools/jobs_runtime_test.c \
  *       components/devos_jobs/jobs_model.c components/devos_jobs/jobs_parse.c \
  *       components/devos_jobs/jobs_validate.c components/devos_jobs/jobs_serialize.c \
  *       components/devos_jobs/jobs_platform.c components/devos_jobs/jobs_runtime.c \
- *       components/devos_jobs/jobs_schedule.c components/devos_actions/devos_actions.c \
+ *       components/devos_jobs/jobs_schedule.c components/devos_jobs/jobs_store.c \
+ *       components/devos_actions/devos_actions.c components/devos_json/devos_json.c \
  *       main/jobs_providers/jobs_system.c -lpthread -o /tmp/jobs_runtime_test && /tmp/jobs_runtime_test
  */
 #include "devos_jobs.h"

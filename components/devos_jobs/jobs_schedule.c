@@ -3,6 +3,7 @@
  * drive devos_jobs_tick() with a fake clock. No LVGL. */
 #include "jobs_internal.h"
 #include "jobs_platform.h"
+#include "jobs_store.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,9 @@
 #endif
 #ifndef EXT_RAM_BSS_ATTR
 #define EXT_RAM_BSS_ATTR
+#endif
+#ifndef TAB5_SD_MOUNT_POINT
+#define TAB5_SD_MOUNT_POINT "./sim_sdcard"
 #endif
 
 jobs_engine_t g_jobs EXT_RAM_BSS_ATTR;
@@ -61,12 +65,47 @@ static void scheduler_loop(void *arg)
 }
 #endif
 
+/* Load callback: parse + validate a stored revision, then install it. */
+static bool load_cb(const char *id, const char *source, size_t len, bool enabled,
+                    uint32_t revision, void *user)
+{
+    (void)user;
+    jobs_ast_t *ast = jobs_parse(source, len, NULL);
+    if (!ast) return false;
+    if (!jobs_validate(ast)) { jobs_ast_free(ast); return false; }
+    jobs_job_t *j = jobs_find(id);
+    if (!j) {
+        j = job_alloc();
+        if (!j) { jobs_ast_free(ast); return false; }
+        memset(j, 0, sizeof(*j));
+        j->used = true;
+        snprintf(j->id, sizeof(j->id), "%s", id);
+    }
+    if (j->run.active) { jobs_ast_free(ast); return false; }
+    if (j->ast) jobs_ast_release(j->ast);
+    j->ast = ast;
+    j->revision = revision;
+    snprintf(j->name, sizeof(j->name), "%s", ast->root->u.str.s ? ast->root->u.str.s : id);
+    const jobs_node_t *trig = ast->root->a;
+    j->trigger_kind = trig ? trig->sub : JTRIG_MANUAL;
+    j->interval_ms = (trig && trig->sub == JTRIG_EVERY) ? trig->u.i : 0;
+    j->enabled = enabled;
+    if (enabled && j->trigger_kind == JTRIG_EVERY && j->interval_ms > 0) {
+        j->has_next = true;
+        j->next_due_ms = jobs_now_ms() + j->interval_ms;
+    }
+    return true;
+}
+
 bool devos_jobs_init(void)
 {
     jobs_platform_init();
     memset(&g_jobs, 0, sizeof(g_jobs));
     g_jobs.state = DEVOS_JOBS_READY;
-    g_jobs.ready = true;                 /* no durable load yet (Phase 4) */
+    g_jobs.ready = true;                 /* durable load is best-effort below */
+    if (jobs_store_init(TAB5_SD_MOUNT_POINT)) {
+        jobs_store_load(load_cb, NULL);
+    }
 #ifdef ESP_PLATFORM
     if (!jobs_platform_start_scheduler(scheduler_loop, NULL)) {
         g_jobs.state = DEVOS_JOBS_OFF;
@@ -167,10 +206,22 @@ devos_err_t devos_jobs_apply(const char *id, const char *source, size_t len, uin
     }
 
     /* An active run retains its own reference to the revision it started with,
-     * so replacing j->ast here is safe (PLAN.md 5.3). */
+     * so replacing j->ast here is safe (PLAN.md 5.3). Commit to durable storage
+     * first: if that fails, the previous revision stays authoritative. */
+    uint32_t new_rev = j->revision + 1;
+    bool new_enabled = existed ? j->enabled : false;
+    if (jobs_store_available()) {
+        devos_err_t rc = jobs_store_commit(id, source, len, new_rev, new_enabled);
+        if (rc != DEVOS_OK) {
+            jobs_ast_free(ast);
+            if (!existed) j->used = false;
+            return rc;
+        }
+    }
+
     if (j->ast) jobs_ast_release(j->ast);
     j->ast = ast;
-    j->revision++;
+    j->revision = new_rev;
     snprintf(j->name, sizeof(j->name), "%s", ast->root->u.str.s ? ast->root->u.str.s : id);
 
     const jobs_node_t *trig = ast->root->a;
@@ -195,6 +246,10 @@ devos_err_t devos_jobs_set_enabled(const char *id, bool enabled)
         j->next_due_ms = jobs_now_ms() + j->interval_ms;   /* first run after one interval */
     } else if (!enabled) {
         j->has_next = false;
+    }
+    if (jobs_store_available()) {
+        devos_err_t rc = jobs_store_set_enabled(id, enabled);
+        if (rc != DEVOS_OK && rc != DEVOS_ERR_INVALID_STATE) return rc;
     }
     return DEVOS_OK;
 }
@@ -223,6 +278,7 @@ devos_err_t devos_jobs_delete(const char *id)
     jobs_job_t *j = jobs_find(id);
     if (!j) return DEVOS_ERR_NOT_FOUND;
     if (j->run.active) return DEVOS_ERR_INVALID_STATE;      /* cancel/finish first */
+    if (jobs_store_available()) jobs_store_remove(id);
     if (j->ast) jobs_ast_release(j->ast);
     memset(j, 0, sizeof(*j));
     return DEVOS_OK;
