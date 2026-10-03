@@ -70,6 +70,8 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_cricket
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_crypto
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_hashfile
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_actions
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_jobs
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_audio
     )
@@ -152,6 +154,11 @@ else()
         components/devos_cricket/devos_cricket.c
         components/devos_crypto/devos_crypto.c
         components/devos_hashfile/devos_hashfile.c
+        components/devos_actions/devos_actions.c
+        components/devos_jobs/jobs_model.c
+        components/devos_jobs/jobs_parse.c
+        components/devos_jobs/jobs_validate.c
+        components/devos_jobs/jobs_serialize.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c
     )

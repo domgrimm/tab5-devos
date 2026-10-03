@@ -480,6 +480,61 @@ services in the REST client).
     Enter on a container that publishes port 22 (or 2222) opens SSH to it on the Docker host, W
     opens its first published web port (80, 443, 8080, 5000 ...) in REST.
 
+### 3.18 Jobs: persistent keyboard-first automation (`devos_jobs`, `devos_actions`, `devos_events`, `devos_secrets`, `app_jobs`)
+
+Jobs runs small automations on a schedule or an event, independent of the visible app, and lets
+them be built either from a schema-driven GUI Builder or as text - both over one definition.
+
+*   **One definition, several representations.** Persisted authority is a UTF-8 `.job` source
+    plus a versioned catalog recording the active revision and enabled state; execution authority
+    is the immutable, validated AST; the Builder is a draft projection of the same language. The
+    Builder and the Text view never hold independent executable definitions. Apply is
+    transactional and never silently overwrites a stale editor. New, imported and duplicated jobs
+    are disabled until the user enables them; enabling is separate from applying.
+*   **Language v1.** `version 1;` then one `job "name" { ... }`. One trigger (`manual`, `every
+    <dur>`, `daily`/`weekdays` `"HH:MM"`, `event "topic"(...)`), an optional `policy(timeout,
+    overlap, cooldown)`, then typed action calls with named arguments and an optional `as name`
+    output, `set`, `if`/`else`, and `wait`. Values are null / bool / int / number / string /
+    duration; expressions use `! && || == != < <= > >=`; builtins `contains`, `json_get` and
+    `secret`. Strings may interpolate `${reference}`. `repeat` parses but is diagnosed
+    unsupported until the advanced-language phase. `tools/jobs_parse_test.c` covers the grammar,
+    diagnostics, limits and the canonical round trip.
+*   **Action contract (`devos_actions`).** Static immutable schemas (id, version, provider,
+    typed parameters with required/default/bounds/enum/credential capability, typed outputs,
+    effect class, retry safety) registered from a boot provider hook, not from an app's LVGL
+    init(). Long operations use request-specific handles with start / poll / cancel / release and
+    a documented ownership transition; results distinguish pending / done / failed / cancelled /
+    outcome-unknown. The Builder and the validator read the same schemas - there is no hand-coded
+    GUI parameter table.
+*   **Events (`devos_events`).** Bounded typed topics (`system.boot`, Wi-Fi connect/disconnect,
+    battery-below, `mqtt.message`, ...) with sequence, timestamps, provider and correlation id;
+    publish is nonblocking, drops are counted, and payloads are copied (never a pointer into a
+    reused ring). `system.boot` fires once per normal boot, after the ready barrier.
+*   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
+    credential-capable field and are wiped after the operation. Persistence must be genuinely
+    encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
+*   **Scheduling.** Monotonic clock for `every`/`wait`/cooldown/deadlines; wall clock only for
+    daily/weekdays and display. Intervals are phase-anchored and skip missed periods; daily
+    schedules claim one occurrence per local date (DST-safe); clock jumps recompute wall-time
+    jobs only. Default overlap is `skip`; automatic runs are globally pausable (Run now still
+    works), and a safe/reverted boot keeps automatic execution paused.
+*   **Storage.** `jobs/<id>.job` (active source), `jobs/examples/*.job` (disabled starters),
+    `.devos/jobs/catalog.json`, `.devos/jobs/revisions/<id>/<rev>.job`,
+    `.devos/jobs/history/<id>.jsonl` (bounded, rotated). Immutable generations + a referenced
+    catalog with previous fallback; an invalid external edit stays an inactive candidate and the
+    last-good revision keeps running. A Core 1 storage worker owns source/history I/O.
+*   **Limits (initial, to be measured).** 32 jobs, 16 KiB source, 128 nodes, depth 8, 32
+    variables, 4 active runs (1/job), 2 Jobs HTTP tickets, 1 probe, 60 s default run (5 min max),
+    256 steps, 128 trace entries/run, 50 history summaries/job. Large buffers live in PSRAM;
+    engine headers carry no LVGL so the parser is host-tested.
+*   **Lifecycle.** The engine starts only when the Jobs app is enabled (`START_ENGINE`), stays off
+    with Settings > Apps, keeps running while the app is hidden or the screen is off, and getters
+    are safe before init. `README.md`, `AGENTS.md` and `main/apps/app_template/` document the
+    required provider/event hooks for future apps.
+
+**Status:** Phase 0 (contracts) and Phase 1 (model / parser / validator / serializer) are
+implemented and host-tested; the scheduler, providers, storage and GUI follow the roadmap below.
+
 ---
 
 ## 4. Hardware Integration: Keyboard, Display, & Power
@@ -708,6 +763,35 @@ To enable the developer to test and evaluate UI/UX progress remotely from their 
 - [x] Generalize tile arrangement mode (`Sym + E`) to support multi-page drag/drop and cross-page slot swapping with JSON layout persistence to `/sdcard/.devos/launcher_layout.json`.
 - [x] Create a starter app template (`main/apps/app_template/`) documenting the drop-in integration pattern.
 - [x] Verify multi-app scalability (testing with 12+ registered apps), smooth 60 FPS scrolling, and theme propagation in the remote web simulator (`http://dev-server:6080/vnc.html`).
+
+### Phase 8: Jobs (persistent automation)
+
+Contract and phase gates are section 16 of the Jobs implementation plan; mark only implemented,
+verified work. Engine headers stay LVGL-free so the parser/validator/serializer are host-tested.
+
+- [x] **Phase 0** - rebase analysis; frozen contracts (`devos_actions`, `devos_events`,
+      `devos_secrets`, `devos_jobs` headers, error portability, value types, AST v1 grammar,
+      storage/revision authority, availability policy, initial limits).
+- [x] **Phase 1** - model / lexer / parser / validator / canonical serializer with diagnostics and
+      spans; manual + interval triggers, typed action calls, `set`, `if/else`, `wait`,
+      interpolation; limits enforced. `tools/jobs_parse_test.c` (37 checks; NAS/website/doorbell
+      examples, parse/validate errors, round trip, limits).
+- [ ] **Phase 2** - action/event primitives and first providers: registry handles, HTTP adapter
+      audit, request-specific ICMP probe, `system.log`/`system.notify`, sysmon snapshot.
+- [ ] **Phase 3** - Core 0 scheduler and interpreter vertical slice (manual/interval, wait,
+      overlap, budgets, cancel, generation snapshots, ready barrier, global pause).
+- [ ] **Phase 4** - durable storage and recovery: Core 1 storage worker, immutable revisions +
+      referenced catalog, history rotation, drafts, conflicts, SD degraded mode, safe-start pause.
+- [ ] **Phase 5** - first complete GUI + Text release: list, schema-driven Builder, dedicated Text
+      view, diagnostics, Apply/Enable, Run/Cancel, trace/history, icon/telemetry/palette. **Gate:
+      README, PLAN and AGENTS updated and the Template compatibility fixture added.**
+- [ ] **Phase 6** - daily/weekdays schedules and boot/Wi-Fi/battery events.
+- [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
+- [ ] **Phase 8** - Docker background operation integration.
+- [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional
+      WoL/DNS, typed job calls.
+- [ ] **Phase 10** - target hardening: SRAM/PSRAM/stack/size measurements, mixed-workload soak, SD
+      crash/recovery, verified encrypted credential persistence.
 
 ---
 

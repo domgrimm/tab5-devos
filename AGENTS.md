@@ -67,6 +67,13 @@ Always cross-reference [PLAN.md](PLAN.md) for detailed feature specifications an
    * **Text entry** uses the hardware keyboard. On-screen keyboards appear only when no keyboard is attached (`tab5_keyboard_is_connected()`).
    * **Implementation:** forms, dialogs and button rows use `devos_focus` (`components/devos_ui/devos_focus.h`): register the controls in order, pass keys from `handle_key`. Custom lists (file lists, streams, peer rows) handle keys in `handle_key` and draw their own selection.
 
+10. **Jobs-compatible actions and events:**
+    * Any app or engine with an automatable operation **must expose it headlessly** through `devos_actions` (`components/devos_actions/`). Jobs never opens another app's UI, spoofs its keys, uses a launcher id, or reads its widget state to run an operation. An app with nothing to automate says so explicitly.
+    * Register immutable **typed schemas** from a boot/provider registration hook, **separate from LVGL `init()`/`show()`/`hide()`**: parameter limits/defaults, output meaning, schema version, effect class (read / network-send / mutate) and retry safety. Long or network operations use **request-specific handles** with `start`/`poll`/`cancel`/`release` and bounded queues - never a shared "last result" or a single overwriteable command slot. Distinguish pending, sent, acknowledged, accepted, completed and outcome-unknown.
+    * Provide **availability/readiness** safely when the engine was never initialised or its app is switched off; background demand is separate from UI activity, and a switched-off app is never silently re-enabled. Engines with meaningful state or message transitions **publish documented typed events** through `devos_events` (or an integration bridge), emitted outside engine locks with explicit bounded copies and defined retained/reconnect/initial-state semantics.
+    * Reuse `devos_net`, `devos_http`, the shared JSON reader and a locked system snapshot; keep Core 0 network/crypto, Core 1 presentation/SD and the memory reserve (invariant 2). **Secrets are opaque references** (`devos_secrets`) or stay in provider config: credential fields are marked, secret values never appear in source, logs or results, and no "encrypted" claim is made without verified configuration. Copied credentials are wiped after async completion or cancellation.
+    * Add **host tests** for schema/validation, operation ownership, overload, cancellation, disabled-provider state and event semantics, and verify Jobs and the app UI run concurrently without disrupting each other. A new app declares its **Jobs capability intent** - the actions/events it implements, or why it is UI-only. "Jobs-compatible" is a tested contract, not a label.
+
 ---
 
 ## 2. Hardware Interfaces & Pinout Reference
@@ -113,6 +120,10 @@ tab5-devos/
 │   ├── devos_cricket/             # ESPNcricinfo match lists + scorecards via ESPN's site API (no LVGL)
 │   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
 │   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
+│   ├── devos_actions/             # Jobs action registry: typed schemas + async operation handles (no LVGL)
+│   ├── devos_events/              # bounded typed event delivery for Jobs triggers (no LVGL)
+│   ├── devos_secrets/             # named credential references for Jobs (no LVGL)
+│   ├── devos_jobs/                # Jobs model/parser/validator/serializer + scheduler (no LVGL)
 │   ├── devos_audio/               # ES7210 / ES8388 voice memos (record + play WAV)
 │   ├── devos_qr/                  # QR scanning: camera frames -> quirc (vendored in quirc/)
 │   ├── devos_mdview/              # Shared CommonMark-subset renderer (`devos_md_render()`)
@@ -140,6 +151,7 @@ tab5-devos/
 │   │   ├── app_cricket/           # Cricket: live scores, results by date, scorecards
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
 │   │   ├── app_settings/          # Wi-Fi setup, file sharing, display, power, system telemetry
+│   │   ├── app_jobs/              # Jobs: builder, text view, run trace, history (Phase 5)
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/
 │       └── devos_config.h         # Forwards to components/devos_config/include/devos_config.h
@@ -229,7 +241,7 @@ When implementing tasks from [PLAN.md](PLAN.md):
 
 1. **Pick one atomic phase/component at a time** (e.g. Phase 0 Hardware Spike, Phase 1 Home Screen, Phase 3 Terminal).
 2. **Review dependencies first**—ensure required hardware pins, FreeRTOS queues, and header interfaces exist before writing high-level app logic.
-3. **Write modular code** in `components/` before connecting to `main.c`.
+3. **Write modular code** in `components/` before connecting to `main.c`. An app with automatable operations designs its public engine operations first (invariant 10): headless actions/events with typed schemas and `start`/`poll`/`cancel`/`release` handles, registration and lifetime host tests, and verified background use - then the GUI.
 4. **Test in simulation first:**
    * After creating or modifying any UI/UX component, compile the simulator (`ninja -C build_sim`).
    * Verify the UI via `./tools/sim/run_web_sim.sh`, **keyboard-only first** (invariant 9): reach every control and dialog without the mouse, then check touch.

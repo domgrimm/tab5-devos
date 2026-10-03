@@ -171,3 +171,56 @@ set(DEVOS_SOURCES
 ```
 
 The launcher discovers the app on its own: it gets a tile with its icon and live lines, a row in Settings > Apps, and a place in the saved layout.
+
+---
+
+## 5. Jobs compatibility (AGENTS.md invariant 10)
+
+An app with an automatable operation exposes it **headlessly** through `devos_actions`
+(`components/devos_actions/devos_actions.h`); Jobs never opens the UI or reads widget state. An app
+with nothing to automate states that explicitly (a UI-only declaration) and is still a full app.
+
+Register immutable **typed schemas** from a boot/provider hook, not from LVGL `init()`:
+
+```c
+#include "devos_actions.h"
+
+static const devos_action_param_t SCAN_P[] = {
+    { .name = "host", .type = DEVOS_VAL_STR, .required = true, .expression = true },
+    { .name = "timeout", .type = DEVOS_VAL_DURATION, .expression = true, .min = 1, .max = 30000 },
+};
+static const devos_action_out_t SCAN_O[] = {
+    { .name = "ok", .type = DEVOS_VAL_BOOL }, { .name = "latency_ms", .type = DEVOS_VAL_INT },
+};
+static const devos_action_descriptor_t SCAN = {
+    .id = "myapp.scan", .schema_version = 1, .provider_uid = "myapp",
+    .params = SCAN_P, .param_count = 2, .outs = SCAN_O, .out_count = 2,
+    .effect = DEVOS_EFFECT_NET_SEND, .retry_safe = true, .recommended_timeout_ms = 5000,
+};
+
+void myapp_register_actions(void) { devos_actions_register(&SCAN); }   /* called from a boot hook */
+```
+
+A long or network operation returns a **request-specific handle** and supports
+`start`/`poll`/`cancel`/`release` with bounded queues and one explicit ownership transition. Never
+keep a shared "last result" or a single overwriteable command slot; distinguish pending, sent,
+acknowledged, accepted, completed and outcome-unknown. `poll()` snapshots state; `release()` frees
+exactly once; a stale handle (slot generation) is rejected.
+
+* **Availability.** Provide a safe readiness/configuration getter even when the engine was never
+  initialised or the app is switched off in Settings > Apps. Background demand is separate from UI
+  activity; never silently re-enable an app, and never let Jobs stop a connection the UI still owns.
+* **Events.** If the app has meaningful state/message transitions, publish documented typed events
+  through `devos_events`, outside your locks, with explicit bounded copies and defined
+  retained/reconnect/initial-state semantics. Do not point a subscriber at a reused ring.
+* **Secrets.** Credential-capable parameters are marked in the schema and take `secret("name")`
+  (`devos_secrets`); resolve only into bounded transient storage and wipe it after completion or
+  cancellation. Secret values never appear in source, logs or results.
+* **Shared engines.** Route sockets through `devos_net`, HTTP through `devos_http`, JSON through
+  `devos_json`, and read a locked system snapshot rather than GUI-owned telemetry.
+* **Tests.** Cover schema/validation, operation ownership, overload, cancellation and the
+  disabled-provider state, and confirm Jobs and the app UI run at the same time without disruption.
+
+A UI-only app (no automatable operations) declares that intent in its README/descriptor notes and
+registers nothing. "Jobs-compatible" is a tested contract, not a label applied automatically.
+
