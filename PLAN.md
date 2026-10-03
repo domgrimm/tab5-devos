@@ -811,8 +811,13 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       boot (`START_ENGINE("jobs", ...)`) with a 1 Hz sysmon snapshot bridge, a safe/reverted-boot pause
       and a restart check; Settings > Apps disables the engine. README, PLAN and AGENTS updated; the
       future-app compatibility fixture added (`tools/jobs_compat_test.c`).
-- [ ] **Phase 5 (Builder)** - the schema-driven Builder (trigger card, step tree, inspector, opaque
-      custom-node card) sharing the one AST with the Text view.
+- [x] **Phase 5 (Builder)** - the schema-driven Builder: a trigger card (kind + value), a step tree
+      (indented rows), and an inspector generated from the action registry (per-parameter fields:
+      text for strings/numbers/durations, dropdowns for enums and booleans, a secret field for
+      credentials). Add / delete / move steps; advanced expressions show a custom-node card pointing
+      at the Text view. Edits mutate the shared AST and re-serialize through `jobs_serialize`, so the
+      Builder and Text never diverge (`components/devos_jobs/jobs_build.c`,
+      `tools/jobs_build_test.c`).
 - [ ] **Phase 6** - daily/weekdays schedules and boot/Wi-Fi/battery events.
 - [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
 - [ ] **Phase 8** - Docker background operation integration.
