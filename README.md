@@ -1,6 +1,6 @@
 # devOS for the M5Stack Tab5
 
-devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin and network work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics, an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
+devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin, network and developer work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics (ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN), a Coder's Toolkit (Base64, hashes, JWT, UUID, …), an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
 
 **Install it from your browser:** <https://domgrimm.github.io/tab5-devos/> (Chrome or Edge, USB-C cable). After that the Tab5 updates itself over Wi-Fi.
 
@@ -26,9 +26,10 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Tailscale** | Joins your tailnet (MicroLink: ts2021, DERP, DISCO) and lists peers with latency |
 | **WireGuard** | Brings up tunnels from standard `wg-quick` config files |
 | **MQTT** | Broker monitor and publisher (MQTT 3.1.1) with JSON pretty-printing |
-| **Network** | Ping, DNS lookup, port scan, Wi-Fi survey and mDNS browser |
+| **Network** | Ping, DNS lookup, port scan, Wi-Fi survey, mDNS browser and Wake-on-LAN (magic packets to a sleeping machine, broadcast or routed over the VPN, with a remembered list) |
 | **REST** | REST and webhook client with saved requests and `{{variables}}` |
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop |
+| **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/512 and HMAC hashes, CRC-32, a JWT splitter, random UUID v4, Unix-time conversion, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Cricket** | Live scores, results and full scorecards from ESPNcricinfo, for today or any day back to the first Test in 1877 |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
@@ -52,6 +53,10 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
   curl -u devos:PASSWORD -H 'X-Devos: 1' -X DELETE 'http://192.168.1.50/api/file?path=/notes/notes.md'
   ```
   `POST /api/mkdir?path=`, `POST /api/rename?path=&to=` and `DELETE ...&recursive=1` (a folder and its contents) cover the rest; `components/devos_fileshare/devos_fileshare.h` lists it all.
+
+### Wake-on-LAN
+
+**Network > Wake-on-LAN** wakes a sleeping machine with a magic packet. Type its MAC address (any of `aa:bb:cc:dd:ee:ff`, `aa-bb-cc-dd-ee-ff`, `aabb.ccdd.eeff` or plain `aabbccddeeff`) and press **Wake**. Leave the "send to" box empty on the same Wi-Fi network (the packet is broadcast); type a host or IP (or a directed broadcast like `192.168.1.255`) to reach a machine on another subnet, or across Tailscale / WireGuard - the socket is routed through the tunnel like every other. Machines you have woken are remembered in `/.devos/wol.json`: pick one and **Enter** re-wakes it.
 
 ---
 
@@ -105,15 +110,16 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 
 | Component | Provides |
 | :--- | :--- |
-| `devos_ui` | Theme engine (dark / high-contrast light, live switching), top bar, `devos_widgets` (buttons, fields, dialogs, virtual lists), `devos_focus` (keyboard focus and focus ring), `devos_icons` (vector icons), `devos_cmdpal` (the `Sym + Space` command palette), `devos_hud` (the `Sym + I` system info panel), `devos_shortcuts` (the `Sym + S` keyboard sheet), `devos_toast` (short notices below the top bar, from any task) |
+| `devos_ui` | Theme engine (dark / high-contrast light, live switching), top bar, `devos_widgets` (buttons, fields, dialogs, virtual lists), `devos_focus` (keyboard focus and focus ring), `devos_icons` (vector icons), `devos_cmdpal` (the `Sym + Space` command palette), `devos_hud` (the `Sym + I` system info panel), `devos_shortcuts` (the `Sym + S` keyboard sheet), `devos_powerdlg` (the restart / shutdown confirm dialog), `devos_toast` (short notices below the top bar, from any task) |
 | `devos_net` | Wi-Fi manager, DNS + mDNS resolver, and the socket layer every connection goes through (outgoing, and listening for the file-sharing server). That layer is where VPN routing applies, so a socket opened any other way would bypass the tunnel |
 | `devos_http` | HTTP/1.1 + HTTPS client on top of the socket layer |
 | `devos_json` | Small JSON reader and pretty-printer |
 | `devos_mdview` | The CommonMark-subset renderer used by the editor preview |
-| `devos_crypto` | SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32 |
+| `devos_crypto` | SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32, and Base64 / Base64 URL / Hex / URL / Base58 / CRC-32 with a streaming hash API |
+| `devos_hashfile` | Streams a file off the SD card through a hash on core 0, with progress and result getters |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 
-The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
+The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_cricket`, `devos_netdiag`, `devos_hashfile`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
 
 ### Keyboard first
 
@@ -280,6 +286,7 @@ That's all. You don't edit the launcher, Settings, the top bar or any enum.
 ### Prerequisites
 
 - ESP-IDF **v5.4** (target `esp32p4`). Espressif's container image works as-is: `docker.io/espressif/idf:v5.4`.
+  Build with v5.4 as the releases do: the second-stage bootloader grew enough in v5.5 that it no longer fits the `0x6000` bytes before the `0x8000` partition-table offset, and the build stops with "Bootloader binary size ... is too large". Either stay on v5.4, or shrink the bootloader (`CONFIG_BOOTLOADER_LOG_LEVEL_WARN`) / move the partition table before switching versions.
 - LVGL isn't vendored. Fetch the pinned version once:
   ```bash
   tools/fetch_lvgl.sh
@@ -317,7 +324,7 @@ Your keyboard stands in for the Tab5's; as a PC keyboard has no Sym key, **Ctrl 
 
 ### Tests
 
-Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, command palette search, OTA, terminal emulator, crypto, cricket parsers, and an end-to-end run of the file-sharing server over real sockets). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
+Host-side unit tests live in `tools/*_test.c` (Markdown renderer, launcher, app switches, command palette search, OTA, terminal emulator, crypto and the Coder's Toolkit core, cricket parsers, Wake-on-LAN packets, and an end-to-end run of the file-sharing server over real sockets). Each file's header has its exact `gcc` line. Run them from an empty directory: some write config files relative to the current directory.
 
 ---
 
@@ -346,7 +353,7 @@ components/
   tab5_keyboard/     70-key keyboard driver (I2C, Sym / Aa / Ctrl / Alt)
   devos_config/      pins, sizes, version
   devos_core/        app registry, switcher, key dispatch, intents, app switches, telemetry
-  devos_ui/          theme, top bar, widgets, focus, icons
+  devos_ui/          theme, top bar, widgets, focus, icons, command palette, system info, shortcuts, restart/shutdown dialog
   devos_net/         Wi-Fi, DNS/mDNS, socket layer + VPN routing
   devos_http/        HTTP(S) client
   devos_storage/     MicroSD mount and scaffolding
@@ -355,9 +362,11 @@ components/
   devos_ota/         update check and install
   devos_sysmon/      1 Hz telemetry, clock, time zones
   devos_json/  devos_mdview/  devos_crypto/  devos_vterm/          shared engines
-  devos_mqtt/  devos_docker/  devos_adsb/  devos_netdiag/          feature engines
+  devos_mqtt/  devos_docker/  devos_adsb/                          feature engines
+  devos_netdiag/     ping, DNS, port scan, mDNS, Wi-Fi survey, Wake-on-LAN
   devos_maptiles/    OpenStreetMap tiles: fetch one at a time, cache on SD
   devos_cricket/     ESPNcricinfo match lists and scorecards
+  devos_hashfile/    stream a file off the SD card through a hash (core 0)
   devos_totp/  devos_wireguard/  devos_tailnet/  devos_audio/  devos_qr/
   libssh2_port/      SSH client glue (libssh2 from the component registry)
   microlink/         Tailscale client (third party, MIT)
