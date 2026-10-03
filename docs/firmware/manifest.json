@@ -1,0 +1,28 @@
+{
+  "name": "devOS",
+  "version": "0.5.2",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "parts": [
+        {
+          "path": "0.5.2/bootloader.bin",
+          "offset": 8192
+        },
+        {
+          "path": "0.5.2/partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "0.5.2/ota_data_initial.bin",
+          "offset": 61440
+        },
+        {
+          "path": "0.5.2/tab5-devos.bin",
+          "offset": 131072
+        }
+      ]
+    }
+  ]
+}

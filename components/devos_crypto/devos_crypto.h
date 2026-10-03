@@ -3,7 +3,7 @@
 /* devos_crypto: small, dependency-free primitives for the authenticator's
  * vault and TOTP codes - identical on the device and in the simulator.
  *
- *   SHA-1 / SHA-256 / SHA-512, HMAC over each (TOTP: RFC 6238)
+ *   SHA-1 / SHA-256 / SHA-384 / SHA-512, HMAC over each (TOTP: RFC 6238)
  *   PBKDF2-HMAC-SHA256 (vault key from the passphrase)
  *   ChaCha20-Poly1305 AEAD (RFC 8439) (vault encryption)
  *   base32 (RFC 4648, as authenticator secrets are written)
@@ -20,9 +20,9 @@
 extern "C" {
 #endif
 
-typedef enum { DEVOS_HASH_SHA1 = 1, DEVOS_HASH_SHA256 = 2, DEVOS_HASH_SHA512 = 3 } devos_hash_t;
+typedef enum { DEVOS_HASH_SHA1 = 1, DEVOS_HASH_SHA256 = 2, DEVOS_HASH_SHA512 = 3, DEVOS_HASH_SHA384 = 4 } devos_hash_t;
 
-/* Digest length in bytes (20, 32, 64). */
+/* Digest length in bytes (20, 32, 64, 48). */
 size_t devos_hash_len(devos_hash_t h);
 void devos_hash(devos_hash_t h, const void *data, size_t len, uint8_t *out);
 void devos_hmac(devos_hash_t h, const void *key, size_t key_len, const void *msg, size_t msg_len, uint8_t *out);

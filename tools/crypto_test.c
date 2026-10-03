@@ -75,6 +75,12 @@ int main(void)
     devos_hash(DEVOS_HASH_SHA512, m112, strlen(m112), d);
     check_hex("SHA-512 112 bytes", d, 64,
               "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909");
+    devos_hash(DEVOS_HASH_SHA384, "abc", 3, d);
+    check_hex("SHA-384 abc", d, 48,
+              "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7");
+    devos_hash(DEVOS_HASH_SHA384, m112, strlen(m112), d);
+    check_hex("SHA-384 112 bytes", d, 48,
+              "09330c33f71147e83d192fc782cd1b4753111b173b3b05d22fa08086e3b0f712fcc7c71a557e2db966c3e9fa91746039");
 
     uint8_t k20[20];
     memset(k20, 0x0b, 20);
