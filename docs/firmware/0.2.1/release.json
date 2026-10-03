@@ -1,0 +1,5 @@
+{
+  "version": "0.2.1",
+  "built": "Sep 27 2026 12:22:46",
+  "notes": "Screen no longer flashes during updates; Settings shows the exact build; install / rollback reported. Known issue: the camera doesn't start (fixed in 0.3.3)."
+}

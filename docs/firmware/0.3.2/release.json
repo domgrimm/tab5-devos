@@ -1,0 +1,5 @@
+{
+  "version": "0.3.2",
+  "built": "Sep 28 2026 08:45:11",
+  "notes": "Fixes 0.3.1 running out of memory: update checks, REST, SSH, the camera and new 2FA vaults work again. Known issue: the camera doesn't start (fixed in 0.3.3)."
+}

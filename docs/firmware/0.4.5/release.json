@@ -1,0 +1,5 @@
+{
+  "version": "0.4.5",
+  "built": "Oct  2 2026 05:28:05",
+  "notes": "Docs and comments: the system modifier is Sym, not Fn; theme persistence and audio documented as done. No functional change."
+}
