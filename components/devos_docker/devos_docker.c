@@ -63,9 +63,31 @@ static bool s_sel_logs;
 static int64_t s_log_last_s = -1;           /* newest log line: seconds + nanoseconds */
 static int32_t s_log_last_ns;
 static bool s_worker, s_inited;
+static volatile int s_init_lock;            /* once-only init guard across cores */
 static volatile bool s_active, s_kick;
-static char s_act_id[16], s_act_what[12];
 static int s_ep_resolved;                   /* Portainer endpoint in use */
+
+/* Correlated container commands (PLAN.md 7.3): submitted from any task, run by
+ * the single worker whether or not the UI is being polled. Each carries an
+ * immutable config / endpoint snapshot so a later settings change cannot send
+ * it to the wrong host, and the worker never overwrites another command. */
+typedef struct {
+    bool used;
+    bool busy;                  /* the worker copied it and is running it */
+    bool cancelled;
+    bool ui_note;               /* UI-originated: update s_st.note, auto-free */
+    bool inspect;
+    uint32_t id;                /* ticket (> 0) */
+    char what[12];
+    char arg[80];               /* container id or name */
+    char name[64];              /* UI display name, when known */
+    devos_docker_config_t cfg;  /* snapshot at submit */
+    int ep;                     /* Portainer endpoint snapshot (0 = resolve) */
+    int timeout_ms;
+    devos_docker_req_result_t res;
+} docker_req_t;
+static EXT_RAM_BSS_ATTR docker_req_t s_req[DEVOS_DOCKER_REQS];
+static uint32_t s_req_seq;      /* monotonic ticket ids */
 
 static void wake(void)
 {
@@ -167,25 +189,32 @@ void devos_docker_set_config(const devos_docker_config_t *c)
 }
 
 /* ------------------------------------------------------------------ http */
-static int api(const char *method, const char *path, devos_http_resp_t *r, size_t max_body)
+static int api_cfg(const devos_docker_config_t *c, int ep, const char *method, const char *path,
+                   devos_http_resp_t *r, size_t max_body, int timeout_ms)
 {
     char url[512], hdr[200] = "";
-    devos_docker_config_t c;
-    LOCK();
-    c = s_cfg;
-    int ep = s_ep_resolved;
-    UNLOCK();
-    if (c.mode == DEVOS_DOCKER_PORTAINER) {
-        if (!strncmp(path, "/api/", 5)) snprintf(url, sizeof(url), "%s%s", c.url, path);
-        else snprintf(url, sizeof(url), "%s/api/endpoints/%d/docker%s", c.url, ep, path);
-        if (c.api_key[0]) snprintf(hdr, sizeof(hdr), "X-API-Key: %s", c.api_key);
+    if (c->mode == DEVOS_DOCKER_PORTAINER) {
+        if (!strncmp(path, "/api/", 5)) snprintf(url, sizeof(url), "%s%s", c->url, path);
+        else snprintf(url, sizeof(url), "%s/api/endpoints/%d/docker%s", c->url, ep, path);
+        if (c->api_key[0]) snprintf(hdr, sizeof(hdr), "X-API-Key: %s", c->api_key);
     } else {
-        snprintf(url, sizeof(url), "%s%s", c.url, path);
+        snprintf(url, sizeof(url), "%s%s", c->url, path);
     }
-    devos_http_req_t q = { .method = method, .url = url, .headers = hdr[0] ? hdr : NULL, .insecure = c.insecure,
-                           .timeout_ms = 12000, .max_body = max_body };
+    devos_http_req_t q = { .method = method, .url = url, .headers = hdr[0] ? hdr : NULL, .insecure = c->insecure,
+                           .timeout_ms = timeout_ms > 0 ? timeout_ms : 12000, .max_body = max_body };
     devos_http_request(&q, r);
     return r->status;
+}
+
+static int api(const char *method, const char *path, devos_http_resp_t *r, size_t max_body)
+{
+    devos_docker_config_t c;
+    int ep;
+    LOCK();
+    c = s_cfg;
+    ep = s_ep_resolved;
+    UNLOCK();
+    return api_cfg(&c, ep, method, path, r, max_body, 12000);
 }
 
 static void set_error_from(const devos_http_resp_t *r, const char *what)
@@ -313,17 +342,17 @@ static int ct_cmp(const void *a, const void *b)
     return d ? d : strcasecmp(x->name, y->name);
 }
 
-static void fetch_endpoint(void)
+/* Resolve a Portainer environment (0 = the first one) from an explicit config
+ * snapshot. Returns the id, or 0 with *err set. */
+static int resolve_endpoint_cfg(const devos_docker_config_t *cfg, int want, char *name, size_t namecap,
+                                char *err, size_t errcap)
 {
     devos_http_resp_t r;
-    if (api("GET", "/api/endpoints", &r, 256 * 1024) == 200 && r.body) {
-        int want;
-        LOCK();
-        want = s_cfg.endpoint;
-        UNLOCK();
+    int found = 0;
+    if (name && namecap) name[0] = '\0';
+    if (err && errcap) err[0] = '\0';
+    if (api_cfg(cfg, 0, "GET", "/api/endpoints", &r, 256 * 1024, 12000) == 200 && r.body) {
         const char *a = strchr(r.body, '[');
-        int found = 0;
-        char name[48] = "";
         /* first environment, or the configured id */
         for (const char *p = a; p && *p && !found;) {
             p = strchr(p, '{');
@@ -334,23 +363,39 @@ static void fetch_endpoint(void)
             devos_json_get_int(p, (size_t)(end - p), "Id", &id);
             if (!want || id == want) {
                 found = id;
-                devos_json_get_str(p, (size_t)(end - p), "Name", name, sizeof(name));
+                if (name && namecap) devos_json_get_str(p, (size_t)(end - p), "Name", name, namecap);
             }
             p = end;
         }
-        LOCK();
-        if (found) {
-            s_ep_resolved = found;
-            snprintf(s_st.endpoint_name, sizeof(s_st.endpoint_name), "%s", name);
-        } else {
-            snprintf(s_st.error, sizeof(s_st.error), want ? "Portainer has no environment %d" : "Portainer has no environments", want);
-        }
-        s_gen++;
-        UNLOCK();
-    } else {
-        set_error_from(&r, "Portainer");
+        if (!found && err && errcap)
+            snprintf(err, errcap, want ? "Portainer has no environment %d" : "Portainer has no environments", want);
+    } else if (err && errcap) {
+        if (!r.status) snprintf(err, errcap, "Portainer: %s", r.error);
+        else snprintf(err, errcap, "Portainer: HTTP %d %.40s", r.status, r.reason);
     }
     devos_http_resp_free(&r);
+    return found;
+}
+
+static void fetch_endpoint(void)
+{
+    devos_docker_config_t cfg;
+    int want;
+    LOCK();
+    cfg = s_cfg;
+    want = s_cfg.endpoint;
+    UNLOCK();
+    char name[48] = "", err[112] = "";
+    int id = resolve_endpoint_cfg(&cfg, want, name, sizeof(name), err, sizeof(err));
+    LOCK();
+    if (id) {
+        s_ep_resolved = id;
+        if (name[0]) snprintf(s_st.endpoint_name, sizeof(s_st.endpoint_name), "%s", name);
+    } else if (err[0]) {
+        snprintf(s_st.error, sizeof(s_st.error), "%s", err);
+    }
+    s_gen++;
+    UNLOCK();
 }
 
 static void fetch_info(void)
@@ -489,6 +534,39 @@ static bool parse_ts(const char *s, int64_t *sec, int32_t *ns)
     return true;
 }
 
+/* Parse a /containers/<id>/json inspect response. Returns false when the body
+ * isn't a JSON object; absent fields stay empty/0. Never consults the UI's
+ * cached list, so it reflects the daemon's current state. */
+static bool parse_inspect(const char *b, size_t n, devos_docker_inspect_t *out)
+{
+    if (!b || !n || *b != '{') return false;
+    memset(out, 0, sizeof(*out));
+    char id[80] = "", name[96] = "";
+    devos_json_get_str(b, n, "Id", id, sizeof(id));
+    snprintf(out->id, sizeof(out->id), "%.12s", id);
+    devos_json_get_str(b, n, "Name", name, sizeof(name));
+    snprintf(out->name, sizeof(out->name), "%s", name[0] == '/' ? name + 1 : name);
+    size_t cl;
+    const char *cfg = span_of(b, n, "Config", &cl);
+    if (cfg) devos_json_get_str(cfg, cl, "Image", out->image, sizeof(out->image));
+    size_t sl;
+    const char *st = span_of(b, n, "State", &sl);
+    if (st) {
+        devos_json_get_str(st, sl, "Status", out->state, sizeof(out->state));
+        char started[40] = "";
+        if (devos_json_get_str(st, sl, "StartedAt", started, sizeof(started)) == 0 && started[0]) {
+            int64_t sec;
+            int32_t ns;
+            if (parse_ts(started, &sec, &ns)) out->started = sec;
+        }
+        size_t hl;
+        const char *h = span_of(st, sl, "Health", &hl);
+        if (h) devos_json_get_str(h, hl, "Status", out->health, sizeof(out->health));
+    }
+    if (!out->name[0]) snprintf(out->name, sizeof(out->name), "%s", out->id);
+    return true;
+}
+
 static void log_append(const char *line, size_t n, bool err)
 {
     /* local time for the prefix */
@@ -592,32 +670,113 @@ static void fetch_logs(const char *id, bool first)
     devos_http_resp_free(&r);
 }
 
-/* ------------------------------------------------------------------ action */
-static void do_action(const char *id, const char *what)
+/* ------------------------------------------------------------------ requests */
+static int run_action_cfg(const devos_docker_config_t *cfg, int ep, const char *id, const char *what,
+                          int timeout_ms, char *err, size_t errcap)
 {
-    char path[96], name[64] = "";
+    char path[96];
     snprintf(path, sizeof(path), "/containers/%s/%s%s", id, what, strcmp(what, "start") ? "?t=10" : "");
-    LOCK();
-    for (int i = 0; i < s_nct; i++) if (!strcmp(s_ct[i].id, id)) snprintf(name, sizeof(name), "%s", s_ct[i].name);
-    snprintf(s_st.note, sizeof(s_st.note), "%s %s...", !strcmp(what, "restart") ? "Restarting" : !strcmp(what, "stop") ? "Stopping" : "Starting",
-             name[0] ? name : id);
-    s_gen++;
-    UNLOCK();
+    if (err && errcap) err[0] = '\0';
     devos_http_resp_t r;
-    int st = api("POST", path, &r, 16 * 1024);
-    LOCK();
-    if (st == 204 || st == 304) {
-        snprintf(s_st.note, sizeof(s_st.note), "%s %s", !strcmp(what, "restart") ? "Restarted" : !strcmp(what, "stop") ? "Stopped" : "Started",
-                 name[0] ? name : id);
-    } else {
+    int st = api_cfg(cfg, ep, "POST", path, &r, 16 * 1024, timeout_ms);
+    if (st != 204 && st != 304 && err && errcap) {
         char msg[80] = "";
         if (r.body) devos_json_get_str(r.body, r.body_len, "message", msg, sizeof(msg));
-        snprintf(s_st.note, sizeof(s_st.note), "Couldn't %s %s: %s", what, name[0] ? name : id,
-                 msg[0] ? msg : st ? r.reason : r.error);
+        if (!st) snprintf(err, errcap, "%s", r.error[0] ? r.error : "request failed");
+        else snprintf(err, errcap, "%s", msg[0] ? msg : (r.reason[0] ? r.reason : "HTTP error"));
     }
-    s_gen++;
-    UNLOCK();
     devos_http_resp_free(&r);
+    return st;
+}
+
+static int run_inspect_cfg(const devos_docker_config_t *cfg, int ep, const char *id, int timeout_ms,
+                           devos_docker_inspect_t *out, char *err, size_t errcap)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "/containers/%s/json", id);
+    if (err && errcap) err[0] = '\0';
+    devos_http_resp_t r;
+    int st = api_cfg(cfg, ep, "GET", path, &r, 256 * 1024, timeout_ms);
+    if (st == 200 && r.body) {
+        parse_inspect(r.body, r.body_len, out);
+        out->observed = (int64_t)time(NULL);
+    } else if (err && errcap) {
+        char msg[80] = "";
+        if (r.body) devos_json_get_str(r.body, r.body_len, "message", msg, sizeof(msg));
+        if (!st) snprintf(err, errcap, "%s", r.error[0] ? r.error : "request failed");
+        else if (st == 404) snprintf(err, errcap, "container not found");
+        else snprintf(err, errcap, "%s", msg[0] ? msg : (r.reason[0] ? r.reason : "HTTP error"));
+    }
+    devos_http_resp_free(&r);
+    return st;
+}
+
+/* Run every pending request once. Serialised by the single worker: a command is
+ * copied out under the lock, run without it, then its own slot - matched by
+ * ticket, never a shared "last command" - is filled. A released or cancelled
+ * ticket is discarded rather than reported. */
+static void process_requests(void)
+{
+    for (;;) {
+        docker_req_t local;
+        int idx = -1;
+        LOCK();
+        for (int i = 0; i < DEVOS_DOCKER_REQS; i++) {
+            if (s_req[i].used && !s_req[i].busy && s_req[i].res.state == DEVOS_DOCKER_REQ_PENDING) { idx = i; break; }
+        }
+        if (idx >= 0) {
+            local = s_req[idx];
+            s_req[idx].busy = true;
+        }
+        UNLOCK();
+        if (idx < 0) return;
+
+        int st = 0;
+        char err[sizeof(local.res.error)] = "";
+        devos_docker_inspect_t ins;
+        memset(&ins, 0, sizeof(ins));
+        if (!local.cfg.url[0]) {
+            snprintf(err, sizeof(err), "Docker is not configured");
+        } else {
+            int ep = local.ep;
+            if (local.cfg.mode == DEVOS_DOCKER_PORTAINER && !ep)
+                ep = resolve_endpoint_cfg(&local.cfg, local.cfg.endpoint, NULL, 0, err, sizeof(err));
+            if (ep || local.cfg.mode != DEVOS_DOCKER_PORTAINER) {
+                if (local.inspect) st = run_inspect_cfg(&local.cfg, ep, local.arg, local.timeout_ms, &ins, err, sizeof(err));
+                else st = run_action_cfg(&local.cfg, ep, local.arg, local.what, local.timeout_ms, err, sizeof(err));
+            }
+        }
+
+        LOCK();
+        docker_req_t *r = &s_req[idx];
+        if (r->used && r->id == local.id && !r->cancelled) {
+            r->res.status = st;
+            r->res.inspect = ins;
+            snprintf(r->res.error, sizeof(r->res.error), "%s", err);
+            r->res.state = local.cfg.url[0] ? DEVOS_DOCKER_REQ_DONE : DEVOS_DOCKER_REQ_FAILED;
+            if (local.ui_note) {
+                const char *nm = local.name[0] ? local.name : (ins.name[0] ? ins.name : local.arg);
+                bool is_restart = !strcmp(local.what, "restart");
+                bool is_stop = !strcmp(local.what, "stop");
+                const char *verb = is_restart ? "restart" : is_stop ? "stop" : "start";
+                if (st == 204 || st == 304)
+                    snprintf(s_st.note, sizeof(s_st.note), "%s %s",
+                             is_restart ? "Restarted" : is_stop ? "Stopped" : "Started", nm);
+                else
+                    snprintf(s_st.note, sizeof(s_st.note), "Couldn't %s %s: %s", verb, nm, err[0] ? err : "no response");
+                s_gen++;
+            }
+            r->busy = false;
+            if (!local.inspect) s_kick = true;  /* refresh the UI list, if shown */
+            if (local.ui_note) {
+                r->used = false;                /* UI never polls: free now */
+                memset(r, 0, sizeof(*r));
+            }
+        } else if (r->used && r->id == local.id) {
+            r->busy = false;                    /* cancelled: discard the result */
+        }
+        UNLOCK();
+    }
 }
 
 /* ------------------------------------------------------------------ worker */
@@ -642,17 +801,18 @@ static void worker_loop(void)
 #endif
         bool kick = s_kick;
         s_kick = false;
+
+        /* Container commands run whether or not the UI is being polled; only
+         * the list/stats/logs refresh below is gated by s_active. */
+        process_requests();
+        kick = kick || s_kick;
+        s_kick = false;
+
         if (!s_active || !devos_docker_configured()) {
             need_info = true;
             continue;
         }
-        char act_id[16] = "", act_what[12] = "";
         LOCK();
-        if (s_act_id[0]) {
-            snprintf(act_id, sizeof(act_id), "%s", s_act_id);
-            snprintf(act_what, sizeof(act_what), "%s", s_act_what);
-            s_act_id[0] = '\0';
-        }
         bool portainer = s_cfg.mode == DEVOS_DOCKER_PORTAINER;
         int ep = s_ep_resolved;
         int interval = s_cfg.interval_s;
@@ -669,11 +829,6 @@ static void worker_loop(void)
                 next_list = now_ms() + 10000;
                 continue;
             }
-        }
-        if (act_id[0]) {
-            do_action(act_id, act_what);
-            kick = true;
-            next_stats = 0;
         }
         int64_t now = now_ms();
         if (kick || now >= next_list) {
@@ -714,11 +869,120 @@ static void *worker_thread(void *arg)
 }
 #endif
 
+/* Start the worker on first use (UI or Jobs). Container commands run even
+ * when the UI is not polling, so a Jobs-only request must start it too. */
+static void ensure_worker(void)
+{
+    if (s_worker || !s_ct || !s_log) return;
+    s_worker = true;
+#ifdef ESP_PLATFORM
+    xTaskCreatePinnedToCore(worker_task, "docker", 12288, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
+#else
+    pthread_t t;
+    pthread_create(&t, NULL, worker_thread, NULL);
+    pthread_detach(t);
+#endif
+}
+
+/* ------------------------------------------------------------------ requests */
+static uint32_t req_submit(const char *id, const char *action, int timeout_ms, bool ui_note)
+{
+    if (!id || !id[0] || !action || !action[0]) return 0;
+    devos_docker_init();
+    if (!devos_docker_configured()) return 0;
+    uint32_t ticket = 0;
+    LOCK();
+    int slot = -1;
+    for (int i = 0; i < DEVOS_DOCKER_REQS; i++) if (!s_req[i].used) { slot = i; break; }
+    if (slot >= 0) {
+        docker_req_t *r = &s_req[slot];
+        memset(r, 0, sizeof(*r));
+        r->used = true;
+        r->id = ++s_req_seq;
+        if (!r->id) r->id = ++s_req_seq;            /* never 0 */
+        r->ui_note = ui_note;
+        r->inspect = strcmp(action, "inspect") == 0;
+        snprintf(r->what, sizeof(r->what), "%s", action);
+        snprintf(r->arg, sizeof(r->arg), "%s", id);
+        if (ui_note) {                              /* display name for the note */
+            for (int i = 0; i < s_nct; i++)
+                if (!strcmp(s_ct[i].id, id)) { snprintf(r->name, sizeof(r->name), "%s", s_ct[i].name); break; }
+        }
+        r->cfg = s_cfg;                             /* immutable snapshot */
+        r->ep = s_ep_resolved;
+        r->timeout_ms = timeout_ms > 0 ? timeout_ms : 12000;
+        r->res.state = DEVOS_DOCKER_REQ_PENDING;
+        snprintf(r->res.action, sizeof(r->res.action), "%s", action);
+        ticket = r->id;
+    }
+    UNLOCK();
+    if (ticket) {
+        ensure_worker();
+        wake();
+    }
+    return ticket;
+}
+
+uint32_t devos_docker_request(const char *id, const char *action, int timeout_ms)
+{
+    return req_submit(id, action, timeout_ms, false);
+}
+
+uint32_t devos_docker_inspect(const char *id, int timeout_ms)
+{
+    return req_submit(id, "inspect", timeout_ms, false);
+}
+
+bool devos_docker_request_poll(uint32_t ticket, devos_docker_req_result_t *out)
+{
+    if (!ticket) return false;
+    bool ok = false;
+    LOCK();
+    for (int i = 0; i < DEVOS_DOCKER_REQS; i++)
+        if (s_req[i].used && s_req[i].id == ticket) {
+            if (out) *out = s_req[i].res;
+            ok = true;
+            break;
+        }
+    UNLOCK();
+    return ok;
+}
+
+void devos_docker_request_cancel(uint32_t ticket)
+{
+    if (!ticket) return;
+    LOCK();
+    for (int i = 0; i < DEVOS_DOCKER_REQS; i++)
+        if (s_req[i].used && s_req[i].id == ticket) {
+            s_req[i].cancelled = true;
+            s_req[i].res.state = DEVOS_DOCKER_REQ_FAILED;
+            snprintf(s_req[i].res.error, sizeof(s_req[i].res.error), "cancelled");
+            break;
+        }
+    UNLOCK();
+}
+
+void devos_docker_request_release(uint32_t ticket)
+{
+    if (!ticket) return;
+    LOCK();
+    for (int i = 0; i < DEVOS_DOCKER_REQS; i++)
+        if (s_req[i].used && s_req[i].id == ticket) {
+            s_req[i].used = false;
+            s_req[i].busy = false;
+            break;
+        }
+    UNLOCK();
+}
+
 /* ------------------------------------------------------------------ api */
 void devos_docker_init(void)
 {
     if (s_inited) return;
-    s_inited = true;
+    /* The Docker app (Core 1) and a Jobs provider (Core 0) may both call this
+     * first; the winner allocates once, the loser spins then returns. */
+    while (__sync_lock_test_and_set(&s_init_lock, 1)) { /* spin briefly */ }
+    if (s_inited) { __sync_lock_release(&s_init_lock); return; }
 #ifdef ESP_PLATFORM
     s_mx = xSemaphoreCreateMutex();
     s_wake = xSemaphoreCreateBinary();
@@ -728,6 +992,8 @@ void devos_docker_init(void)
     if (s_log) s_log[0] = '\0';
     load_config();
     s_st.configured = s_cfg.url[0] != '\0';
+    s_inited = true;
+    __sync_lock_release(&s_init_lock);
 }
 
 void devos_docker_set_active(bool active)
@@ -736,16 +1002,7 @@ void devos_docker_set_active(bool active)
     LOCK();
     s_st.active = active;
     UNLOCK();
-    if (active && !s_worker && s_ct && s_log) {
-        s_worker = true;                            /* started on first use */
-#ifdef ESP_PLATFORM
-        xTaskCreatePinnedToCore(worker_task, "docker", 12288, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
-#else
-        pthread_t t;
-        pthread_create(&t, NULL, worker_thread, NULL);
-        pthread_detach(t);
-#endif
-    }
+    if (active) ensure_worker();
     if (active) wake();
 }
 
@@ -779,12 +1036,17 @@ uint32_t devos_docker_generation(void)
 int devos_docker_action(const char *id, const char *action)
 {
     if (!id || !id[0] || !action) return -1;
+    /* Immediate UI feedback; the worker corrects the note when it completes. */
+    char nm[64] = "";
     LOCK();
-    snprintf(s_act_id, sizeof(s_act_id), "%s", id);
-    snprintf(s_act_what, sizeof(s_act_what), "%s", action);
+    for (int i = 0; i < s_nct; i++)
+        if (!strcmp(s_ct[i].id, id)) { snprintf(nm, sizeof(nm), "%s", s_ct[i].name); break; }
+    if (!nm[0]) snprintf(nm, sizeof(nm), "%s", id);
+    snprintf(s_st.note, sizeof(s_st.note), "%s %s...",
+             !strcmp(action, "restart") ? "Restarting" : !strcmp(action, "stop") ? "Stopping" : "Starting", nm);
+    s_gen++;
     UNLOCK();
-    wake();
-    return 0;
+    return req_submit(id, action, 0, true) ? 0 : -1;
 }
 
 void devos_docker_select(const char *id, bool logs)

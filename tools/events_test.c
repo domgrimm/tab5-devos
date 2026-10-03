@@ -1,7 +1,7 @@
 /* Host test for devos_events (components/devos_events): topic schemas, the
  * bounded queue, wildcard matching, truncation, drops and unsubscribe.
  *
- *   gcc -O2 -Icomponents/devos_events tools/events_test.c \
+ *   gcc -O2 -Icomponents/devos_events -Icomponents/devos_err tools/events_test.c \
  *       components/devos_events/devos_events.c -lpthread -o /tmp/events_test && /tmp/events_test
  */
 #include "devos_events.h"

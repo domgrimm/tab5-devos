@@ -79,8 +79,60 @@ void devos_docker_status(devos_docker_status_t *out);
 int devos_docker_list(devos_docker_ct_t *out, int max);
 uint32_t devos_docker_generation(void);
 
-/* "start", "stop" or "restart" the container (by id). */
+/* "start", "stop" or "restart" the container (by id). Fire-and-forget UI
+ * wrapper: it submits through the correlated queue below with a status note,
+ * and returns 0 when queued, -1 on bad arguments or a full queue. */
 int devos_docker_action(const char *id, const char *action);
+
+/* ---- request-specific operations (Jobs + UI), PLAN.md 7.3 ----------------
+ * Every command gets a ticket; the worker runs queued commands whether or not
+ * the UI is being polled (devos_docker_set_active only controls the UI's list /
+ * stats / logs refresh). Each request snapshots the config - and the Portainer
+ * environment - at submit time, so a later settings change cannot send it to
+ * the wrong host. Commands are serialised by the single worker and never
+ * overwrite one another. Poll until the state leaves PENDING, then release
+ * exactly once. */
+#define DEVOS_DOCKER_REQS 8
+
+typedef enum {
+    DEVOS_DOCKER_REQ_PENDING = 1,
+    DEVOS_DOCKER_REQ_DONE,          /* attempted; status != 0, or 0 on transport error */
+    DEVOS_DOCKER_REQ_FAILED,        /* could not be attempted (not configured / cancelled) */
+} devos_docker_req_state_t;
+
+typedef struct {
+    char id[16];                    /* short id (12 chars) */
+    char name[64];
+    char image[96];
+    char state[16];                 /* running, exited, restarting, paused, ... */
+    char health[16];                /* healthy / unhealthy / starting; "" if none */
+    int64_t started;                /* unix seconds of State.StartedAt, 0 unknown */
+    int64_t observed;               /* time() when the inspect was read */
+} devos_docker_inspect_t;
+
+typedef struct {
+    devos_docker_req_state_t state;
+    char action[12];                /* "start" / "stop" / "restart" / "inspect" */
+    int status;                     /* HTTP status; 0 on transport error */
+    char error[96];                 /* transport error / API message */
+    devos_docker_inspect_t inspect; /* filled for a successful inspect */
+} devos_docker_req_result_t;
+
+/* Submit a command by container id or name ("start" / "stop" / "restart" /
+ * "inspect"). timeout_ms bounds the HTTP exchange (<= 0 uses the default).
+ * Returns a ticket > 0, or 0 when Docker isn't configured or the queue is
+ * full. An inspect resolves its target independently of the UI's cached list. */
+uint32_t devos_docker_request(const char *id, const char *action, int timeout_ms);
+uint32_t devos_docker_inspect(const char *id, int timeout_ms);
+/* Snapshot a ticket's state/result. False once released. Terminal states stay
+ * readable until release. */
+bool devos_docker_request_poll(uint32_t ticket, devos_docker_req_result_t *out);
+/* Stop treating a request's (possibly in-flight) result as wanted. The worker
+ * discards a running result it no longer owns; a mutation already sent keeps an
+ * unknown outcome. Safe to call once before release. */
+void devos_docker_request_cancel(uint32_t ticket);
+/* Free a ticket slot (safe once; other tickets are unaffected). */
+void devos_docker_request_release(uint32_t ticket);
 
 /* The container whose stats (and logs, if logs is true) are kept fresh. */
 void devos_docker_select(const char *id, bool logs);

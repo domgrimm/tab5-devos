@@ -21,7 +21,14 @@ void jobs_system_register(void);
 void jobs_http_register(void);
 void jobs_network_register(void);
 void jobs_mqtt_register(void);
+void jobs_docker_register(void);
 void jobs_events_register(void);
+
+/* Optional availability gate for the Docker provider (e.g. the Docker app is
+ * switched off in Settings > Apps). Jobs never re-enables an app; a false
+ * result makes every docker.* action unavailable with `reason`. NULL clears
+ * the gate. Not needed by host tests, so it lives in the provider. */
+void jobs_docker_set_gate(bool (*gate)(char *reason, size_t cap));
 
 /* ---- system-event producers (Phase 6) -----------------------------------
  * Called from main's boot path / 1 Hz loop, never from an engine. The bridge

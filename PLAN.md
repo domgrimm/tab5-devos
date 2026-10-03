@@ -384,7 +384,11 @@ services in the REST client).
     Restart / Stop (asks first) / Start. Logs full width: the last 300 lines, then only what's new
     every 2 s (Docker's multiplexed frames decoded, stderr marked `!`, local times), following
     until you scroll up.
-*   The worker (Core 0, started on first use) only polls while the app is shown.
+*   The worker (Core 0, started on first use) polls the list / selected stats / logs only while the
+    app is shown. Container commands also run through a bounded, correlated queue
+    (`devos_docker_request` / `inspect` / `poll` / `cancel` / `release`) that runs regardless of
+    the screen: each carries its own config snapshot and result, so Jobs and the UI never
+    overwrite one another. The UI's fire-and-forget wrapper keeps its status note.
 
 ### 3.14 ADS-B Radar (`app_adsb`, `devos_adsb`)
 
@@ -522,6 +526,20 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     list is deduplicated and capped. An `mqtt.message` trigger declares its subscription and
     ignores retained messages unless `include_retained: true`. The broker password stays in the
     MQTT app's settings, never in a job.
+*   **Docker (`devos_docker`, `docker.inspect` / `start` / `stop` / `restart`).** Container
+    commands are correlated tickets on a bounded queue (`devos_docker_request`), run by the one
+    Core 0 worker whether or not the Docker screen is shown; `set_active` only gates the UI's
+    list/stats/logs refresh. Each request snapshots the config and Portainer environment at
+    submit, so a later settings change cannot send it to another host, and a command is never
+    overwritten by a newer one (a full queue is an error). `docker.inspect` reads the daemon by id
+    or name - state, health, id, updated - independent of the UI's cached list. `docker.start` /
+    `stop` / `restart` report `status`, `accepted` (HTTP 204/304) and `outcome_unknown` (a
+    transport error after the request may have arrived): accepted is not "the service recovered",
+    so a job follows a restart with a `wait` and an HTTP/health probe, and a mutation is never
+    retried automatically. Verified against a fake Engine API in `tools/jobs_docker_test.c`.
+    A switched-off Docker app makes every `docker.*` action unavailable with a reason (Jobs never
+    re-enables an app). A `docker.container_state_changed` event stays deferred until its
+    polling/freshness semantics are defined; jobs poll `docker.inspect` in the meantime.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -544,8 +562,11 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     are safe before init. `README.md`, `AGENTS.md` and `main/apps/app_template/` document the
     required provider/event hooks for future apps.
 
-**Status:** Phase 0 (contracts) and Phase 1 (model / parser / validator / serializer) are
-implemented and host-tested; the scheduler, providers, storage and GUI follow the roadmap below.
+**Status:** Phases 0-8 are implemented and host-tested: the language (model / parser / validator /
+serializer), the action and event primitives, the scheduler and interpreter, durable storage and
+recovery, the Builder + Text GUI, calendar and system-event triggers, reliable MQTT, and Docker
+background operations (this phase). Phase 9 (advanced language: bounded `repeat`, callable jobs,
+optional WoL/DNS) and Phase 10 (target hardening) follow the roadmap below.
 
 ---
 
@@ -867,7 +888,24 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       and one shared connection are the documented limits. `tools/jobs_mqtt_test.c` (26 checks)
       drives a fake broker through all of the above; the trigger path is covered in
       `tools/jobs_schedule_test.c`.
-- [ ] **Phase 8** - Docker background operation integration.
+- [x] **Phase 8** - Docker background operation integration. `devos_docker` replaces the single
+      overwriteable action slot with a bounded, correlated request queue (8 tickets) and a
+      request-specific `inspect` / `start` / `stop` / `restart` contract: commands run whether or
+      not the UI is polling (the app's `set_active` now only gates the list/stats/logs refresh),
+      each ticket snapshots the config and Portainer environment at submit, a full queue returns
+      an error instead of overwriting, and cancellation discards a running result without
+      reporting a false outcome. `inspect` reads `/containers/<id-or-name>/json` directly,
+      independent of the UI cache, returning state/health/id/name/started/observed; mutations
+      distinguish `accepted` (HTTP 204/304) from `outcome_unknown` (a transport error after the
+      request may have reached the daemon, never retried automatically). The `jobs_docker`
+      provider registers `docker.inspect` (read) and `docker.start` / `stop` / `restart` (mutate,
+      with a visible "mutates" marker in the Builder) with availability reporting, gated on the
+      Docker app being switched on (Jobs never re-enables an app). A Docker
+      state-change event stays deferred until its freshness semantics are defined; jobs poll
+      `inspect`. `tools/jobs_docker_test.c` (51 checks, fake Engine API) covers the documented
+      example round-trip, inspect success / not-found / transport error, accepted-vs-unknown, two
+      commands never overwriting, the config snapshot, queue saturation, the app gate, the UI
+      note, cancellation and exact release.
 - [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional
       WoL/DNS, typed job calls.
 - [ ] **Phase 10** - target hardening: SRAM/PSRAM/stack/size measurements, mixed-workload soak, SD
@@ -895,6 +933,10 @@ tab5-devos/
 │   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
+│   ├── devos_actions/             # Jobs typed action schemas + async operation runtime (no LVGL)
+│   ├── devos_events/              # Jobs bounded typed event delivery (no LVGL)
+│   ├── devos_secrets/            # named credential references for Jobs (no LVGL)
+│   ├── devos_jobs/                # Jobs parser/validator/serializer/scheduler/executor (no LVGL)
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
 │   ├── devos_crypto/              # SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32
 │   ├── devos_totp/                # encrypted TOTP vault (no LVGL)
@@ -914,6 +956,7 @@ tab5-devos/
 │   └── libssh2_port/              # libssh2 SSH client component
 ├── main/
 │   ├── main.c                     # System boot, hardware init, FreeRTOS task launch
+│   ├── jobs_providers/            # Jobs action/event provider bridge (http/ping/mqtt/docker/system)
 │   ├── apps/
 │   │   ├── app_launcher/          # Home Screen dashboard & app switcher
 │   │   ├── app_terminal/          # SSH client & ANSI terminal emulator
@@ -926,6 +969,7 @@ tab5-devos/
 │   │   ├── app_docker/            # Docker / Portainer console
 │   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json)
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault
+│   │   ├── app_jobs/              # Jobs: keyboard-first list, Builder, Text editor, history
 │   │   ├── app_settings/          # Wi-Fi setup, display, power, system info
 │   │   └── app_template/          # Starter drop-in template for modular third-party apps
 │   └── include/

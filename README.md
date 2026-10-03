@@ -28,7 +28,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **MQTT** | Broker monitor and publisher (MQTT 3.1.1) with JSON pretty-printing |
 | **Network** | Ping, DNS lookup, port scan, Wi-Fi survey, mDNS browser and Wake-on-LAN (magic packets to a sleeping machine, broadcast or routed over the VPN, with a remembered list) |
 | **REST** | REST and webhook client with saved requests and `{{variables}}` |
-| **Docker** | Docker Engine / Portainer console: containers, logs, start / stop |
+| **Docker** | Docker Engine / Portainer console: containers, logs, start / stop, plus background Jobs `docker.inspect` / `start` / `stop` / `restart` actions |
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
@@ -92,11 +92,40 @@ absent or invalid battery never fires) and `mqtt.message` (from the configured b
 optional `policy(overlap: "skip" |
 "queue_one", cooldown: 5m)` controls automatic admission; **Run now** bypasses the cooldown.
 
-Actions are `http.request`, `network.ping`, `system.log`, `system.notify` and `mqtt.publish`. An
+Actions are `http.request`, `network.ping`, `system.log`, `system.notify`, `mqtt.publish` and
+`docker.inspect` / `docker.start` / `docker.stop` / `docker.restart`. An
 `mqtt.message` trigger declares the broker subscription it needs - `event "mqtt.message"(topic:
 "home/doorbell")` - so the broker sends only those topics; retained messages are ignored unless
 `include_retained: true` is set. MQTT is one configured broker over plain TCP (no TLS), and a job
 never carries the broker password: it stays in the MQTT app's settings.
+
+Docker actions run in the background, whether or not the Docker screen is open.
+`docker.inspect(container: "web")` reads the daemon directly by id or name (`ok`, `status`,
+`state`, `health`, `id`, `name`, `updated`); `docker.start` / `stop` / `restart` return `status`,
+`accepted` and `outcome_unknown`. `accepted` means the daemon took the request (HTTP 204/304), not
+that the service recovered - follow a restart with a `wait` and a health check:
+
+```text
+version 1;
+job "Recover web service" {
+    trigger every 5m;
+    policy(timeout: 90s, overlap: "skip", cooldown: 15m);
+    http.request(method: "GET", url: "http://web.local/health", timeout: 5s) as before;
+    if !before.ok || before.status != 200 {
+        docker.restart(container: "web", timeout: 15s) as restart;
+        wait 10s;
+        http.request(method: "GET", url: "http://web.local/health", timeout: 5s) as after;
+        if !after.ok || after.status != 200 {
+            system.notify(message: "Web recovery failed", level: "error");
+        }
+    }
+}
+```
+
+A transport error on a mutation reports `outcome_unknown` and is never retried automatically;
+Docker not being configured (or switched off in **Settings > Apps**) blocks the run with a
+diagnostic. The Docker app's live list, stats and logs keep working while a job acts, and a job's
+commands never overwrite each other.
 
 **Builder** is the default view (press **Sym+M** for Text). It has a trigger card (Manual / Every /
 Daily / Weekdays / Event, with the event topic and an optional `where` filter), a step tree you

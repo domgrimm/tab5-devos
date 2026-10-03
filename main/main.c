@@ -392,6 +392,15 @@ static void jobs_mqtt_unsub(int handle, void *user)
     devos_mqtt_unsubscribe_owned(handle);
 }
 
+/* A switched-off Docker app makes the docker.* actions unavailable; Jobs never
+ * re-enables an app (PLAN.md 4.3). */
+static bool jobs_docker_gate(char *reason, size_t cap)
+{
+    if (devos_core_app_enabled("docker")) return true;
+    snprintf(reason, cap, "Docker is switched off in Settings > Apps");
+    return false;
+}
+
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
 static void jobs_sync_system(void)
@@ -501,6 +510,7 @@ static void devos_system_bringup(void)
      * event registry must exist first so topic schemas can be registered. */
     devos_events_init();
     jobs_providers_register_all();
+    jobs_docker_set_gate(jobs_docker_gate);
 
     /* 6d. Jobs engine: scheduler + durable storage. Started only when the app
      * is on; automatic runs stay paused after a safe/reverted boot, and a

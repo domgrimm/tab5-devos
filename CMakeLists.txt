@@ -176,6 +176,7 @@ else()
         main/jobs_providers/jobs_http.c
         main/jobs_providers/jobs_network.c
         main/jobs_providers/jobs_mqtt.c
+        main/jobs_providers/jobs_docker.c
         main/jobs_providers/jobs_events.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c

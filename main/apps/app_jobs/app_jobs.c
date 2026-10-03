@@ -246,7 +246,8 @@ static void builder_refresh(void)
     for (int i = 0; i < devos_actions_count(); i++) {
         const devos_action_descriptor_t *d = devos_actions_at(i);
         if (!d) continue;
-        ao += (size_t)snprintf(aopts + ao, sizeof(aopts) - ao, "%s%s", i ? "\n" : "", d->id);
+        ao += (size_t)snprintf(aopts + ao, sizeof(aopts) - ao, "%s%s%s", i ? "\n" : "", d->id,
+                               d->effect == DEVOS_EFFECT_MUTATE ? "  (mutates)" : "");
     }
     if (ao) lv_dropdown_set_options(s_ctx.dd_add, aopts);
 

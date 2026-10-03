@@ -6,7 +6,7 @@
  *
  *   gcc -O2 -Imain/jobs_providers -Icomponents/devos_actions -Icomponents/devos_err \
  *       -Icomponents/devos_http -Icomponents/devos_net -Icomponents/devos_config/include \
- *       -Icomponents/devos_jobs \
+ *       -Icomponents/devos_jobs -Icomponents/devos_tailnet \
  *       tools/jobs_http_test.c main/jobs_providers/jobs_http.c \
  *       components/devos_actions/devos_actions.c components/devos_http/devos_http.c \
  *       components/devos_net/devos_net.c -lpthread -o /tmp/jobs_http_test && /tmp/jobs_http_test
