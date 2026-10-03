@@ -75,6 +75,8 @@ typedef struct {
     jobs_job_t jobs[DEVOS_JOBS_MAX];
     int count;
     bool paused;
+    bool safe_paused;
+    bool stopping;
     bool ready;
     devos_jobs_state_t state;
     devos_jobs_system_t sys;

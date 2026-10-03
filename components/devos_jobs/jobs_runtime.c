@@ -3,6 +3,7 @@
  * the only external work is through devos_actions. */
 #include "jobs_internal.h"
 #include "jobs_platform.h"
+#include "jobs_store.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -314,6 +315,13 @@ static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
     snprintf(j->last_result, sizeof(j->last_result), "%.63s", msg && msg[0] ? msg : (ok ? "ok" : "failed"));
     j->last_run_ms = now;
     if (r->ast) { jobs_ast_release((jobs_ast_t *)r->ast); r->ast = NULL; }
+
+    /* Bounded history, written through the Core 1 worker so the scheduler
+     * (Core 0) never blocks on the SD card. */
+    char line[128];
+    snprintf(line, sizeof(line), "{\"run\":\"%s\",\"ok\":%s,\"ms\":%lld}",
+             r->run_id, ok ? "true" : "false", (long long)(now - r->started_ms));
+    jobs_store_history_append_async(j->id, line);
 }
 
 static void cancel_pending(jobs_job_t *j)

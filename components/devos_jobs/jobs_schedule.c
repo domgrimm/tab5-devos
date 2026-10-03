@@ -58,7 +58,7 @@ static void start_run(jobs_job_t *j, int64_t now)
 static void scheduler_loop(void *arg)
 {
     (void)arg;
-    for (;;) {
+    while (!g_jobs.stopping) {
         devos_jobs_tick();
         jobs_platform_sleep_ms(50);
     }
@@ -104,6 +104,7 @@ bool devos_jobs_init(void)
     g_jobs.state = DEVOS_JOBS_READY;
     g_jobs.ready = true;                 /* durable load is best-effort below */
     if (jobs_store_init(TAB5_SD_MOUNT_POINT)) {
+        jobs_store_worker_start();           /* Core 1 history writes */
         jobs_store_load(load_cb, NULL);
     }
 #ifdef ESP_PLATFORM
@@ -118,6 +119,7 @@ bool devos_jobs_init(void)
 
 void devos_jobs_shutdown(void)
 {
+    jobs_store_worker_stop();
     for (int i = 0; i < g_jobs.count; i++) {
         jobs_job_t *j = &g_jobs.jobs[i];
         if (!j->used) continue;
@@ -132,6 +134,8 @@ devos_jobs_state_t devos_jobs_state(void) { return g_jobs.state; }
 bool devos_jobs_ready(void) { return g_jobs.ready; }
 bool devos_jobs_paused(void) { return g_jobs.paused; }
 void devos_jobs_set_paused(bool paused) { g_jobs.paused = paused; }
+bool devos_jobs_safe_paused(void) { return g_jobs.safe_paused; }
+void devos_jobs_set_safe_pause(bool pause) { g_jobs.safe_paused = pause; }
 void devos_jobs_set_system(const devos_jobs_system_t *s)
 {
     if (s) g_jobs.sys = *s;
@@ -188,6 +192,12 @@ bool devos_jobs_run(devos_jobs_run_t *out)
 /* ---- commands ---- */
 devos_err_t devos_jobs_apply(const char *id, const char *source, size_t len, uint32_t *out_revision)
 {
+    return devos_jobs_apply_base(id, source, len, 0, false, out_revision);
+}
+
+devos_err_t devos_jobs_apply_base(const char *id, const char *source, size_t len,
+                                  uint32_t base_revision, bool base_known, uint32_t *out_revision)
+{
     if (!id || !id[0] || !source) return DEVOS_ERR_INVALID_ARG;
     if (strlen(id) >= DEVOS_JOBS_ID_MAX) return DEVOS_ERR_INVALID_SIZE;
 
@@ -197,6 +207,12 @@ devos_err_t devos_jobs_apply(const char *id, const char *source, size_t len, uin
 
     jobs_job_t *j = jobs_find(id);
     bool existed = j != NULL;
+    /* Stale editor: the active revision moved on. Preserve its draft elsewhere
+     * (the UI offers Reload / Save as new); here the apply is refused. */
+    if (base_known && (existed ? j->revision : 0) != base_revision) {
+        jobs_ast_free(ast);
+        return DEVOS_ERR_INVALID_STATE;
+    }
     if (!j) {
         j = job_alloc();
         if (!j) { jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
@@ -284,6 +300,38 @@ devos_err_t devos_jobs_delete(const char *id)
     return DEVOS_OK;
 }
 
+devos_err_t devos_jobs_save_draft(const char *id, const char *source, size_t len)
+{
+    if (!id || !id[0] || !source) return DEVOS_ERR_INVALID_ARG;
+    if (!jobs_store_available()) return DEVOS_ERR_INVALID_STATE;
+    return jobs_store_draft_save(id, source, len);
+}
+
+devos_err_t devos_jobs_load_draft(const char *id, char *out, size_t cap, size_t *out_len)
+{
+    if (!jobs_store_available()) return DEVOS_ERR_INVALID_STATE;
+    return jobs_store_draft_load(id, out, cap, out_len);
+}
+
+void devos_jobs_prepare_shutdown(void)
+{
+    g_jobs.stopping = true;
+    g_jobs.ready = false;                   /* no new automatic starts */
+    for (int i = 0; i < g_jobs.count; i++) {
+        jobs_job_t *j = &g_jobs.jobs[i];
+        if (j->used && j->run.active) jobs_run_cancel(j);
+    }
+}
+
+const char *devos_jobs_restart_check(void)
+{
+    for (int i = 0; i < g_jobs.count; i++) {
+        jobs_job_t *j = &g_jobs.jobs[i];
+        if (j->used && j->run.active && !j->run.cancelling) return "a job is running";
+    }
+    return NULL;
+}
+
 void devos_jobs_tick(void)
 {
     if (g_jobs.state != DEVOS_JOBS_READY) return;
@@ -292,7 +340,8 @@ void devos_jobs_tick(void)
         jobs_job_t *j = &g_jobs.jobs[i];
         if (!j->used) continue;
         /* Automatic dispatch: interval due, not already running, not paused. */
-        if (!j->run.active && j->enabled && !g_jobs.paused && g_jobs.ready &&
+        if (!j->run.active && j->enabled && !g_jobs.paused && !g_jobs.safe_paused &&
+            !g_jobs.stopping && g_jobs.ready &&
             j->trigger_kind == JTRIG_EVERY && j->has_next && j->interval_ms > 0 &&
             now >= j->next_due_ms) {
             do { j->next_due_ms += j->interval_ms; } while (j->next_due_ms <= now);   /* skip missed */

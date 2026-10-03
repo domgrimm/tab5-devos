@@ -10,6 +10,21 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef ESP_PLATFORM
+#include "devos_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+static SemaphoreHandle_t s_wmx;
+#define W_LOCK()   do { if (s_wmx) xSemaphoreTake(s_wmx, portMAX_DELAY); } while (0)
+#define W_UNLOCK() do { if (s_wmx) xSemaphoreGive(s_wmx); } while (0)
+#else
+#include <pthread.h>
+static pthread_mutex_t s_wmx = PTHREAD_MUTEX_INITIALIZER;
+#define W_LOCK()   pthread_mutex_lock(&s_wmx)
+#define W_UNLOCK() pthread_mutex_unlock(&s_wmx)
+#endif
+
 #ifndef TAB5_SD_MOUNT_POINT
 #define TAB5_SD_MOUNT_POINT "./sim_sdcard"
 #endif
@@ -368,3 +383,107 @@ devos_err_t jobs_store_history_append(const char *id, const char *line)
 
 void jobs_store_fail_after(int step) { s_fail_at = step; s_step = 0; }
 void jobs_store_reset_fail(void) { s_fail_at = 0; s_step = 0; }
+
+/* ---------------------------------------------------------------- drafts */
+devos_err_t jobs_store_draft_save(const char *id, const char *source, size_t len)
+{
+    if (!s_st.available) return DEVOS_ERR_INVALID_STATE;
+    if (!id || !id[0] || !source) return DEVOS_ERR_INVALID_ARG;
+    char path[JOBS_STORE_PATH_MAX];
+    path_join(path, sizeof(path), ".devos/jobs/drafts/%s.job", id);
+    if (!write_atomic(path, source, len)) return degrade("couldn't save the draft");
+    return DEVOS_OK;
+}
+
+devos_err_t jobs_store_draft_load(const char *id, char *out, size_t cap, size_t *out_len)
+{
+    if (!s_st.available) return DEVOS_ERR_INVALID_STATE;
+    char path[JOBS_STORE_PATH_MAX];
+    path_join(path, sizeof(path), ".devos/jobs/drafts/%s.job", id);
+    char *buf = NULL;
+    size_t len = 0;
+    if (!read_file(path, &buf, &len)) return DEVOS_ERR_NOT_FOUND;
+    size_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(out, buf, n);
+    out[n] = '\0';
+    if (out_len) *out_len = n;
+    free(buf);
+    return DEVOS_OK;
+}
+
+/* ---------------------------------------------------------------- worker */
+typedef struct { char id[JOBS_STORE_ID_MAX]; char line[128]; } hreq_t;
+#define HQUEUE 16
+static hreq_t s_hq[HQUEUE];
+static int s_hqh, s_hqn;
+static volatile bool s_worker_run;
+static uint32_t s_hdrop;
+
+void jobs_store_history_append_async(const char *id, const char *line)
+{
+    if (!s_worker_run) { jobs_store_history_append(id, line); return; }
+    W_LOCK();
+    if (s_hqn >= HQUEUE) { s_hqh = (s_hqh + 1) % HQUEUE; s_hqn--; s_hdrop++; }
+    int idx = (s_hqh + s_hqn) % HQUEUE;
+    snprintf(s_hq[idx].id, sizeof(s_hq[idx].id), "%s", id ? id : "");
+    snprintf(s_hq[idx].line, sizeof(s_hq[idx].line), "%s", line ? line : "");
+    s_hqn++;
+    W_UNLOCK();
+}
+
+uint32_t jobs_store_history_dropped(void) { return s_hdrop; }
+
+#ifdef ESP_PLATFORM
+static void store_worker_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (!s_worker_run) { vTaskDelete(NULL); return; }
+        hreq_t req;
+        bool have = false;
+        W_LOCK();
+        if (s_hqn > 0) { req = s_hq[s_hqh]; s_hqh = (s_hqh + 1) % HQUEUE; s_hqn--; have = true; }
+        W_UNLOCK();
+        if (have) jobs_store_history_append(req.id, req.line);
+        else vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+bool jobs_store_worker_start(void)
+{
+    if (!s_wmx) s_wmx = xSemaphoreCreateMutex();
+    if (s_worker_run) return true;
+    s_worker_run = true;
+    if (xTaskCreatePinnedToCore(store_worker_task, "jobs_io", 4096, NULL, 2, NULL,
+                                DEVOS_CORE_UI_INPUT) != pdPASS) {
+        s_worker_run = false;
+        return false;
+    }
+    return true;
+}
+void jobs_store_worker_stop(void) { s_worker_run = false; }
+#else
+static void *store_worker_thread(void *arg)
+{
+    (void)arg;
+    while (s_worker_run) {
+        hreq_t req;
+        bool have = false;
+        W_LOCK();
+        if (s_hqn > 0) { req = s_hq[s_hqh]; s_hqh = (s_hqh + 1) % HQUEUE; s_hqn--; have = true; }
+        W_UNLOCK();
+        if (have) jobs_store_history_append(req.id, req.line);
+        else usleep(20 * 1000);
+    }
+    return NULL;
+}
+bool jobs_store_worker_start(void)
+{
+    if (s_worker_run) return true;
+    s_worker_run = true;
+    pthread_t t;
+    if (pthread_create(&t, NULL, store_worker_thread, NULL) != 0) { s_worker_run = false; return false; }
+    pthread_detach(t);
+    return true;
+}
+void jobs_store_worker_stop(void) { s_worker_run = false; }
+#endif

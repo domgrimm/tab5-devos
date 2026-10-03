@@ -104,10 +104,28 @@ bool devos_jobs_run(devos_jobs_run_t *out);
  * The UI enqueues these and gets completion through the snapshot API. They do
  * not return pointers into worker-owned memory. */
 devos_err_t devos_jobs_apply(const char *id, const char *source, size_t len, uint32_t *out_revision);
+/* Apply with a base revision for conflict detection (the revision the editor
+ * loaded). base_known=false skips the check. A stale base returns
+ * DEVOS_ERR_INVALID_STATE (conflict) and changes nothing. */
+devos_err_t devos_jobs_apply_base(const char *id, const char *source, size_t len,
+                                  uint32_t base_revision, bool base_known, uint32_t *out_revision);
+/* Draft checkpoint: writes the draft file only, never activates a revision. */
+devos_err_t devos_jobs_save_draft(const char *id, const char *source, size_t len);
+devos_err_t devos_jobs_load_draft(const char *id, char *out, size_t cap, size_t *out_len);
 devos_err_t devos_jobs_set_enabled(const char *id, bool enabled);
 devos_err_t devos_jobs_run_now(const char *id);
 devos_err_t devos_jobs_cancel(const char *id);
 devos_err_t devos_jobs_delete(const char *id);
+
+/* Safe start / reverted boot keeps automatic execution paused until the user
+ * resumes; Run now still works. */
+void devos_jobs_set_safe_pause(bool pause);
+bool devos_jobs_safe_paused(void);
+/* Cancel active runs and stop new automatic starts (before restart/shutdown). */
+void devos_jobs_prepare_shutdown(void);
+/* A reason when a restart would lose work, else NULL (for devos_core's restart
+ * check). */
+const char *devos_jobs_restart_check(void);
 
 #ifdef __cplusplus
 }

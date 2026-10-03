@@ -61,6 +61,17 @@ devos_err_t jobs_store_remove(const char *id);
 /* Append a bounded history line, rotating the segment when it grows too large. */
 devos_err_t jobs_store_history_append(const char *id, const char *line);
 
+/* Draft checkpoint: never activates a revision. */
+devos_err_t jobs_store_draft_save(const char *id, const char *source, size_t len);
+devos_err_t jobs_store_draft_load(const char *id, char *out, size_t cap, size_t *out_len);
+
+/* Core 1 storage worker: history appends are queued so the scheduler (Core 0)
+ * never blocks on SD. Without the worker (host/tests) they run inline. */
+bool jobs_store_worker_start(void);
+void jobs_store_worker_stop(void);
+void jobs_store_history_append_async(const char *id, const char *line);
+uint32_t jobs_store_history_dropped(void);
+
 /* Tests: fail the Nth filesystem step (0 = never). */
 void jobs_store_fail_after(int step);
 void jobs_store_reset_fail(void);

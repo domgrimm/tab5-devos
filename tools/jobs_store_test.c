@@ -26,6 +26,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static int64_t s_now;
+static int64_t fake_now(void *u) { (void)u; return s_now; }
+
+static const char *last_log(void)
+{
+    static char lines[JOBS_SYSTEM_LOG_LINE];
+    int n = jobs_system_log_tail(lines, 1);
+    return n == 1 ? lines : "";
+}
+
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 
@@ -148,6 +158,57 @@ int main(void)
     CHECK(devos_jobs_apply("mem", SRC1, strlen(SRC1), NULL) == DEVOS_OK);   /* RAM-only */
     CHECK(devos_jobs_count() == 2);
     devos_jobs_shutdown();
+
+    /* 11. draft checkpoint (never activates) and base-revision conflicts */
+    CHECK(devos_jobs_init());
+    jobs_system_register();
+    CHECK(devos_jobs_apply("roundtrip", SRC1, strlen(SRC1), &rev) == DEVOS_OK);
+    CHECK(devos_jobs_save_draft("roundtrip", SRC3, strlen(SRC3)) == DEVOS_OK);
+    char dbuf[512];
+    size_t dlen = 0;
+    CHECK(devos_jobs_load_draft("roundtrip", dbuf, sizeof(dbuf), &dlen) == DEVOS_OK);
+    CHECK(strstr(dbuf, "three") != NULL);
+    devos_job_summary_t s2;
+    CHECK(devos_jobs_summary_at(0, &s2) && strcmp(s2.id, "roundtrip") == 0);
+    uint32_t cur = s2.revision;
+    CHECK(devos_jobs_apply_base("roundtrip", SRC2, strlen(SRC2), cur + 5, true, NULL) == DEVOS_ERR_INVALID_STATE);
+    CHECK(devos_jobs_apply_base("roundtrip", SRC2, strlen(SRC2), cur, true, &rev) == DEVOS_OK);
+    CHECK(rev == cur + 1);
+
+    /* 12. safe pause, restart check, prepare_shutdown */
+    jobs_platform_set_clock(fake_now, NULL);
+    s_now = 100000;
+    const char *AUTO = "version 1;\njob \"auto\" {\n trigger every 1s;\n system.log(message: \"auto\");\n}\n";
+    CHECK(devos_jobs_apply("auto", AUTO, strlen(AUTO), NULL) == DEVOS_OK);
+    CHECK(devos_jobs_set_enabled("auto", true) == DEVOS_OK);
+    devos_jobs_set_safe_pause(true);
+    int base2 = jobs_system_log_count();
+    s_now += 5000;
+    devos_jobs_tick();
+    CHECK(jobs_system_log_count() == base2);        /* no automatic run while safe-paused */
+    CHECK(devos_jobs_run_now("auto") == DEVOS_OK);  /* Run now still works */
+    devos_jobs_tick();
+    CHECK(strcmp(last_log(), "auto") == 0);
+    devos_jobs_set_safe_pause(false);
+
+    const char *WAIT = "version 1;\njob \"waiter\" {\n trigger manual;\n wait 5s;\n system.log(message: \"w\");\n}\n";
+    CHECK(devos_jobs_apply("waiter", WAIT, strlen(WAIT), NULL) == DEVOS_OK);
+    CHECK(devos_jobs_run_now("waiter") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(devos_jobs_restart_check() != NULL);      /* an active run would be lost */
+    devos_jobs_prepare_shutdown();
+    CHECK(!devos_jobs_ready());
+    devos_jobs_tick();                              /* cancels the run */
+    CHECK(devos_jobs_restart_check() == NULL);
+    devos_jobs_shutdown();
+
+    /* 13. Core 1 history worker (host thread): queued appends land on disk */
+    CHECK(jobs_store_init(ROOT));
+    CHECK(jobs_store_worker_start());
+    jobs_store_history_append_async("h", "async-line");
+    usleep(300 * 1000);
+    CHECK(exists("sim_sdcard/.devos/jobs/history/h.jsonl"));
+    jobs_store_worker_stop();
 
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
