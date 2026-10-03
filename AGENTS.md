@@ -98,7 +98,7 @@ tab5-devos/
 │   ├── tab5_keyboard/             # A164 I2C keyboard driver, interrupt & HID decoder
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # OS kernel, event bus, app switcher, hotkey dispatcher, app on/off boot mask
-│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons, devos_cmdpal (Sym+Space), devos_hud (Sym+I), devos_shortcuts (Sym+S), devos_toast
+│   ├── devos_ui/                  # LVGL v9 theme engine, top bar, code viewer, devos_focus, devos_widgets, devos_icons, devos_cmdpal (Sym+Space), devos_hud (Sym+I), devos_shortcuts (Sym+S), devos_powerdlg (restart/shutdown confirm), devos_toast
 │   ├── devos_net/                 # Wi-Fi manager, DNS, lwIP virtual socket routing (+HTTP GET)
 │   ├── devos_storage/             # MicroSD SDMMC mount, auto-scaffolding bootstrap
 │   ├── devos_fileshare/           # SD card as a password-protected web page (no LVGL; Settings > File Sharing)

@@ -7,6 +7,7 @@
 #include "devos_hud.h"
 #include "devos_shortcuts.h"
 #include "devos_toast.h"
+#include "devos_powerdlg.h"
 #include "devos_storage.h"
 #include "devos_fileshare.h"
 #include "devos_power.h"
@@ -299,15 +300,15 @@ static void power_backlight_cb(int percent)
 }
 
 /* The global power shortcuts: Sym+P sleeps, Sym+Shift+R restarts, Sym+Shift+Q
- * shuts down. Sleep is reversible and acts at once; the other two open the
- * command palette on their command so the same confirmation (and the restart
- * check) runs as from the palette. */
+ * shuts down. Sleep is reversible and acts at once; the other two raise the
+ * same confirm/cancel dialog as the Settings > Power buttons
+ * (devos_powerdlg), which runs the restart check first. */
 static void sys_action_cb(devos_sys_action_t action)
 {
     switch (action) {
     case DEVOS_SYS_SLEEP:    devos_power_sleep_now(); break;
-    case DEVOS_SYS_RESTART:  devos_cmdpal_open_with("restart", true); break;
-    case DEVOS_SYS_SHUTDOWN: devos_cmdpal_open_with("shut down", true); break;
+    case DEVOS_SYS_RESTART:  devos_powerdlg_restart(); break;
+    case DEVOS_SYS_SHUTDOWN: devos_powerdlg_shutdown(); break;
     }
 }
 
@@ -505,7 +506,9 @@ static void devos_system_bringup(void)
     printf("[devOS] Creating Top Bar...\n");
     devos_top_bar_create(lv_layer_top());
     /* Sym + Space command palette, Sym + I info panel and Sym + S shortcut
-     * sheet, over any app */
+     * sheet, over any app; the restart / shutdown confirmation (Sym+Shift+R /
+     * Sym+Shift+Q) is registered first so it owns the keyboard while open */
+    devos_powerdlg_init();
     devos_cmdpal_init();
     devos_hud_init();
     devos_shortcuts_init();

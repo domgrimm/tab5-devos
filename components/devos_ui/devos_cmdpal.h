@@ -6,7 +6,7 @@
  * outside the box closes it.
  *
  * It lists every app that is switched on, the system commands (theme,
- * info panel, screen off, restart) and whatever else was added with
+ * info panel, screen off, restart, shutdown) and whatever else was added with
  * devos_cmdpal_add(). Apps add theirs in init(), so a switched-off app's
  * commands are gone with it.
  */
@@ -37,8 +37,7 @@ void devos_cmdpal_init(void);
 void devos_cmdpal_add(const devos_command_t *cmd);
 void devos_cmdpal_open(void);
 /* Open with `query` in the box (NULL = empty). run_first runs the best match
- * at once - the Sym+R / Sym+Q shortcuts use it to land on restart / shutdown
- * and raise their confirmation. */
+ * at once. */
 void devos_cmdpal_open_with(const char *query, bool run_first);
 void devos_cmdpal_close(void);
 bool devos_cmdpal_is_open(void);

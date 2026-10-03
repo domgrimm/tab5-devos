@@ -116,6 +116,7 @@ else()
         components/devos_ui/devos_hud.c
         components/devos_ui/devos_shortcuts.c
         components/devos_ui/devos_toast.c
+        components/devos_ui/devos_powerdlg.c
         components/devos_ui/lv_font_nimbus_mono_14.c
         components/devos_storage/devos_storage.c
         components/devos_fileshare/devos_fileshare.c

@@ -201,7 +201,7 @@ void devos_core_set_brightness_step_cb(devos_brightness_step_fn cb);
 /* System actions for the global power hotkeys: Sym+P (sleep), Sym+Shift+R
  * (restart), Sym+Shift+Q (shutdown). main wires this to the UI so the core
  * stays free of devos_ui: sleep acts at once, restart and shutdown raise
- * their confirmation. */
+ * the same confirmation as Settings > Power (devos_powerdlg). */
 typedef enum {
     DEVOS_SYS_SLEEP = 0,
     DEVOS_SYS_RESTART,
