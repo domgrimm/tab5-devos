@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.5.1",
+    "built": "Oct  3 2026 15:29:42",
+    "notes": "Restart and shutdown now ask first with the same confirm/cancel dialog as Settings > Power (Sym+Shift+R / Sym+Shift+Q)."
+  },
+  {
     "version": "0.5.0",
     "built": "Oct  2 2026 07:37:30",
     "notes": "Coder's Toolkit, Wake-on-LAN, and power shortcuts (Sym+P sleep, Sym+Shift+R restart, Sym+Shift+Q shutdown)"

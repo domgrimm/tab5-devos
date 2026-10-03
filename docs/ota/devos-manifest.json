@@ -1,8 +1,8 @@
 {
-  "version": "0.5.0",
-  "url": "tab5-devos-0.5.0.bin",
-  "size": 2572864,
-  "sha256": "269d337d470c2d70eb8015f7427985194614407786b93c349a21fcd71b1123a0",
-  "build": "5e1a10e9a0bb526633635c5e89a4fc2b69434a33096e9475a8fda8fc94eb0033",
-  "notes": "Coder's Toolkit, Wake-on-LAN, and power shortcuts (Sym+P sleep, Sym+Shift+R restart, Sym+Shift+Q shutdown)"
+  "version": "0.5.1",
+  "url": "tab5-devos-0.5.1.bin",
+  "size": 2585824,
+  "sha256": "92e165c8f6e8e839af26555aa674cae6d2b8dfa6b83e22cf587c1a82ec52940f",
+  "build": "88a0614e5a29b3599ae0f62f7486b3641ea188096fdb9b0494dae616eaa77497",
+  "notes": "Restart and shutdown now ask first with the same confirm/cancel dialog as Settings > Power (Sym+Shift+R / Sym+Shift+Q)."
 }
