@@ -26,6 +26,13 @@
 /* devos_core.c isn't linked; devos_core_restart() asks it for the current app */
 devos_app_id_t devos_core_get_current_app(void) { return DEVOS_APP_NONE; }
 devos_app_descriptor_t *devos_core_get_app(devos_app_id_t id) { (void)id; return NULL; }
+/* ... nor its known-app list; stand in for the hidden ("cricket") descriptor.
+ * Any uid the test doesn't name is a normal (default-on) app. */
+static devos_app_descriptor_t s_hidden = { .uid = "cricket", .default_off = true };
+devos_app_descriptor_t *devos_core_find_known_app(const char *uid)
+{
+    return uid && strcmp(uid, "cricket") == 0 ? &s_hidden : NULL;
+}
 
 typedef void (*boot_fn)(void);
 
@@ -53,6 +60,8 @@ static void fresh(void)
 {
     assert(devos_core_apps_boot_kind() == DEVOS_APPS_BOOT_NORMAL);
     assert(devos_core_app_enabled("docker") && devos_core_app_enabled("adsb"));
+    /* a hidden (default-off) app is off until switched on; normal apps are on */
+    assert(!devos_core_app_enabled("cricket") && !devos_core_app_enabled_next("cricket"));
     assert(!devos_core_apps_restart_pending());
     /* the launcher and Settings can't be switched off */
     devos_core_set_app_enabled_next("settings", false);
@@ -117,6 +126,7 @@ static void safe(void)
 {
     assert(devos_core_apps_boot_kind() == DEVOS_APPS_BOOT_SAFE);
     assert(devos_core_app_enabled("docker") && devos_core_app_enabled("adsb"));
+    assert(!devos_core_app_enabled("cricket"));         /* still hidden after safe start */
     assert(!devos_core_apps_restart_pending());
 }
 
@@ -124,6 +134,45 @@ static void after_safe(void)
 {
     assert(devos_core_apps_boot_kind() == DEVOS_APPS_BOOT_NORMAL);
     assert(devos_core_app_enabled("docker") && devos_core_app_enabled("adsb"));
+}
+
+/* Enabling a hidden app: it stays off until the next boot, then comes back on
+ * and keeps its place across a normal restart. */
+static void enable_hidden(void)
+{
+    assert(!devos_core_app_enabled("cricket"));
+    devos_core_set_app_enabled_next("cricket", true);
+    assert(!devos_core_app_enabled("cricket"));         /* still off this boot */
+    assert(devos_core_app_enabled_next("cricket"));
+    assert(devos_core_apps_restart_pending());
+    devos_core_apps_boot_ok();                          /* nothing else pending */
+}
+
+static void hidden_on(void)
+{
+    assert(devos_core_app_enabled("cricket"));          /* the "on" mask held */
+    assert(!devos_core_apps_restart_pending());
+    devos_core_apps_boot_ok();
+}
+
+static void hidden_persists(void)
+{
+    assert(devos_core_app_enabled("cricket"));
+}
+
+/* Switching a hidden app back off from Settings. */
+static void disable_hidden(void)
+{
+    assert(devos_core_app_enabled("cricket"));
+    devos_core_set_app_enabled_next("cricket", false);
+    assert(devos_core_app_enabled_next("cricket") == false);
+    devos_core_apps_boot_ok();
+}
+
+static void hidden_off_again(void)
+{
+    assert(!devos_core_app_enabled("cricket"));
+    assert(!devos_core_apps_restart_pending());
 }
 
 int main(void)
@@ -146,6 +195,14 @@ int main(void)
     boot(true, safe);
     printf("safe start switched every app back on\n");
     boot(false, after_safe);
+    boot(false, enable_hidden);
+    printf("a hidden app switched on in Settings stays off until the next boot\n");
+    boot(false, hidden_on);
+    boot(false, hidden_persists);
+    printf("... then comes back on and stays on across restarts\n");
+    boot(false, disable_hidden);
+    boot(false, hidden_off_again);
+    printf("switching a hidden app back off from Settings holds too\n");
     printf("=== All app switch tests passed ===\n");
     return 0;
 }

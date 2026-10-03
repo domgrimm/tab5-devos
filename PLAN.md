@@ -114,7 +114,7 @@ graph TD
 | **GUI Framework** | LVGL v9.2+ | MIT | - | Rich widget set, PPA 2D hardware blitting, monospace terminal & markdown rendering support |
 | **Tailscale / VPN** | MicroLink v2 | MIT | `trombik/esp_wireguard` | Full `ts2021` Tailscale protocol stack (DERP relays, STUN, DISCO, MagicDNS, WireGuard ChaCha20-Poly1305) |
 | **SSH Client** | `libssh2` (`skuodi/libssh2_esp`) | BSD-3-Clause | `david-cermak/libssh` or `wolfSSH` | Permissive BSD license, supports interactive PTY, password & Ed25519/RSA key auth, proven on ESP32 |
-| **HTTP Client** | `devos_http` (HTTP/1.1 + mbedTLS over the devos_net sockets): OTA, REST, Docker, ADS-B, maps, Cricket | MIT (ours) | `esp_http_client` | Goes through the socket layer, so VPN routing applies; one client for every app |
+| **HTTP Client** | `devos_http` (HTTP/1.1 + mbedTLS over the devos_net sockets): OTA, REST, Docker, ADS-B, maps | MIT (ours) | `esp_http_client` | Goes through the socket layer, so VPN routing applies; one client for every app |
 | **JSON Parser** | Minimal shared reader in `devos_json` (strings, arrays, key lookup), used by `devos_ota` | MIT | `cJSON` / `yyjson` | Only the consumed shapes are parsed; zero new dependencies |
 | **Markdown Parser** | Shared CommonMark-subset renderer in `devos_mdview` (LVGL spangroup-based), used by the editor preview | MIT | `md4c` | No extra dependency for the covered subset; host-side unit test in `tools/md_preview_test.c` |
 | **Terminal ANSI Engine** | Custom VT100/ANSI parser + LVGL canvas | MIT | Ported `libvterm` | Lightweight, customized for 1280x720 character grid (160x45 columns/rows) |

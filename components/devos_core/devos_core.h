@@ -51,6 +51,11 @@ typedef struct {
      * one per line as "keys\twhat they do"; a line without a tab is a
      * heading. May follow the app's state (file list vs text). NULL = none. */
     const char *(*get_shortcuts)(void);
+    /* Hidden app: off until switched on in Settings > Apps, where it still
+     * appears (so it can be discovered and enabled). Its engine does not
+     * start and it takes no RAM until then. Launcher / Settings can't be
+     * hidden. */
+    bool default_off;
 } devos_app_descriptor_t;
 
 typedef struct {
@@ -163,6 +168,8 @@ const char *devos_core_restart_check(void);
 /* Every app registered, switched-off ones included (registration order). */
 int devos_core_known_app_count(void);
 devos_app_descriptor_t *devos_core_known_app_at(int index);
+/* The descriptor for `uid` from that list, or NULL. */
+devos_app_descriptor_t *devos_core_find_known_app(const char *uid);
 
 /* Memory an app takes when it starts (its init() - measured by
  * register_app - plus its engine, measured by main.c), in bytes. Target:
