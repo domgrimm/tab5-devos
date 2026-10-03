@@ -30,6 +30,7 @@ extern "C" {
 
 typedef struct {
     char topic[DEVOS_EVENTS_TOPIC_MAX];
+    char source[DEVOS_EVENTS_TOPIC_MAX];  /* provider-specific source (MQTT topic), "" if none */
     uint32_t seq;              /* per-topic monotonic sequence */
     int64_t mono_ms;           /* monotonic timestamp */
     int64_t wall_s;            /* wall time, 0/!wall_valid when unset */
@@ -39,6 +40,7 @@ typedef struct {
     const uint8_t *payload;    /* owned copy, may be NULL */
     uint32_t payload_len;
     bool truncated;            /* producer payload exceeded the cap */
+    bool retain;               /* MQTT retained message (producer-specific) */
 } devos_event_t;
 
 /* Register a topic's schema so the Builder/validator understand its fields.
@@ -62,6 +64,9 @@ typedef void (*devos_event_cb_t)(const devos_event_t *ev, void *user);
  * Returns a subscription id > 0, or -1. Delivery is on the caller's task. */
 int devos_events_subscribe(const char *pattern, devos_event_cb_t cb, void *user);
 void devos_events_unsubscribe(int sub_id);
+/* MQTT-style topic match (exact, '+' one non-empty level, terminal '#');
+ * a leading wildcard does not match '$'-prefixed system topics. */
+bool devos_events_topic_match(const char *pattern, const char *topic);
 /* Deliver up to `max` queued events (0 = all) to the subscribers present at
  * the start of the call. Callbacks run on this task, outside the lock. Returns
  * the number of events drained. */

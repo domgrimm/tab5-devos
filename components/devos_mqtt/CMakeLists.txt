@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "devos_mqtt.c"
     INCLUDE_DIRS "."
-    REQUIRES devos_config devos_json devos_net
+    REQUIRES devos_config devos_json devos_net devos_events
     PRIV_REQUIRES nvs_flash esp_timer
 )

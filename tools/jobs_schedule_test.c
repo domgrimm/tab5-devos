@@ -80,6 +80,28 @@ static void disable_all(void)
     for (int i = 0; devos_jobs_summary_at(i, &s); i++) devos_jobs_set_enabled(s.id, false);
 }
 
+static void pub_event(const char *topic, const char *source, const char *payload, bool retain)
+{
+    devos_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    snprintf(ev.topic, sizeof(ev.topic), "%s", topic);
+    snprintf(ev.source, sizeof(ev.source), "%s", source);
+    ev.retain = retain;
+    devos_events_publish(&ev, payload, (uint32_t)strlen(payload));
+}
+
+/* Fake MQTT subscription hooks: the engine must acquire/release through them. */
+static int s_sub_calls, s_unsub_calls;
+static char s_sub_topic[JOBS_SUB_TOPIC_MAX];
+static int fake_sub(const char *topic, void *user)
+{
+    (void)user;
+    s_sub_calls++;
+    snprintf(s_sub_topic, sizeof(s_sub_topic), "%s", topic);
+    return 7;
+}
+static void fake_unsub(int handle, void *user) { (void)user; (void)handle; s_unsub_calls++; }
+
 static void apply_ok(const char *id, const char *src)
 {
     uint32_t rev = 0;
@@ -366,6 +388,43 @@ int main(void)
       devos_events_publish(&ev, "{\"name\":\"home\"}", 15); }
     devos_jobs_tick();
     CHECK(strcmp(last_log(), "tunnel network.wireguard_up") == 0);
+
+    /* ================= MQTT trigger ================= */
+    devos_jobs_set_mqtt_hooks(fake_sub, fake_unsub, NULL);
+    disable_all();
+    apply_ok("mqtt", "version 1;\njob \"mqtt\" {\n"
+                      " trigger event \"mqtt.message\"(topic: \"home/doorbell\");\n"
+                      " system.log(message: \"${event.source}=${event.payload}\");\n}\n");
+    CHECK(s_sub_calls == 1 && strcmp(s_sub_topic, "home/doorbell") == 0);
+    CHECK(devos_jobs_set_enabled("mqtt", true) == DEVOS_OK);
+    base = log_count();
+    pub_event("mqtt.message", "other/x", "nope", false);     /* outside the subscription */
+    devos_jobs_tick();
+    CHECK(log_count() == base);
+    pub_event("mqtt.message", "home/doorbell", "ding", true); /* retained: ignored by default */
+    devos_jobs_tick();
+    CHECK(log_count() == base);
+    pub_event("mqtt.message", "home/doorbell", "ding", false);
+    devos_jobs_tick();
+    CHECK(log_count() == base + 1);
+    CHECK(strcmp(last_log(), "home/doorbell=ding") == 0);
+    /* include_retained: true lets a retained message through */
+    disable_all();
+    apply_ok("mqtt2", "version 1;\njob \"mqtt2\" {\n"
+                       " trigger event \"mqtt.message\"(topic: \"home/#\", include_retained: true);\n"
+                       " system.log(message: \"r=${event.payload}\");\n}\n");
+    CHECK(s_sub_calls == 2 && strcmp(s_sub_topic, "home/#") == 0);
+    CHECK(devos_jobs_set_enabled("mqtt2", true) == DEVOS_OK);
+    base = log_count();
+    pub_event("mqtt.message", "home/x", "kept", true);
+    devos_jobs_tick();
+    CHECK(log_count() == base + 1);
+    CHECK(strcmp(last_log(), "r=kept") == 0);
+    /* deleting the job releases its broker subscription */
+    disable_all();
+    int before_unsub = s_unsub_calls;
+    CHECK(devos_jobs_delete("mqtt2") == DEVOS_OK);
+    CHECK(s_unsub_calls == before_unsub + 1);
 
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;

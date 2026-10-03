@@ -132,6 +132,11 @@ static bool topic_match(const char *pat, const char *topic)
     return match_levels(pat, topic);
 }
 
+bool devos_events_topic_match(const char *pattern, const char *topic)
+{
+    return topic_match(pattern, topic);
+}
+
 int devos_events_subscribe(const char *pattern, devos_event_cb_t cb, void *user)
 {
     if (!pattern || !pattern[0] || !cb) return -1;

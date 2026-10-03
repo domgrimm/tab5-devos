@@ -151,6 +151,18 @@ bool jobs_calendar_recompute(jobs_job_t *j)
 
 /* ---- trigger configuration ---------------------------------------------- */
 
+/* A plain string argument: a bare literal or a single-literal JN_EXPR_STR. */
+static bool lit_str_of(const jobs_node_t *e, const char **out)
+{
+    if (!e) return false;
+    if (e->kind == JN_EXPR_LIT && e->u.lit.type == DEVOS_VAL_STR) { *out = e->u.lit.v.str.s; return true; }
+    if (e->kind == JN_EXPR_STR && e->a && e->a->sub == JSP_LITERAL && !e->a->next) {
+        *out = e->a->u.str.s;
+        return true;
+    }
+    return false;
+}
+
 static void read_trigger(jobs_job_t *j, const jobs_ast_t *ast)
 {
     j->trigger_kind = JTRIG_MANUAL;
@@ -158,6 +170,8 @@ static void read_trigger(jobs_job_t *j, const jobs_ast_t *ast)
     j->trig_hh = 8;
     j->trig_mm = 0;
     j->event_topic[0] = '\0';
+    j->mqtt_topic[0] = '\0';
+    j->mqtt_sub_handle = 0;
     j->ev_debounce_ms = 0;
     j->include_retained = false;
     j->cooldown_ms = 0;
@@ -176,13 +190,15 @@ static void read_trigger(jobs_job_t *j, const jobs_ast_t *ast)
             snprintf(j->event_topic, sizeof(j->event_topic), "%s", t->u.str.s ? t->u.str.s : "");
             for (const jobs_node_t *a = t->a; a; a = a->next) {
                 const jobs_node_t *v = a->a;
-                if (!v || v->kind != JN_EXPR_LIT) continue;
-                if (strcmp(a->u.str.s, "debounce") == 0 && v->u.lit.type == DEVOS_VAL_DURATION)
+                const char *sv = NULL;
+                if (strcmp(a->u.str.s, "debounce") == 0 && v && v->kind == JN_EXPR_LIT &&
+                    v->u.lit.type == DEVOS_VAL_DURATION)
                     j->ev_debounce_ms = v->u.lit.v.ms;
-                else if (strcmp(a->u.str.s, "include_retained") == 0 && v->u.lit.type == DEVOS_VAL_BOOL)
+                else if (strcmp(a->u.str.s, "include_retained") == 0 && v && v->kind == JN_EXPR_LIT &&
+                         v->u.lit.type == DEVOS_VAL_BOOL)
                     j->include_retained = v->u.lit.v.b;
-                else if (strcmp(a->u.str.s, "topic") == 0 && v->u.lit.type == DEVOS_VAL_STR)
-                    snprintf(j->event_topic, sizeof(j->event_topic), "%s", v->u.lit.v.str.s);
+                else if (strcmp(a->u.str.s, "topic") == 0 && lit_str_of(v, &sv))
+                    snprintf(j->mqtt_topic, sizeof(j->mqtt_topic), "%s", sv);
             }
         }
     }
@@ -206,7 +222,9 @@ static void event_cb(const devos_event_t *ev, void *user)
     j->ev.valid = true;
     j->ev.seq = ev->seq;
     j->ev.truncated = ev->truncated;
+    j->ev.retain = ev->retain;
     snprintf(j->ev.topic, sizeof(j->ev.topic), "%s", ev->topic);
+    snprintf(j->ev.source, sizeof(j->ev.source), "%s", ev->source);
     uint32_t n = ev->payload_len;
     if (n > JOBS_EV_PAYLOAD_MAX) n = JOBS_EV_PAYLOAD_MAX;
     if (ev->payload && n) memcpy(j->ev.payload, ev->payload, n);
@@ -219,6 +237,10 @@ void jobs_event_unsubscribe(jobs_job_t *j)
 {
     if (!j) return;
     if (j->sub_id > 0) { devos_events_unsubscribe(j->sub_id); j->sub_id = 0; }
+    if (j->mqtt_sub_handle > 0 && g_jobs.mqtt_unsub) {
+        g_jobs.mqtt_unsub(j->mqtt_sub_handle, g_jobs.mqtt_user);
+        j->mqtt_sub_handle = 0;
+    }
     j->ev.pending = false;
 }
 
@@ -228,6 +250,12 @@ void jobs_event_subscribe(jobs_job_t *j)
     jobs_event_unsubscribe(j);
     if (j->trigger_kind != JTRIG_EVENT || !j->event_topic[0]) return;
     j->sub_id = devos_events_subscribe(j->event_topic, event_cb, j);
+    /* An mqtt.message trigger also owns a broker subscription so the broker
+     * sends the topics it needs, without touching the user's own four. */
+    if (strcmp(j->event_topic, "mqtt.message") == 0 && g_jobs.mqtt_sub) {
+        const char *filter = j->mqtt_topic[0] ? j->mqtt_topic : "#";
+        j->mqtt_sub_handle = g_jobs.mqtt_sub(filter, g_jobs.mqtt_user);
+    }
 }
 
 /* ---- lifecycle ---- */
@@ -332,6 +360,12 @@ void devos_jobs_set_offset_fn(devos_jobs_offset_fn fn, void *user)
 {
     g_jobs.offset_fn = fn;
     g_jobs.offset_user = user;
+}
+void devos_jobs_set_mqtt_hooks(devos_jobs_mqtt_sub_fn sub, devos_jobs_mqtt_unsub_fn unsub, void *user)
+{
+    g_jobs.mqtt_sub = sub;
+    g_jobs.mqtt_unsub = unsub;
+    g_jobs.mqtt_user = user;
 }
 
 /* ---- snapshots ---- */
@@ -575,6 +609,14 @@ static bool job_consume_trigger(jobs_job_t *j, int64_t now)
     case JTRIG_EVENT:
         if (j->ev.pending) {
             j->ev.pending = false;
+            /* MQTT: the trigger's declared subscription filters by the message
+             * source topic; retained messages are ignored unless opted in. */
+            if (strcmp(j->event_topic, "mqtt.message") == 0) {
+                if (j->mqtt_topic[0] && !devos_events_topic_match(j->mqtt_topic, j->ev.source))
+                    return false;
+                if (j->ev.retain && !j->include_retained)
+                    return false;
+            }
             g_jobs.cur_event = j->ev;
             g_jobs.cur_event_valid = true;
             bool match = jobs_trigger_where_matches(j);

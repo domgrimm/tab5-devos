@@ -140,8 +140,9 @@ static bool resolve_ref(V *v, const jobs_node_t *n, ty_t *type, bool *is_obj)
         if (!v->in_event) { verr(v, n, "'event' is only available to event triggers"); return false; }
         if (!field) { *is_obj = true; *type = TY_OBJ; return true; }
         static const struct { const char *n; ty_t t; } ef[] = {
-            { "topic", TY_STR }, { "payload", TY_STR }, { "retain", TY_BOOL },
-            { "qos", TY_INT }, { "truncated", TY_BOOL }, { "seq", TY_INT },
+            { "topic", TY_STR }, { "source", TY_STR }, { "payload", TY_STR },
+            { "retain", TY_BOOL }, { "qos", TY_INT }, { "truncated", TY_BOOL },
+            { "seq", TY_INT },
         };
         for (size_t i = 0; i < sizeof(ef) / sizeof(ef[0]); i++)
             if (strcmp(ef[i].n, field) == 0) { *is_obj = false; *type = ef[i].t; return true; }
@@ -152,8 +153,13 @@ static bool resolve_ref(V *v, const jobs_node_t *n, ty_t *type, bool *is_obj)
         if (!field) { *is_obj = true; *type = TY_OBJ; return true; }
         static const struct { const char *n; ty_t t; } sf[] = {
             { "battery_percent", TY_INT }, { "battery_valid", TY_BOOL }, { "battery_present", TY_BOOL },
-            { "wifi_state", TY_INT }, { "wifi_ssid", TY_STR }, { "local_ip", TY_STR },
-            { "uptime_s", TY_INT }, { "wall_valid", TY_BOOL },
+            { "charging", TY_BOOL }, { "wifi_connected", TY_BOOL }, { "wifi_ssid", TY_STR },
+            { "local_ip", TY_STR }, { "wifi_rssi", TY_INT },
+            { "tailscale_online", TY_BOOL }, { "tailscale_ip", TY_STR }, { "tailscale_hostname", TY_STR },
+            { "wireguard_online", TY_BOOL }, { "wireguard_name", TY_STR }, { "wireguard_address", TY_STR },
+            { "uptime_s", TY_INT }, { "time_valid", TY_BOOL },
+            { "psram_free_kb", TY_INT }, { "sram_free_kb", TY_INT }, { "sram_largest_kb", TY_INT },
+            { "cpu_core0", TY_INT }, { "cpu_core1", TY_INT },
         };
         for (size_t i = 0; i < sizeof(sf) / sizeof(sf[0]); i++)
             if (strcmp(sf[i].n, field) == 0) { *is_obj = false; *type = sf[i].t; return true; }

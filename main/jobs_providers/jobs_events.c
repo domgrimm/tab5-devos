@@ -61,6 +61,11 @@ static const devos_event_schema_t WG_DOWN_S = {
     .fields = "name:string",
     .description = "A WireGuard tunnel went down (transition only)",
 };
+static const devos_event_schema_t MQTT_MSG_S = {
+    .topic = "mqtt.message",
+    .fields = "source:string,payload:string,retain:boolean,qos:int,truncated:boolean,seq:int",
+    .description = "A message received from the configured MQTT broker",
+};
 
 void jobs_events_register(void)
 {
@@ -72,6 +77,7 @@ void jobs_events_register(void)
     devos_events_register_topic(&TS_DOWN_S);
     devos_events_register_topic(&WG_UP_S);
     devos_events_register_topic(&WG_DOWN_S);
+    devos_events_register_topic(&MQTT_MSG_S);
 }
 
 static void publish(const char *topic, const char *provider, const char *payload)

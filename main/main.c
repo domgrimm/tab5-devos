@@ -18,6 +18,7 @@
 #include "devos_sysmon.h"
 #include "devos_tailnet.h"
 #include "devos_wireguard.h"
+#include "devos_mqtt.h"
 #include "libssh2_port.h"
 
 /* Apps */
@@ -378,6 +379,19 @@ static int32_t jobs_tz_offset_at(int64_t utc_s, void *user)
     return (int32_t)((int64_t)utc_s - (int64_t)mktime(&ut));
 }
 
+/* MQTT subscription ownership for Jobs: an mqtt.message trigger acquires a
+ * broker subscription through devos_mqtt without clobbering the user's own. */
+static int jobs_mqtt_sub(const char *topic, void *user)
+{
+    (void)user;
+    return devos_mqtt_subscribe_owned(topic);
+}
+static void jobs_mqtt_unsub(int handle, void *user)
+{
+    (void)user;
+    devos_mqtt_unsubscribe_owned(handle);
+}
+
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
 static void jobs_sync_system(void)
@@ -493,6 +507,7 @@ static void devos_system_bringup(void)
      * restart reports a running job. The DST-correct offset comes from the
      * device's POSIX zone, which sysmon has already applied. */
     devos_jobs_set_offset_fn(jobs_tz_offset_at, NULL);
+    devos_jobs_set_mqtt_hooks(jobs_mqtt_sub, jobs_mqtt_unsub, NULL);
     START_ENGINE("jobs", devos_jobs_init());
     if (devos_core_apps_boot_kind() != DEVOS_APPS_BOOT_NORMAL) devos_jobs_set_safe_pause(true);
     devos_core_add_restart_check(devos_jobs_restart_check);

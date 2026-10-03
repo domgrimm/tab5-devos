@@ -1,6 +1,7 @@
 /* devos_mqtt: see devos_mqtt.h. */
 #include "devos_mqtt.h"
 #include "devos_config.h"
+#include "devos_events.h"
 #include "devos_json.h"
 #include "devos_net.h"
 
@@ -65,7 +66,28 @@ typedef struct {
     size_t len;
     uint8_t qos;
     bool retain;
+    uint32_t ticket;                /* 0 = fire-and-forget */
 } pub_t;
+
+typedef struct {
+    bool used;
+    uint32_t id;
+    uint8_t state;                  /* devos_mqtt_ticket_state_t */
+    uint8_t qos;
+    bool retain;
+    unsigned pid;                   /* MQTT packet id once sent */
+    uint32_t deadline_ms;           /* QoS 1 ack deadline, 0 = none */
+    uint32_t timeout_ms;            /* per-ticket ack timeout */
+    char topic[DEVOS_MQTT_TOPIC_MAX];
+} ticket_t;
+
+#define MQTT_DEFAULT_ACK_MS 10000
+#define MQTT_SUBCMD_MAX     8
+
+typedef struct {
+    bool add;
+    char topic[DEVOS_MQTT_TOPIC_MAX];
+} subcmd_t;
 
 static devos_mqtt_config_t s_cfg;
 static slot_t *s_ring;
@@ -77,6 +99,12 @@ static uint32_t s_total_msgs, s_total_bytes;
 static uint32_t s_bucket[5], s_bucket_sec;     /* messages per second, last 5 s */
 static pub_t s_pubq[PUB_QUEUE];
 static int s_pub_n;
+static ticket_t s_tickets[DEVOS_MQTT_TICKETS];
+static uint32_t s_ticket_seq;
+static bool s_owned_used[DEVOS_MQTT_MAX_OWNED];
+static char s_owned[DEVOS_MQTT_MAX_OWNED][DEVOS_MQTT_TOPIC_MAX];
+static subcmd_t s_subcmd[MQTT_SUBCMD_MAX];
+static int s_subcmd_head, s_subcmd_n;
 
 static volatile devos_mqtt_state_t s_state;
 static volatile bool s_want, s_restart;
@@ -276,6 +304,23 @@ static void store_message(const char *topic, size_t tlen, const uint8_t *payload
     s_bucket[sec % 5]++;
     s_gen++;
     UNLOCK();
+
+    /* mqtt.message ingress event, published outside the lock (PLAN.md 8.2).
+     * `topic`/`payload` point into the parser buffer, which is not reused until
+     * the next socket read, so copying here is safe. A truncated payload is
+     * flagged; a job that needs the whole body fails clearly rather than
+     * seeing half of one. */
+    devos_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    snprintf(ev.topic, sizeof(ev.topic), "mqtt.message");
+    size_t stl = tlen < sizeof(ev.source) - 1 ? tlen : sizeof(ev.source) - 1;
+    memcpy(ev.source, topic, stl);
+    ev.source[stl] = '\0';
+    snprintf(ev.provider, sizeof(ev.provider), "mqtt");
+    ev.corr = seq;
+    ev.truncated = full_len > stored;
+    ev.retain = retain;
+    devos_events_publish(&ev, payload, (uint32_t)stored);
 }
 
 uint32_t devos_mqtt_generation(void) { return s_gen; }
@@ -358,9 +403,28 @@ void devos_mqtt_stats(uint32_t *messages, uint32_t *bytes, float *per_s)
 }
 
 /* ---- publish queue ---- */
+static bool valid_pub_topic(const char *t)
+{
+    return t && t[0] && !strchr(t, '#') && !strchr(t, '+');
+}
+
+/* Enqueue an already-allocated payload; the lock must be held. */
+static int enqueue_locked(char *copy, const char *topic, size_t len, int qos, bool retain, uint32_t ticket)
+{
+    if (s_pub_n >= PUB_QUEUE) return -1;
+    pub_t *p = &s_pubq[s_pub_n++];
+    snprintf(p->topic, sizeof(p->topic), "%s", topic);
+    p->payload = copy;
+    p->len = len;
+    p->qos = (uint8_t)(qos < 0 ? 0 : qos);
+    p->retain = retain;
+    p->ticket = ticket;
+    return 0;
+}
+
 int devos_mqtt_publish(const char *topic, const char *payload, size_t len, int qos, bool retain)
 {
-    if (!topic || !topic[0] || strchr(topic, '#') || strchr(topic, '+')) return -1;
+    if (!valid_pub_topic(topic)) return -1;
     if (s_state != DEVOS_MQTT_UP) return -1;
     char *copy = malloc(len + 1);
     if (!copy) return -1;
@@ -368,19 +432,196 @@ int devos_mqtt_publish(const char *topic, const char *payload, size_t len, int q
     copy[len] = '\0';
     int rc = -1;
     LOCK();
-    if (s_pub_n < PUB_QUEUE) {
-        pub_t *p = &s_pubq[s_pub_n++];
-        snprintf(p->topic, sizeof(p->topic), "%s", topic);
-        p->payload = copy;
-        p->len = len;
-        p->qos = (uint8_t)(qos < 0 ? 0 : qos > 1 ? 1 : qos);   /* QoS 2 is sent as 1 */
-        p->retain = retain;
-        copy = NULL;
-        rc = 0;
-    }
+    if (enqueue_locked(copy, topic, len, qos, retain, 0) == 0) { copy = NULL; rc = 0; }
     UNLOCK();
     free(copy);
     return rc;
+}
+
+/* ---- tracked publish tickets ---- */
+static ticket_t *ticket_find_locked(uint32_t id)
+{
+    for (int i = 0; i < DEVOS_MQTT_TICKETS; i++)
+        if (s_tickets[i].used && s_tickets[i].id == id) return &s_tickets[i];
+    return NULL;
+}
+
+uint32_t devos_mqtt_publish_ticket(const char *topic, const char *payload, size_t len,
+                                   int qos, bool retain, int timeout_ms)
+{
+    if (!valid_pub_topic(topic)) return 0;
+    if (qos > 1) return 0;                                  /* reject QoS 2, never downgrade silently */
+    char *copy = malloc(len + 1);
+    if (!copy) return 0;
+    if (len) memcpy(copy, payload, len);
+    copy[len] = '\0';
+
+    uint32_t id = 0;
+    LOCK();
+    ticket_t *t = NULL;
+    for (int i = 0; i < DEVOS_MQTT_TICKETS; i++) if (!s_tickets[i].used) { t = &s_tickets[i]; break; }
+    if (t) {
+        memset(t, 0, sizeof(*t));
+        t->used = true;
+        t->id = ++s_ticket_seq;
+        if (!t->id) t->id = ++s_ticket_seq;
+        t->qos = (uint8_t)(qos < 0 ? 0 : qos);
+        t->retain = retain;
+        t->timeout_ms = timeout_ms > 0 ? (uint32_t)timeout_ms : MQTT_DEFAULT_ACK_MS;
+        snprintf(t->topic, sizeof(t->topic), "%s", topic);
+        id = t->id;
+        if (s_state == DEVOS_MQTT_UP && enqueue_locked(copy, topic, len, qos, retain, t->id) == 0) {
+            t->state = DEVOS_MQTT_TICKET_QUEUED;
+            copy = NULL;
+        } else {
+            t->state = DEVOS_MQTT_TICKET_FAILED;            /* not connected or queue full */
+        }
+    }
+    UNLOCK();
+    free(copy);
+    return id;
+}
+
+bool devos_mqtt_ticket_poll(uint32_t id, devos_mqtt_ticket_state_t *state)
+{
+    if (!id) return false;
+    bool ok = false;
+    LOCK();
+    ticket_t *t = ticket_find_locked(id);
+    if (t) { if (state) *state = (devos_mqtt_ticket_state_t)t->state; ok = true; }
+    UNLOCK();
+    return ok;
+}
+
+void devos_mqtt_ticket_release(uint32_t id)
+{
+    if (!id) return;
+    LOCK();
+    ticket_t *t = ticket_find_locked(id);
+    if (t) t->used = false;
+    UNLOCK();
+}
+
+static void ticket_mark_sent(uint32_t id, unsigned pid, bool sent)
+{
+    LOCK();
+    ticket_t *t = ticket_find_locked(id);
+    if (t) {
+        if (!sent) {
+            t->state = DEVOS_MQTT_TICKET_FAILED;
+        } else {
+            t->state = DEVOS_MQTT_TICKET_SENT;
+            t->pid = pid;
+            t->deadline_ms = t->qos ? now_ms() + t->timeout_ms : 0;   /* QoS 0 is terminal */
+        }
+    }
+    UNLOCK();
+}
+
+static void ticket_mark_acked(unsigned pid)
+{
+    LOCK();
+    for (int i = 0; i < DEVOS_MQTT_TICKETS; i++) {
+        ticket_t *t = &s_tickets[i];
+        if (t->used && t->state == DEVOS_MQTT_TICKET_SENT && t->qos && t->pid == pid) {
+            t->state = DEVOS_MQTT_TICKET_ACKED;
+            t->deadline_ms = 0;
+            break;
+        }
+    }
+    UNLOCK();
+}
+
+static void ticket_expire(uint32_t now)
+{
+    LOCK();
+    for (int i = 0; i < DEVOS_MQTT_TICKETS; i++) {
+        ticket_t *t = &s_tickets[i];
+        if (t->used && t->state == DEVOS_MQTT_TICKET_SENT && t->deadline_ms &&
+            (int32_t)(now - t->deadline_ms) >= 0)
+            t->state = DEVOS_MQTT_TICKET_TIMEOUT;
+    }
+    UNLOCK();
+}
+
+/* A lost session resolves every unfinished ticket once; nothing is replayed. */
+static void ticket_lost_all(void)
+{
+    LOCK();
+    for (int i = 0; i < DEVOS_MQTT_TICKETS; i++) {
+        ticket_t *t = &s_tickets[i];
+        if (t->used && (t->state == DEVOS_MQTT_TICKET_QUEUED || t->state == DEVOS_MQTT_TICKET_SENT))
+            t->state = DEVOS_MQTT_TICKET_LOST;
+    }
+    UNLOCK();
+}
+
+/* ---- subscription ownership ---- */
+static void subcmd_push_locked(bool add, const char *topic)
+{
+    if (s_subcmd_n >= MQTT_SUBCMD_MAX) return;              /* dropped; a reconnect resends the full set */
+    subcmd_t *c = &s_subcmd[(s_subcmd_head + s_subcmd_n) % MQTT_SUBCMD_MAX];
+    c->add = add;
+    snprintf(c->topic, sizeof(c->topic), "%s", topic);
+    s_subcmd_n++;
+}
+
+int devos_mqtt_subscribe_owned(const char *topic)
+{
+    if (!topic || !topic[0] || strlen(topic) >= DEVOS_MQTT_TOPIC_MAX) return -1;
+    int handle = -1;
+    LOCK();
+    for (int i = 0; i < DEVOS_MQTT_MAX_SUBS; i++)
+        if (s_cfg.subs[i][0] && strcmp(s_cfg.subs[i], topic) == 0) { UNLOCK(); return -1; }
+    for (int i = 0; i < DEVOS_MQTT_MAX_OWNED; i++)
+        if (s_owned_used[i] && strcmp(s_owned[i], topic) == 0) { UNLOCK(); return -1; }
+    for (int i = 0; i < DEVOS_MQTT_MAX_OWNED; i++) {
+        if (!s_owned_used[i]) {
+            s_owned_used[i] = true;
+            snprintf(s_owned[i], sizeof(s_owned[i]), "%s", topic);
+            handle = i + 1;
+            subcmd_push_locked(true, topic);
+            break;
+        }
+    }
+    UNLOCK();
+    return handle;
+}
+
+void devos_mqtt_unsubscribe_owned(int handle)
+{
+    if (handle < 1 || handle > DEVOS_MQTT_MAX_OWNED) return;
+    LOCK();
+    int i = handle - 1;
+    if (s_owned_used[i]) {
+        char topic[DEVOS_MQTT_TOPIC_MAX];
+        snprintf(topic, sizeof(topic), "%.*s", DEVOS_MQTT_TOPIC_MAX - 1, s_owned[i]);
+        s_owned_used[i] = false;
+        s_owned[i][0] = '\0';
+        subcmd_push_locked(false, topic);
+    }
+    UNLOCK();
+}
+
+int devos_mqtt_effective_subs(char out[][DEVOS_MQTT_TOPIC_MAX], int max)
+{
+    if (!out || max <= 0) return 0;
+    int n = 0;
+    LOCK();
+    for (int i = 0; i < DEVOS_MQTT_MAX_SUBS && n < max; i++) {
+        if (!s_cfg.subs[i][0]) continue;
+        bool dup = false;
+        for (int k = 0; k < n; k++) if (strcmp(out[k], s_cfg.subs[i]) == 0) dup = true;
+        if (!dup) snprintf(out[n++], DEVOS_MQTT_TOPIC_MAX, "%.*s", DEVOS_MQTT_TOPIC_MAX - 1, s_cfg.subs[i]);
+    }
+    for (int i = 0; i < DEVOS_MQTT_MAX_OWNED && n < max; i++) {
+        if (!s_owned_used[i]) continue;
+        bool dup = false;
+        for (int k = 0; k < n; k++) if (strcmp(out[k], s_owned[i]) == 0) dup = true;
+        if (!dup) snprintf(out[n++], DEVOS_MQTT_TOPIC_MAX, "%.*s", DEVOS_MQTT_TOPIC_MAX - 1, s_owned[i]);
+    }
+    UNLOCK();
+    return n;
 }
 
 /* ---- wire format ---- */
@@ -438,18 +679,33 @@ static int send_connect(int sock, const devos_mqtt_config_t *c, const char *clie
     return send_packet(sock, 0x10, b, n);
 }
 
-static int send_subscribe(int sock, const devos_mqtt_config_t *c, unsigned pid)
+static int send_subscribe(int sock, unsigned pid)
 {
-    uint8_t b[DEVOS_MQTT_MAX_SUBS * (DEVOS_MQTT_TOPIC_MAX + 3) + 2];
+    char subs[DEVOS_MQTT_MAX_SUBS + DEVOS_MQTT_MAX_OWNED][DEVOS_MQTT_TOPIC_MAX];
+    int count = devos_mqtt_effective_subs(subs, DEVOS_MQTT_MAX_SUBS + DEVOS_MQTT_MAX_OWNED);
+    if (count <= 0) return 0;
+    size_t cap = (size_t)count * (DEVOS_MQTT_TOPIC_MAX + 3) + 2;
+    uint8_t *b = malloc(cap);
+    if (!b) return -1;
     size_t n = put_u16(b, pid);
-    int count = 0;
-    for (int i = 0; i < DEVOS_MQTT_MAX_SUBS; i++) {
-        if (!c->subs[i][0]) continue;
-        n += put_str(b + n, c->subs[i], strlen(c->subs[i]));
+    for (int i = 0; i < count; i++) {
+        n += put_str(b + n, subs[i], strlen(subs[i]));
         b[n++] = 2;                             /* QoS 2: messages keep their own QoS */
-        count++;
     }
-    return count ? send_packet(sock, 0x82, b, n) : 0;
+    int rc = send_packet(sock, 0x82, b, n);
+    free(b);
+    return rc;
+}
+
+/* One SUBSCRIBE / UNSUBSCRIBE for an owned-subscription change. */
+static int send_sub_one(int sock, bool add, const char *topic, unsigned pid)
+{
+    size_t tl = strlen(topic);
+    uint8_t b[DEVOS_MQTT_TOPIC_MAX + 5];
+    size_t n = put_u16(b, pid);
+    n += put_str(b + n, topic, tl);
+    if (add) b[n++] = 2;
+    return send_packet(sock, (uint8_t)(add ? 0x82 : 0xA2), b, n);
 }
 
 static int send_publish(int sock, const pub_t *p, unsigned pid)
@@ -526,6 +782,9 @@ static void handle_packet(link_t *ln, uint8_t hdr, const uint8_t *b, uint32_t st
         else if (qos == 2) send_ack(ln->sock, 0x50, pid);    /* PUBREC */
         break;
     }
+    case 4:                                     /* PUBACK -> our tracked publish completed */
+        if (stored >= 2) ticket_mark_acked(((unsigned)b[0] << 8) | b[1]);
+        break;
     case 6:                                     /* PUBREL -> PUBCOMP */
         if (stored >= 2) send_ack(ln->sock, 0x70, ((unsigned)b[0] << 8) | b[1]);
         break;
@@ -645,12 +904,19 @@ static void session(devos_mqtt_config_t *c, parser_t *ps, uint8_t *rbuf, int *ba
         return;
     }
     unsigned pid = 1;
-    send_subscribe(ln.sock, c, pid++);
-    char subs[160] = "";
-    for (int i = 0; i < DEVOS_MQTT_MAX_SUBS; i++) {
-        if (!c->subs[i][0]) continue;
-        size_t l = strlen(subs);
-        snprintf(subs + l, sizeof(subs) - l, "%s%s", l ? ", " : "", c->subs[i]);
+    send_subscribe(ln.sock, pid++);
+    LOCK();
+    s_subcmd_head = 0;
+    s_subcmd_n = 0;                              /* the full set was just sent */
+    UNLOCK();
+    char subs[220] = "";
+    {
+        char eff[DEVOS_MQTT_MAX_SUBS + DEVOS_MQTT_MAX_OWNED][DEVOS_MQTT_TOPIC_MAX];
+        int en = devos_mqtt_effective_subs(eff, DEVOS_MQTT_MAX_SUBS + DEVOS_MQTT_MAX_OWNED);
+        for (int i = 0; i < en; i++) {
+            if (subs[0]) strncat(subs, ", ", sizeof(subs) - strlen(subs) - 1);
+            strncat(subs, eff[i], sizeof(subs) - strlen(subs) - 1);
+        }
     }
     set_status("Connected to %s:%d  -  %s", c->host, c->port, subs);
     s_state = DEVOS_MQTT_UP;
@@ -665,6 +931,23 @@ static void session(devos_mqtt_config_t *c, parser_t *ps, uint8_t *rbuf, int *ba
             break;
         }
         if (ping_out && ln.last_rx - last_tx < 0x80000000u) ping_out = false;
+        /* owned-subscription changes requested while connected */
+        for (;;) {
+            subcmd_t cmd;
+            bool have = false;
+            LOCK();
+            if (s_subcmd_n) {
+                cmd = s_subcmd[s_subcmd_head];
+                s_subcmd_head = (s_subcmd_head + 1) % MQTT_SUBCMD_MAX;
+                s_subcmd_n--;
+                have = true;
+            }
+            UNLOCK();
+            if (!have) break;
+            send_sub_one(ln.sock, cmd.add, cmd.topic, pid++);
+            if (pid > 0xFFFF) pid = 1;
+            last_tx = now_ms();
+        }
         /* queued publishes */
         for (;;) {
             pub_t p;
@@ -678,7 +961,9 @@ static void session(devos_mqtt_config_t *c, parser_t *ps, uint8_t *rbuf, int *ba
             }
             UNLOCK();
             if (!have) break;
-            int rc = send_publish(ln.sock, &p, pid++);
+            unsigned use_pid = pid++;
+            int rc = send_publish(ln.sock, &p, use_pid);
+            if (p.ticket) ticket_mark_sent(p.ticket, use_pid, rc == 0);
             free(p.payload);
             if (pid > 0xFFFF) pid = 1;
             if (rc < 0) { ln.fail = true; break; }
@@ -689,6 +974,7 @@ static void session(devos_mqtt_config_t *c, parser_t *ps, uint8_t *rbuf, int *ba
             break;
         }
         uint32_t now = now_ms();
+        ticket_expire(now);                     /* QoS 1 acks that never arrived */
         if (!ping_out && now - last_tx >= ka / 2) {
             if (send_packet(ln.sock, 0xC0, NULL, 0) < 0) {     /* PINGREQ */
                 set_status("Lost the connection to %s", c->host);
@@ -733,11 +1019,13 @@ static void worker(void)
             continue;
         }
         session(&c, ps, rbuf, &backoff);
-        /* drop queued publishes from the lost session */
+        /* drop queued publishes from the lost session and resolve every
+         * unfinished ticket once (never replay automatically) */
         LOCK();
         for (int i = 0; i < s_pub_n; i++) free(s_pubq[i].payload);
         s_pub_n = 0;
         UNLOCK();
+        ticket_lost_all();
         if (!s_want) {
             s_state = DEVOS_MQTT_IDLE;
             char st[sizeof(s_status)];

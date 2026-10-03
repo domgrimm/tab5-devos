@@ -110,6 +110,15 @@ void devos_jobs_set_system(const devos_jobs_system_t *s);
 typedef int32_t (*devos_jobs_offset_fn)(int64_t utc_s, void *user);
 void devos_jobs_set_offset_fn(devos_jobs_offset_fn fn, void *user);
 
+/* MQTT subscription hooks: the boot bridge installs these so an
+ * `event "mqtt.message"` trigger acquires/releases a broker subscription
+ * without the Jobs engine depending on devos_mqtt. `sub` returns a handle > 0
+ * or -1; `unsub` releases it. Both may be NULL (MQTT triggers then run with
+ * whatever the user's own subscriptions deliver). */
+typedef int  (*devos_jobs_mqtt_sub_fn)(const char *topic, void *user);
+typedef void (*devos_jobs_mqtt_unsub_fn)(int handle, void *user);
+void devos_jobs_set_mqtt_hooks(devos_jobs_mqtt_sub_fn sub, devos_jobs_mqtt_unsub_fn unsub, void *user);
+
 /* Advance the scheduler once (interval deadlines, running jobs, waits). The
  * target calls this from its Core 0 task; host tests drive it with a fake
  * clock. Safe when the engine is off. */

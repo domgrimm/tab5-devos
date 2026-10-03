@@ -20,6 +20,7 @@ void jobs_providers_register_all(void);
 void jobs_system_register(void);
 void jobs_http_register(void);
 void jobs_network_register(void);
+void jobs_mqtt_register(void);
 void jobs_events_register(void);
 
 /* ---- system-event producers (Phase 6) -----------------------------------

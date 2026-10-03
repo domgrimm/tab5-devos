@@ -109,9 +109,11 @@ static bool resolve_path(jobs_run_t *r, const char *path, devos_value_t *out, ch
         if (!ev) { snprintf(err, errcap, "event data is not available here"); return false; }
         const char *f = path + 6;
         if (strcmp(f, "topic") == 0)     { out->type = DEVOS_VAL_STR; out->v.str.s = ev->topic; out->v.str.len = (uint32_t)strlen(ev->topic); return true; }
+        if (strcmp(f, "source") == 0)    { out->type = DEVOS_VAL_STR; out->v.str.s = ev->source; out->v.str.len = (uint32_t)strlen(ev->source); return true; }
         if (strcmp(f, "payload") == 0)   { out->type = DEVOS_VAL_STR; out->v.str.s = ev->payload; out->v.str.len = ev->payload_len; return true; }
         if (strcmp(f, "seq") == 0)       { out->type = DEVOS_VAL_INT; out->v.i = ev->seq; return true; }
         if (strcmp(f, "truncated") == 0) { out->type = DEVOS_VAL_BOOL; out->v.b = ev->truncated; return true; }
+        if (strcmp(f, "retain") == 0)    { out->type = DEVOS_VAL_BOOL; out->v.b = ev->retain; return true; }
         snprintf(err, errcap, "unknown event field '%s'", f);
         return false;
     }

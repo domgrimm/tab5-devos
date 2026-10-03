@@ -83,13 +83,20 @@ Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are kep
 A job has exactly one trigger: `manual`, `every <dur>` (phase-anchored, missed periods skipped),
 `daily "HH:MM"` or `weekdays "HH:MM"` (device-local time; one run per local date, DST-safe, and
 blocked while the clock is not set), or `event "topic"` (with an optional `where` filter over
-`event.topic`, `event.payload`, `event.seq` and `event.truncated`, and a bounded `debounce`). The
-system events are `system.boot` (once per normal boot), `network.wifi_connected` /
-`network.wifi_disconnected`, `network.tailscale_connected` / `network.tailscale_disconnected`,
-`network.wireguard_up` / `network.wireguard_down` (all transition-only), and `system.battery_below`
-(a valid, present pack crossing the low threshold; an absent or invalid battery never fires). An
+`event.topic`, `event.source`, `event.payload`, `event.seq`, `event.retain` and `event.truncated`,
+and a bounded `debounce`). The system events are `system.boot` (once per normal boot),
+`network.wifi_connected` / `network.wifi_disconnected`, `network.tailscale_connected` /
+`network.tailscale_disconnected`, `network.wireguard_up` / `network.wireguard_down` (all
+transition-only), `system.battery_below` (a valid, present pack crossing the low threshold; an
+absent or invalid battery never fires) and `mqtt.message` (from the configured broker). An
 optional `policy(overlap: "skip" |
 "queue_one", cooldown: 5m)` controls automatic admission; **Run now** bypasses the cooldown.
+
+Actions are `http.request`, `network.ping`, `system.log`, `system.notify` and `mqtt.publish`. An
+`mqtt.message` trigger declares the broker subscription it needs - `event "mqtt.message"(topic:
+"home/doorbell")` - so the broker sends only those topics; retained messages are ignored unless
+`include_retained: true` is set. MQTT is one configured broker over plain TCP (no TLS), and a job
+never carries the broker password: it stays in the MQTT app's settings.
 
 **Builder** is the default view (press **Sym+M** for Text). It has a trigger card (Manual / Every /
 Daily / Weekdays / Event, with the event topic and an optional `where` filter), a step tree you

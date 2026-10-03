@@ -18,6 +18,7 @@ extern "C" {
 #define JOBS_VAR_NAME_MAX 40
 #define JOBS_RUN_STRPOOL  1024
 #define JOBS_EV_PAYLOAD_MAX 256   /* bounded copy of a triggering event payload */
+#define JOBS_SUB_TOPIC_MAX  192   /* MQTT subscription topic (no devos_mqtt dependency) */
 
 /* ---- interpreter frames ---- */
 typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT } jobs_frame_kind_t;
@@ -42,10 +43,12 @@ typedef struct {
     bool pending;
     bool valid;
     char topic[DEVOS_EVENTS_TOPIC_MAX];
+    char source[DEVOS_EVENTS_TOPIC_MAX];   /* provider source (MQTT topic) */
     char payload[JOBS_EV_PAYLOAD_MAX];
     uint32_t payload_len;
     uint32_t seq;
     bool truncated;
+    bool retain;
     int64_t arrival_ms;
 } jobs_pending_event_t;
 
@@ -93,6 +96,8 @@ typedef struct {
     /* event trigger */
     int sub_id;                     /* devos_events subscription, 0 = none */
     char event_topic[DEVOS_EVENTS_TOPIC_MAX];
+    char mqtt_topic[JOBS_SUB_TOPIC_MAX];   /* mqtt.message subscription filter, "" = all */
+    int mqtt_sub_handle;            /* broker subscription handle, 0 = none */
     bool include_retained;
     int64_t ev_debounce_ms;
     int64_t ev_last_accept_ms;
@@ -126,6 +131,9 @@ typedef struct {
     bool cur_event_valid;
     devos_jobs_offset_fn offset_fn; /* DST-correct local offset, optional */
     void *offset_user;
+    devos_jobs_mqtt_sub_fn mqtt_sub;      /* installed by the boot bridge */
+    devos_jobs_mqtt_unsub_fn mqtt_unsub;
+    void *mqtt_user;
 } jobs_engine_t;
 
 extern jobs_engine_t g_jobs;

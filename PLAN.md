@@ -511,8 +511,17 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     sequence, timestamps, provider and correlation id; publish is nonblocking, drops are counted,
     and payloads are copied (never a pointer into a reused ring). `system.boot` fires once per
     normal boot, after the ready barrier. The `jobs_events` bridge in `main/` produces the system
-    topics (boot, Wi-Fi/battery/VPN transitions from the 1 Hz loop); an event trigger takes an
-    optional `where` filter over `event.*` and a bounded `debounce`.
+    topics (boot, Wi-Fi/battery/VPN transitions from the 1 Hz loop) and `devos_mqtt` publishes
+    `mqtt.message` outside its lock; an event trigger takes an optional `where` filter over
+    `event.*` and a bounded `debounce`.
+*   **MQTT (`devos_mqtt`, `mqtt.publish`).** One configured broker, plain TCP (no TLS). Publishes
+    are request-tracked: QUEUED -> SENT -> ACKED (QoS 1) with packet-id/PUBACK matching; QoS 0 is
+    terminal at SENT; a missing PUBACK times out; a lost session resolves every unfinished ticket
+    once and never replays. QoS 2 is rejected, not downgraded. Jobs acquires its own broker
+    subscriptions (`subscribe_owned`) without replacing the user's four; the combined effective
+    list is deduplicated and capped. An `mqtt.message` trigger declares its subscription and
+    ignores retained messages unless `include_retained: true`. The broker password stays in the
+    MQTT app's settings, never in a job.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -845,7 +854,19 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       `tailscale_online`/`ip`/`hostname` and `wireguard_online`/`name`/`address`, also readable as
       `system.tailscale_*` / `system.wireguard_*` in expressions. `tools/jobs_schedule_test.c` now
       covers the VPN transitions and a `network.wireguard_up` triggered job.
-- [ ] **Phase 7** - reliable MQTT publish tickets and ingress events.
+- [x] **Phase 7** - reliable MQTT integration. `devos_mqtt` gains tracked publish tickets
+      (QUEUED -> SENT -> ACKED for QoS 1; QoS 0 terminal at SENT; a withheld PUBACK TIMES OUT; a
+      lost session resolves every unfinished ticket as LOST and never replays), packet-id/PUBACK
+      matching, and Jobs-owned subscriptions (`subscribe_owned`/`unsubscribe_owned`, deduplicated
+      against the user's four, with an effective list sent on connect and incremental
+      SUBSCRIBE/UNSUBSCRIBE while up). Received messages are copied into a bounded `mqtt.message`
+      event outside the engine lock (source topic, payload, retain, truncation, sequence). The
+      `mqtt.publish` provider exposes topic/payload/retain/qos/timeout with `sent`/`acknowledged`
+      outputs; an `event "mqtt.message"(topic: "...")` trigger acquires a broker subscription and
+      ignores retained messages unless `include_retained: true`. Single broker, plain TCP (no TLS)
+      and one shared connection are the documented limits. `tools/jobs_mqtt_test.c` (26 checks)
+      drives a fake broker through all of the above; the trigger path is covered in
+      `tools/jobs_schedule_test.c`.
 - [ ] **Phase 8** - Docker background operation integration.
 - [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional
       WoL/DNS, typed job calls.

@@ -29,6 +29,7 @@ set(APP_SRCS
     "jobs_providers/jobs_system.c"
     "jobs_providers/jobs_http.c"
     "jobs_providers/jobs_network.c"
+    "jobs_providers/jobs_mqtt.c"
     "jobs_providers/jobs_events.c"
 )
 
