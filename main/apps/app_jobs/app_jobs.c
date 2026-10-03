@@ -186,20 +186,19 @@ static void builder_sync(void)
 
 static void builder_inspector(void);
 
-/* Subtle selection: the current step gets a thin accent border and a faint
- * raised background; the rest are transparent. Re-applied on theme change. */
+/* Subtle selection: a thin accent bar on the left of the current step; the
+ * rest are plain. Re-applied on theme change. */
 static void restyle_steps(void)
 {
     const devos_palette_t *p = devos_theme_get();
     for (int i = 0; i < s_ctx.rows_n && i < STEP_ROWS; i++) {
         lv_obj_t *row = s_ctx.step_row[i];
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         if (i == s_ctx.bstep) {
-            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-            lv_obj_set_style_bg_color(row, p->surface_active, 0);
-            lv_obj_set_style_border_width(row, 1, 0);
+            lv_obj_set_style_border_width(row, 3, 0);
+            lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
             lv_obj_set_style_border_color(row, p->accent_primary, 0);
         } else {
-            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(row, 0, 0);
         }
     }
@@ -220,7 +219,7 @@ static void refresh_steps(void)
         if (i < s_ctx.rows_n) {
             char s[96], txt[120];
             step_summary(s_ctx.rows[i].node, s, sizeof(s));
-            snprintf(txt, sizeof(txt), "%*s%s", s_ctx.rows[i].depth * 2, "", s);
+            snprintf(txt, sizeof(txt), "%*s%d. %s", s_ctx.rows[i].depth * 2, "", i + 1, s);
             devos_w_set_text(s_ctx.step_lbl[i], txt);
             lv_obj_set_y(s_ctx.step_row[i], i * STEP_H);
             set_visible(s_ctx.step_row[i], true);
@@ -251,6 +250,9 @@ static void refresh_steps(void)
     if (sel_node) for (int i = 0; i < s_ctx.rows_n; i++) if (s_ctx.rows[i].node == sel_node) s_ctx.bstep = i;
     if (s_ctx.bstep >= s_ctx.rows_n) s_ctx.bstep = s_ctx.rows_n ? s_ctx.rows_n - 1 : 0;
     restyle_steps();
+    /* keep the selected step visible (a newly added one may be below the fold) */
+    if (s_ctx.rows_n > 0)
+        lv_obj_scroll_to_y(s_ctx.step_list, s_ctx.bstep * STEP_H, LV_ANIM_OFF);
 }
 
 static void builder_refresh(void)
