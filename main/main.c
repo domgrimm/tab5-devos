@@ -36,6 +36,7 @@
 #include "apps/app_settings/app_settings.h"
 #include "apps/app_template/app_template.h"
 #include "apps/app_coder/app_coder.h"
+#include "jobs_providers/jobs_providers.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -417,6 +418,11 @@ static void devos_system_bringup(void)
     /* 6b. System monitor: live battery/Wi-Fi/SD/memory/CPU telemetry and the
      * wall clock (RTC at boot, NTP once online). */
     devos_sysmon_init();
+
+    /* 6c. Jobs action providers: static typed schemas with lazy handlers,
+     * registered independently of whether the Jobs app is switched on
+     * (AGENTS.md invariant 10). Nothing here starts a task or a radio. */
+    jobs_providers_register_all();
 
     /* 7. SSH & PTY Engine bring-up */
     printf("[devOS] 7/8 Initializing SSH Subsystem...\n");

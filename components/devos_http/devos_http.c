@@ -866,6 +866,8 @@ static EXT_RAM_BSS_ATTR job_t s_jobs[JOBS];
 static int s_next_id = 1;
 static uint32_t s_order;
 static bool s_worker;
+static volatile int s_init_state;   /* 0 = not, 1 = initializing, 2 = ready */
+static bool http_ready(void) { return __atomic_load_n(&s_init_state, __ATOMIC_ACQUIRE) == 2; }
 
 static void job_clear(job_t *j)
 {
@@ -933,18 +935,44 @@ static void *worker_thread(void *arg)
 }
 #endif
 
-static void worker_start(void)
+static bool worker_start(void)
 {
-    if (s_worker) return;
-    s_worker = true;
+    if (s_worker) return true;
 #ifdef ESP_PLATFORM
     /* network core; TLS handshakes need a roomy stack */
-    xTaskCreatePinnedToCore(worker_task, "http", 12288, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO);
+    if (xTaskCreatePinnedToCore(worker_task, "http", 12288, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO) != pdPASS)
+        return false;
 #else
     pthread_t t;
-    pthread_create(&t, NULL, worker_thread, NULL);
+    if (pthread_create(&t, NULL, worker_thread, NULL) != 0) return false;
     pthread_detach(t);
 #endif
+    s_worker = true;
+    return true;
+}
+
+/* Explicit, idempotent initialization so the first submit never races to
+ * create the mutex/worker. One caller initializes; any other waits briefly.
+ * Returns false on allocation or task failure. */
+bool devos_http_init(void)
+{
+    if (http_ready()) return true;
+    int expect = 0;
+    if (__atomic_compare_exchange_n(&s_init_state, &expect, 1, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+#ifdef ESP_PLATFORM
+        if (!s_mx) {
+            s_mx = xSemaphoreCreateMutex();
+            s_wake = xSemaphoreCreateBinary();
+            if (!s_mx || !s_wake) { __atomic_store_n(&s_init_state, 0, __ATOMIC_RELEASE); return false; }
+        }
+#endif
+        if (!worker_start()) { __atomic_store_n(&s_init_state, 0, __ATOMIC_RELEASE); return false; }
+        __atomic_store_n(&s_init_state, 2, __ATOMIC_RELEASE);
+        return true;
+    }
+    while (__atomic_load_n(&s_init_state, __ATOMIC_ACQUIRE) == 1) { /* init is quick */ }
+    return http_ready();
 }
 
 static char *dup_str(const char *s)
@@ -959,14 +987,8 @@ static char *dup_str(const char *s)
 int devos_http_submit(const devos_http_req_t *req)
 {
     if (!req || !req->url) return -1;
-#ifdef ESP_PLATFORM
-    if (!s_mx) {
-        s_mx = xSemaphoreCreateMutex();
-        s_wake = xSemaphoreCreateBinary();
-    }
-#endif
+    if (!devos_http_init()) return -1;
     LOCK();
-    worker_start();
     job_t *j = NULL;
     for (int i = 0; i < JOBS && !j; i++) if (s_jobs[i].state == J_FREE) j = &s_jobs[i];
     if (!j) {
@@ -1011,9 +1033,7 @@ int devos_http_poll(int job, devos_http_resp_t *resp)
 {
     int rc = -1;
     if (job <= 0) return -1;
-#ifdef ESP_PLATFORM
-    if (!s_mx) return -1;
-#endif
+    if (!http_ready()) return -1;
     LOCK();
     for (int i = 0; i < JOBS; i++) {
         job_t *j = &s_jobs[i];
@@ -1035,9 +1055,7 @@ int devos_http_poll(int job, devos_http_resp_t *resp)
 void devos_http_cancel(int job)
 {
     if (job <= 0) return;
-#ifdef ESP_PLATFORM
-    if (!s_mx) return;
-#endif
+    if (!http_ready()) return;
     LOCK();
     for (int i = 0; i < JOBS; i++) {
         job_t *j = &s_jobs[i];

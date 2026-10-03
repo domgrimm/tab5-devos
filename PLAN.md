@@ -776,16 +776,15 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       spans; manual + interval triggers, typed action calls, `set`, `if/else`, `wait`,
       interpolation; limits enforced. `tools/jobs_parse_test.c` (37 checks; NAS/website/doorbell
       examples, parse/validate errors, round trip, limits).
-- [ ] **Phase 2** *(in progress)* - action/event primitives and first providers. Landed: the
-      `devos_actions` operation runtime (generation handles, admission, availability) with
-      fake-provider lifecycle / cancel / release-exactly-once tests; the `devos_events` bounded
-      core (queue, MQTT wildcards, truncation, drop counters) with tests; `devos_sysmon_get_snapshot()`
-      for engines off the GUI task; the `jobs_providers` bridge and the `system.log` /
-      `system.notify` provider with bounded RAM sinks; the `http.request` adapter over the existing
-      `devos_http` worker (two-ticket admission, credential buffer wiped); the request-specific
+- [x] **Phase 2** - action/event primitives and first providers. `devos_actions` operation
+      runtime (generation handles, admission, availability) with fake-provider lifecycle / cancel /
+      release-exactly-once tests; `devos_events` bounded core (queue, MQTT wildcards, truncation,
+      drop counters); `devos_sysmon_get_snapshot()`; the `jobs_providers` boot bridge and the
+      `system.log` / `system.notify` provider; `http.request` over the existing `devos_http` worker
+      (two-ticket admission, race-safe init, credential buffer wiped) verified end to end against a
+      local fixture (200 / 503 / timeout / truncation / admission / cancel); the request-specific
       `devos_probe_*` ICMP engine (own socket/id/deadline, never touches the ping singleton) and the
-      `network.ping` adapter. Remaining: run the real HTTP/probe adapters in the simulator against a
-      local fixture; event producers (Wi-Fi/battery/MQTT); the `devos_http` init/cancellation audit.
+      `network.ping` adapter. Event producers (Wi-Fi/battery/MQTT) are Phase 6/7.
 - [ ] **Phase 3** - Core 0 scheduler and interpreter vertical slice (manual/interval, wait,
       overlap, budgets, cancel, generation snapshots, ready barrier, global pause).
 - [ ] **Phase 4** - durable storage and recovery: Core 1 storage worker, immutable revisions +

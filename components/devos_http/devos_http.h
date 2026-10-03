@@ -65,12 +65,19 @@ typedef struct {
 int devos_http_request(const devos_http_req_t *req, devos_http_resp_t *resp);
 void devos_http_resp_free(devos_http_resp_t *resp);
 
+/* Create the worker and its synchronization primitives. Idempotent; safe to
+ * call at boot before anything submits. false = out of memory or the worker
+ * task/thread could not be created, in which case submit() returns -1. */
+bool devos_http_init(void);
 /* Queue a request (all strings are copied). Returns a job id > 0, or -1 when
- * the queue is full. */
+ * the queue is full or the worker isn't available. */
 int devos_http_submit(const devos_http_req_t *req);
 /* 0 = still running, 1 = done (resp filled, now yours to free), -1 = no such job. */
 int devos_http_poll(int job, devos_http_resp_t *resp);
-/* Abandon a job: a running request stops at its next read. */
+/* Abandon a job. A queued job is released immediately; a running job is
+ * signalled to abort and stops at its next read/connect step, with its slot
+ * reclaimed by the worker when it returns (bounded by the per-phase timeout;
+ * a blocking DNS resolution is not interruptible). */
 void devos_http_cancel(int job);
 
 /* Find header `name` (case-insensitive) in resp->headers; copies the value. */
