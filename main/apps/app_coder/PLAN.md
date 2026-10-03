@@ -1,8 +1,9 @@
 # Coder's Toolkit — Implementation Plan
 
 Offline developer helpers on the Tab5: Base64 / Hex / hashes / JWT / UUID /
-Unix time. A keyboard-first "Swiss-army knife" for the moments a cyberdeck
-user needs to decode a token or hash a string without leaving the device.
+Unix time / subnet / cron / regex. A keyboard-first "Swiss-army knife" for the
+moments a cyberdeck user needs to decode a token, work out a subnet or test a
+pattern without leaving the device.
 
 The scaffold in this directory already builds and runs (simulator verified);
 the plan below is what remains to make it production-polished and to keep it
@@ -14,9 +15,10 @@ inside the devOS rules (AGENTS.md).
 
 | Done | What |
 | :--- | :--- |
-| ✅ | `devos_crypto`: base64 / base64url / hex / url en+decode, **base58**, **crc32**, and a **streaming hash API** (`devos_hash_begin/update/end`). All checked against RFC / known vectors in `tools/crypto_test.c`. |
-| ✅ | `coder_core.{h,c}`: pure logic (transform / hash / crc / JWT / UUID / epoch / encoded-detect), no LVGL. |
-| ✅ | `app_coder.c`: descriptor, lifecycle, **11 tools**, `devos_widgets` UI, `devos_focus` keyboard handling, letter shortcuts, clipboard copy, auto-direction, `get_shortcuts()`, telemetry. |
+| ✅ | `devos_crypto`: base64 / base64url / hex / url en+decode, **base58**, **crc32**, **SHA-384** (for JWT HS384) and a **streaming hash API** (`devos_hash_begin/update/end`). All checked against RFC / known vectors in `tools/crypto_test.c`. |
+| ✅ | `coder_core.{h,c}`: pure logic (transform / hash / crc / JWT / UUID / epoch / subnet / cron / regex / encoded-detect), no LVGL. |
+| ✅ | JWT decode shows `iat` / `nbf` / `exp` as dates and verifies HS256 / HS384 / HS512 when a secret is typed. Unix time converts both ways; subnet, cron and regex tools added; a self-contained regex engine (no POSIX regex on the device). |
+| ✅ | `app_coder.c`: descriptor, lifecycle, **14 tools**, `devos_widgets` UI, `devos_focus` keyboard handling, letter shortcuts, clipboard copy, auto-direction, `get_shortcuts()`, telemetry. |
 | ✅ | Output runs through `devos_codeview` (scrolls, monospace, JSON colouring); the result buffer and codeview live in PSRAM (input cap raised to 8 KB). |
 | ✅ | `devos_hashfile`: a Core 0 engine streaming a file off the SD card in 16 KB PSRAM chunks, with progress / result / error getters (AGENTS.md #1). The app polls it ~4 Hz and shows "Hashing N%". |
 | ✅ | Vector icon `devos_icon_coder` (angle brackets + slash) in `devos_icons.{h,c}`. |
@@ -44,6 +46,9 @@ inside the devOS rules (AGENTS.md).
   other shifted punctuation could not be typed in the simulator at all - a problem for any path or token
   containing `_`. `main.c` now maps Shift+key to its US-layout symbol and drops the Shift modifier before
   dispatch.
+- **JWT decode read past the copied segment:** `devos_base64url_decode` scans to a NUL, and the header /
+  payload copies were not terminated, so the decode depended on whatever byte sat after them on the stack.
+  Both segments are now NUL-terminated.
 
 ## Remaining work
 
@@ -52,4 +57,5 @@ inside the devOS rules (AGENTS.md).
   (SD throughput is the only thing the simulator can't show).
 
 ### Possible next tools
-- An ASCII/byte table, "hash a file" in the other direction (verify a given digest), and HMAC-over-file.
+- An ASCII/byte table, "hash a file" in the other direction (verify a given digest), HMAC-over-file, and
+  IPv6 subnet maths.

@@ -10,8 +10,10 @@ extern "C" {
  * @brief Get the Coder's Toolkit application descriptor.
  *
  * Offline developer helpers - Base64 / Hex encode & decode, SHA & HMAC
- * digests, UUID v4, JWT inspection and Unix-time conversion - built entirely
- * on the shared engines (devos_crypto, devos_json) so nothing is forked.
+ * digests, UUID v4, JWT decode + optional signature verify, Unix-time
+ * conversion both ways, an IPv4 subnet calculator, a cron explainer and a
+ * regex tester - built entirely on the shared engines (devos_crypto,
+ * devos_json) so nothing is forked.
  */
 devos_app_descriptor_t *app_coder_get_descriptor(void);
 

@@ -23,8 +23,8 @@ typedef enum {
 } devos_hashfile_state_t;
 
 /* Start hashing `path`. algo is a devos_hash_t value (1 SHA-1, 2 SHA-256,
- * 3 SHA-512). Returns 0 if the job started, <0 if one is already running or
- * the worker could not start. */
+ * 3 SHA-512, 4 SHA-384). Returns 0 if the job started, <0 if one is already
+ * running or the worker could not start. */
 int devos_hashfile_start(const char *path, int algo);
 devos_hashfile_state_t devos_hashfile_state(void);
 /* 0..100 while running, -1 otherwise. */

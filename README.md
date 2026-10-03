@@ -1,6 +1,6 @@
 # devOS for the M5Stack Tab5
 
-devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin, network and developer work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics (ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN), a Coder's Toolkit (Base64, hashes, JWT, UUID, …), an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
+devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin, network and developer work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics (ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN), a Coder's Toolkit (Base64, hashes, JWT, UUID, subnet, cron, regex, …), an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
 
 **Install it from your browser:** <https://domgrimm.github.io/tab5-devos/> (Chrome or Edge, USB-C cable). After that the Tab5 updates itself over Wi-Fi.
 
@@ -29,7 +29,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Network** | Ping, DNS lookup, port scan, Wi-Fi survey, mDNS browser and Wake-on-LAN (magic packets to a sleeping machine, broadcast or routed over the VPN, with a remembered list) |
 | **REST** | REST and webhook client with saved requests and `{{variables}}` |
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop |
-| **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/512 and HMAC hashes, CRC-32, a JWT splitter, random UUID v4, Unix-time conversion, and hashing a file off the SD card |
+| **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Cricket** | Live scores, results and full scorecards from ESPNcricinfo, for today or any day back to the first Test in 1877 |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
@@ -115,7 +115,7 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 | `devos_http` | HTTP/1.1 + HTTPS client on top of the socket layer |
 | `devos_json` | Small JSON reader and pretty-printer |
 | `devos_mdview` | The CommonMark-subset renderer used by the editor preview |
-| `devos_crypto` | SHA-1/256/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32, and Base64 / Base64 URL / Hex / URL / Base58 / CRC-32 with a streaming hash API |
+| `devos_crypto` | SHA-1/256/384/512, HMAC, PBKDF2, ChaCha20-Poly1305, base32, and Base64 / Base64 URL / Hex / URL / Base58 / CRC-32 with a streaming hash API |
 | `devos_hashfile` | Streams a file off the SD card through a hash on core 0, with progress and result getters |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 

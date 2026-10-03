@@ -4,9 +4,12 @@
  *   Hash          SHA-1 / SHA-256 / SHA-512, or HMAC with a key
  *   CRC-32        IEEE 802.3 checksum
  *   Hash file     stream a file off the SD card (Core 0 worker, devos_hashfile)
- *   JWT           split + pretty-print header & payload
+ *   JWT           decode header & payload; optional HS256/384/512 verify
  *   UUID          random v4
- *   Unix time     epoch <-> UTC / local date
+ *   Unix time     epoch <-> UTC / local date (both directions)
+ *   Subnet        IPv4 network / mask / broadcast / host range
+ *   Cron          explain a cron expression + next runs
+ *   Regex         test a pattern, list matches and capture groups
  *
  * The pure logic lives in coder_core.c (no LVGL), unit-tested in
  * tools/coder_test.c; this file builds the screen and drives it. The one slow
@@ -51,6 +54,9 @@ typedef enum {
     TOOL_JWT,
     TOOL_UUID,
     TOOL_EPOCH,
+    TOOL_SUBNET,
+    TOOL_CRON,
+    TOOL_REGEX,
     TOOL_COUNT
 } tool_t;
 
@@ -70,8 +76,9 @@ typedef struct {
     lv_obj_t *screen;
     lv_obj_t *dd_mode;
     lv_obj_t *lbl_dir, *dd_dir;        /* Encode / Decode (text tools) */
-    lv_obj_t *lbl_algo, *dd_algo;      /* SHA-1/256/512 (hash / hash file) */
-    lv_obj_t *lbl_key, *ta_key;        /* HMAC key (hash) */
+    lv_obj_t *lbl_algo, *dd_algo;      /* SHA-1/256/512/384 (hash / hash file) */
+    lv_obj_t *lbl_flags, *dd_flags;    /* regex options */
+    lv_obj_t *lbl_key, *ta_key;        /* HMAC key / JWT secret / test string */
     lv_obj_t *lbl_in, *ta_in;
     lv_obj_t *out_panel, *out_scroll;  /* output: a devos_codeview in a panel */
     devos_codeview_t cv;
@@ -117,6 +124,9 @@ static const char *tool_name(tool_t t)
     case TOOL_JWT:      return "JWT";
     case TOOL_UUID:     return "UUID";
     case TOOL_EPOCH:    return "Unix time";
+    case TOOL_SUBNET:   return "Subnet";
+    case TOOL_CRON:     return "Cron";
+    case TOOL_REGEX:    return "Regex";
     default:            return "";
     }
 }
@@ -132,9 +142,12 @@ static const char *tool_hint(tool_t t)
     case TOOL_CRC32:    return "CRC-32 (IEEE 802.3) of the text.";
     case TOOL_HASH:     return "SHA-1 / SHA-256 / SHA-512; type a key to get the HMAC instead.";
     case TOOL_HASHFILE: return "Hash a file on the SD card (e.g. /sdcard/notes/welcome.md).";
-    case TOOL_JWT:      return "Decode a JSON Web Token's header and payload (signature shown, not verified).";
+    case TOOL_JWT:      return "Decode a JWT's header and payload; type a secret to verify HS256 / HS384 / HS512.";
     case TOOL_UUID:     return "Random UUID v4 - press C for another.";
-    case TOOL_EPOCH:    return "Unix seconds to UTC and local time; leave the box empty for now.";
+    case TOOL_EPOCH:    return "Unix seconds or a date (both directions); leave the box empty for now.";
+    case TOOL_SUBNET:   return "IPv4 subnet maths - network, mask, broadcast, host range.";
+    case TOOL_CRON:     return "Explain a 5-field cron expression and show the next runs.";
+    case TOOL_REGEX:    return "Test a pattern against the test string; matches and groups are listed.";
     default:            return "";
     }
 }
@@ -148,8 +161,23 @@ static const char *input_caption(tool_t t)
     case TOOL_HASH:     return "Message";
     case TOOL_HASHFILE: return "File path";
     case TOOL_JWT:      return "JWT  (header.payload.signature)";
-    case TOOL_EPOCH:    return "Unix seconds  (empty = now)";
+    case TOOL_EPOCH:    return "Unix seconds or date  (empty = now)";
+    case TOOL_SUBNET:   return "IPv4 address / CIDR  (e.g. 192.168.1.10/24)";
+    case TOOL_CRON:     return "Cron  (min hour day month weekday, or @daily)";
+    case TOOL_REGEX:    return "Test string";
     default:            return "";
+    }
+}
+
+/* Regex option dropdown -> CODER_RX_* flags. */
+static unsigned regex_flags(void)
+{
+    switch (lv_dropdown_get_selected(s_ctx.dd_flags)) {
+    case 1: return CODER_RX_ICASE;
+    case 2: return CODER_RX_MULTILINE;
+    case 3: return CODER_RX_DOTALL;
+    case 4: return CODER_RX_ICASE | CODER_RX_MULTILINE;
+    default: return 0;
     }
 }
 
@@ -176,13 +204,29 @@ static void compute(void)
         set_out(s_ctx.out);
         break;
     case TOOL_EPOCH:
-        coder_epoch(in[0] ? strtoll(in, NULL, 10) : 0, in[0] ? 0 : 1, s_ctx.out, OUT_MAX);
+        coder_epoch_convert(in, n, in[0] ? 0 : 1, s_ctx.out, OUT_MAX);
         set_out(s_ctx.out);
         break;
-    case TOOL_JWT:
-        coder_jwt(in, n, s_ctx.out, OUT_MAX);
+    case TOOL_JWT: {
+        const char *key = lv_textarea_get_text(s_ctx.ta_key);
+        coder_jwt(in, n, key, strlen(key), s_ctx.out, OUT_MAX);
         set_out(s_ctx.out);
         break;
+    }
+    case TOOL_SUBNET:
+        coder_subnet(in, n, s_ctx.out, OUT_MAX);
+        set_out(s_ctx.out);
+        break;
+    case TOOL_CRON:
+        coder_cron(in, n, 0, 1, 5, s_ctx.out, OUT_MAX);
+        set_out(s_ctx.out);
+        break;
+    case TOOL_REGEX: {
+        const char *pat = lv_textarea_get_text(s_ctx.ta_key);
+        coder_regex(pat, strlen(pat), in, n, regex_flags(), 100, s_ctx.out, OUT_MAX);
+        set_out(s_ctx.out);
+        break;
+    }
     case TOOL_CRC32:
         coder_crc32(in, n, s_ctx.out, OUT_MAX);
         set_out(s_ctx.out);
@@ -247,15 +291,26 @@ static void apply_mode(void)
     s_ctx.tool = (tool_t)lv_dropdown_get_selected(s_ctx.dd_mode);
     bool is_text = text_tool(s_ctx.tool);
     bool is_hash = (s_ctx.tool == TOOL_HASH);
+    bool is_jwt = (s_ctx.tool == TOOL_JWT);
+    bool is_regex = (s_ctx.tool == TOOL_REGEX);
     bool has_algo = is_hash || s_ctx.tool == TOOL_HASHFILE;
+    bool has_key = is_hash || is_jwt || is_regex;
     bool is_uuid = (s_ctx.tool == TOOL_UUID);
 
     set_visible(s_ctx.lbl_dir, is_text);
     set_visible(s_ctx.dd_dir, is_text);
     set_visible(s_ctx.lbl_algo, has_algo);
     set_visible(s_ctx.dd_algo, has_algo);
-    set_visible(s_ctx.lbl_key, is_hash);
-    set_visible(s_ctx.ta_key, is_hash);
+    set_visible(s_ctx.lbl_flags, is_regex);
+    set_visible(s_ctx.dd_flags, is_regex);
+    set_visible(s_ctx.lbl_key, has_key);
+    set_visible(s_ctx.ta_key, has_key);
+
+    /* the second field means different things per tool */
+    devos_w_set_text(s_ctx.lbl_key, is_hash ? "HMAC key  (empty = plain hash)"
+                                : is_jwt ? "Secret  (optional: verifies HS256/384/512)"
+                                : is_regex ? "Pattern"
+                                           : "");
 
     /* every tool except UUID has an input (hash file: a path) */
     set_visible(s_ctx.lbl_in, !is_uuid);
@@ -284,6 +339,7 @@ static void set_mode(tool_t t)
 
 static void mode_cb(lv_event_t *e) { LV_UNUSED(e); apply_mode(); }
 static void dir_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.dir_auto = false; }
+static void flags_cb(lv_event_t *e) { LV_UNUSED(e); compute(); }
 
 /* =========================================================================
  * Buttons
@@ -332,7 +388,8 @@ static void coder_init(void)
     lv_obj_t *l = devos_w_label(scr, NULL, DEVOS_W_TEXT_DIM, "Tool");
     lv_obj_set_pos(l, 20, 54);
     s_ctx.dd_mode = devos_w_dd(scr,
-        "Base64\nBase64 URL\nHex\nURL\nBase58\nCRC-32\nHash\nHash file\nJWT\nUUID\nUnix time", 230);
+        "Base64\nBase64 URL\nHex\nURL\nBase58\nCRC-32\nHash\nHash file\nJWT\nUUID\nUnix time\n"
+        "Subnet\nCron\nRegex", 230);
     lv_obj_set_pos(s_ctx.dd_mode, 20, 72);
     lv_obj_add_event_cb(s_ctx.dd_mode, mode_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -344,9 +401,15 @@ static void coder_init(void)
 
     s_ctx.lbl_algo = devos_w_label(scr, NULL, DEVOS_W_TEXT_DIM, "Algorithm");
     lv_obj_set_pos(s_ctx.lbl_algo, 270, 54);
-    s_ctx.dd_algo = devos_w_dd(scr, "SHA-1\nSHA-256\nSHA-512", 150);
+    s_ctx.dd_algo = devos_w_dd(scr, "SHA-1\nSHA-256\nSHA-512\nSHA-384", 150);
     lv_obj_set_pos(s_ctx.dd_algo, 270, 72);
     lv_dropdown_set_selected(s_ctx.dd_algo, 1);          /* SHA-256 */
+
+    s_ctx.lbl_flags = devos_w_label(scr, NULL, DEVOS_W_TEXT_DIM, "Flags");
+    lv_obj_set_pos(s_ctx.lbl_flags, 270, 54);
+    s_ctx.dd_flags = devos_w_dd(scr, "Sensitive\nIgnore case\nMulti-line\nDot=any\nIgnore+multi", 165);
+    lv_obj_set_pos(s_ctx.dd_flags, 270, 72);
+    lv_obj_add_event_cb(s_ctx.dd_flags, flags_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     s_ctx.lbl_key = devos_w_label(scr, NULL, DEVOS_W_TEXT_DIM, "HMAC key  (empty = plain hash)");
     lv_obj_set_pos(s_ctx.lbl_key, 440, 54);
@@ -388,12 +451,13 @@ static void coder_init(void)
 
     lv_obj_t *keys = devos_w_keys(scr);
     devos_w_set_text(keys, "Tab / Up / Down move  |  Left / Right change a value  |  "
-                           "B U X R 5 K H F J I T pick the tool  |  C compute  Y copy  S swap  W clear  |  Esc back");
+                           "B U X R 5 K H F J I T N O G pick the tool  |  C compute  Y copy  S swap  W clear  |  Esc back");
 
     devos_focus_init(&s_ctx.focus);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_mode);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_dir);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_algo);
+    devos_focus_add(&s_ctx.focus, s_ctx.dd_flags);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_key);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_in);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_compute);
@@ -451,6 +515,9 @@ static bool coder_handle_key(uint32_t key, uint8_t mods)
     case 'j': case 'J': set_mode(TOOL_JWT);      return true;
     case 'i': case 'I': set_mode(TOOL_UUID);     return true;
     case 't': case 'T': set_mode(TOOL_EPOCH);    return true;
+    case 'n': case 'N': set_mode(TOOL_SUBNET);   return true;
+    case 'o': case 'O': set_mode(TOOL_CRON);     return true;
+    case 'g': case 'G': set_mode(TOOL_REGEX);    return true;
     default: return false;
     }
 }
@@ -458,8 +525,8 @@ static bool coder_handle_key(uint32_t key, uint8_t mods)
 static int coder_telemetry(char lines[3][64])
 {
     snprintf(lines[0], sizeof(lines[0]), "* %s", tool_name(s_ctx.tool));
-    snprintf(lines[1], sizeof(lines[1]), "* Base64 / Hex / Base58");
-    snprintf(lines[2], sizeof(lines[2]), "* Hash / CRC / JWT / UUID");
+    snprintf(lines[1], sizeof(lines[1]), "* Base64 / Hex / Hash / JWT");
+    snprintf(lines[2], sizeof(lines[2]), "* Subnet / Cron / Regex");
     return 3;
 }
 
@@ -469,6 +536,7 @@ static const char *coder_shortcuts(void)
            "B / U / X / R / 5\tBase64 / b64url / Hex / URL / Base58\n"
            "K / H / F\tCRC-32 / Hash / Hash file\n"
            "J / I / T\tJWT / UUID / Unix time\n"
+           "N / O / G\tSubnet / Cron / Regex\n"
            "C\tCompute (or start the file hash)\n"
            "Y\tCopy the result\n"
            "S\tSwap the result into the input\n"
@@ -482,7 +550,7 @@ devos_app_descriptor_t *app_coder_get_descriptor(void)
     s_desc.uid = "coder";
     s_desc.name = "Coder";
     s_desc.title = "Coder's Toolkit";
-    s_desc.subtitle = "Base64, hashes, JWT, UUID";
+    s_desc.subtitle = "Base64, hashes, JWT, subnet, cron";
     s_desc.icon = LV_SYMBOL_EDIT;
     s_desc.draw_icon = devos_icon_coder;
     s_desc.category = "tools";

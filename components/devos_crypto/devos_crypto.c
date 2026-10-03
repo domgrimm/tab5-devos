@@ -57,8 +57,11 @@ typedef struct {
     uint8_t buf[128];
 } hctx_t;
 
-static size_t block_len(devos_hash_t h) { return h == DEVOS_HASH_SHA512 ? 128 : 64; }
-size_t devos_hash_len(devos_hash_t h) { return h == DEVOS_HASH_SHA1 ? 20 : h == DEVOS_HASH_SHA256 ? 32 : 64; }
+static size_t block_len(devos_hash_t h) { return (h == DEVOS_HASH_SHA512 || h == DEVOS_HASH_SHA384) ? 128 : 64; }
+size_t devos_hash_len(devos_hash_t h)
+{
+    return h == DEVOS_HASH_SHA1 ? 20 : h == DEVOS_HASH_SHA256 ? 32 : h == DEVOS_HASH_SHA384 ? 48 : 64;
+}
 
 static const uint32_t K256[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
@@ -159,6 +162,10 @@ static void h_init(hctx_t *c, devos_hash_t h)
     } else if (h == DEVOS_HASH_SHA256) {
         static const uint32_t iv[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
         memcpy(c->st.s32, iv, sizeof(iv));
+    } else if (h == DEVOS_HASH_SHA384) {
+        static const uint64_t iv[8] = { 0xcbbb9d5dc1059ed8ULL, 0x629a292a367cd507ULL, 0x9159015a3070dd17ULL, 0x152fecd8f70e5939ULL,
+                                        0x67332667ffc00b31ULL, 0x8eb44a8768581511ULL, 0xdb0c2e0d64f98fa7ULL, 0x47b5481dbefa4fa4ULL };
+        memcpy(c->st.s64, iv, sizeof(iv));
     } else {
         static const uint64_t iv[8] = { 0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL, 0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
                                         0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL, 0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL };
@@ -170,7 +177,7 @@ static void h_block(hctx_t *c, const uint8_t *p)
 {
     if (c->h == DEVOS_HASH_SHA1) sha1_block(c->st.s32, p);
     else if (c->h == DEVOS_HASH_SHA256) sha256_block(c->st.s32, p);
-    else sha512_block(c->st.s64, p);
+    else sha512_block(c->st.s64, p);   /* SHA-512 and SHA-384 share the core */
 }
 
 static void h_update(hctx_t *c, const void *data, size_t len)
@@ -202,7 +209,8 @@ static void h_update(hctx_t *c, const void *data, size_t len)
 
 static void h_final(hctx_t *c, uint8_t *out)
 {
-    size_t bl = block_len(c->h), lenb = c->h == DEVOS_HASH_SHA512 ? 16 : 8;
+    size_t bl = block_len(c->h);
+    size_t lenb = (c->h == DEVOS_HASH_SHA512 || c->h == DEVOS_HASH_SHA384) ? 16 : 8;
     uint64_t bits = c->len * 8;
     c->buf[c->fill++] = 0x80;
     if (c->fill > bl - lenb) {
@@ -214,6 +222,7 @@ static void h_final(hctx_t *c, uint8_t *out)
     put_be64(c->buf + bl - 8, bits);
     h_block(c, c->buf);
     if (c->h == DEVOS_HASH_SHA512) for (int i = 0; i < 8; i++) put_be64(out + i * 8, c->st.s64[i]);
+    else if (c->h == DEVOS_HASH_SHA384) for (int i = 0; i < 6; i++) put_be64(out + i * 8, c->st.s64[i]);
     else for (size_t i = 0; i < devos_hash_len(c->h) / 4; i++) put_be32(out + i * 4, c->st.s32[i]);
     devos_wipe(c, sizeof(*c));
 }

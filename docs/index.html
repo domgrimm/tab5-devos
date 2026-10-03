@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devOS for M5Stack Tab5</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+<style>
+  :root { color-scheme: dark light; --acc: #00d1b2; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1.2rem; }
+  h1 { margin-bottom: .2rem; } .ver { opacity: .7; margin-top: 0; }
+  esp-web-install-button button { font: inherit; font-weight: 600; padding: .7rem 1.4rem;
+    border: 0; border-radius: .5rem; background: var(--acc); color: #002; cursor: pointer; }
+  code { background: rgba(127,127,127,.18); padding: .1rem .3rem; border-radius: .25rem; }
+  li { margin: .3rem 0; } .notes { opacity: .8; min-height: 1.5em; }
+  .pick { display: flex; gap: .6rem; align-items: center; margin: 1rem 0 .3rem; }
+  select { font: inherit; padding: .3rem .5rem; border-radius: .4rem; }
+</style>
+</head>
+<body>
+<h1>devOS for M5Stack Tab5</h1>
+<p class=ver>Latest version 0.5.2</p>
+<div class=pick>
+  <label for=ver>Version to install</label>
+  <select id=ver>
+    <option value="0.5.2">0.5.2 (latest)</option>
+    <option value="0.5.0">0.5.0</option>
+  </select>
+</div>
+<p class=notes id=notes></p>
+<esp-web-install-button id=install manifest="firmware/0.5.2/manifest.json">
+  <button slot="activate">Install devOS</button>
+  <span slot="unsupported">Your browser can't flash over USB. Use Chrome or Edge on a desktop.</span>
+  <span slot="not-allowed">Flashing needs a secure (https) page.</span>
+</esp-web-install-button>
+<h2>Install</h2>
+<ol>
+  <li>Connect the Tab5 to this computer with a USB-C data cable.</li>
+  <li>Pick a version (the latest, unless you are going back to an older one), click
+      <b>Install devOS</b> and pick the Tab5's serial port (<i>USB JTAG/serial debug unit</i>).</li>
+  <li>Choose <b>Erase device</b> for a first install. Settings, Wi-Fi and keys are
+      kept in flash, so skip the erase when reinstalling or changing versions.</li>
+  <li>When it finishes, the Tab5 restarts into devOS.</li>
+</ol>
+<p>If the port doesn't show up, hold the Tab5's BOOT button while you plug it in, then try again.</p>
+<h2>Updates</h2>
+<p>Once installed, the Tab5 updates itself over Wi-Fi to the latest version: <b>Settings &gt; System &gt;
+Check for updates</b>. The feed is <code>ota/devos-manifest.json</code> on this site.</p>
+<script>
+  const R = [{"v": "0.5.2", "n": "Coder's Toolkit adds an IPv4 subnet calculator, a cron explainer (with the next runs) and a regex tester; JWT now verifies HS256/HS384/HS512 and shows claim dates, and Unix time converts bot", "b": "Oct  3 2026 16:40:14"}, {"v": "0.5.0", "n": "Coder's Toolkit, Wake-on-LAN, power shortcuts", "b": "Oct  2 2026 07:37:30"}];
+  const sel = document.getElementById("ver"), btn = document.getElementById("install"),
+        notes = document.getElementById("notes");
+  function pick() {
+    const r = R[sel.selectedIndex], m = "firmware/" + r.v + "/manifest.json";
+    btn.setAttribute("manifest", m);
+    btn.manifest = m;
+    notes.textContent = (r.n || "") + (r.b ? "  (built " + r.b + ")" : "");
+  }
+  sel.addEventListener("change", pick);
+  pick();
+</script>
+</body>
+</html>

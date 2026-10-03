@@ -1,0 +1,8 @@
+{
+  "version": "0.5.2",
+  "url": "tab5-devos-0.5.2.bin",
+  "size": 2603312,
+  "sha256": "e0398e0aa323a630c82c16eaec416d482defff0fb1c113b7fcf7ea334e4ff756",
+  "build": "82a8d59888b9d6b0dbd1b53d81fe44c54a0bd761e4255bd00970097c60254f1e",
+  "notes": "Coder's Toolkit adds an IPv4 subnet calculator, a cron explainer (with the next runs) and a regex tester; JWT now verifies HS256/HS384/HS512 and shows claim dates, and Unix time converts bot"
+}
