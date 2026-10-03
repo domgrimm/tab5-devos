@@ -227,30 +227,12 @@ static void refresh_steps(void)
             set_visible(s_ctx.step_row[i], false);
         }
     }
-    /* size the list to its content so the controls below don't leave a gap */
-    int lh = s_ctx.rows_n * STEP_H + 6;
-    if (lh < STEP_H + 6) lh = STEP_H + 6;
-    if (lh > 130) lh = 130;
-    lv_obj_set_height(s_ctx.step_list, lh);
-    int add_y = 72 + lh + 8;
-    lv_obj_set_y(s_ctx.dd_add, add_y);
-    lv_obj_set_y(s_ctx.btn_add, add_y);
-    lv_obj_set_y(s_ctx.btn_bdel, add_y);
-    lv_obj_set_y(s_ctx.btn_up, add_y);
-    lv_obj_set_y(s_ctx.btn_dn, add_y);
-    int set_y = add_y + 34;
-    lv_obj_set_y(s_ctx.lbl_settings, set_y);
-    lv_obj_set_y(s_ctx.dd_param, set_y + 18);
-    lv_obj_set_y(s_ctx.dd_expr, set_y + 18);
-    lv_obj_set_y(s_ctx.dd_choice, set_y + 18);
-    lv_obj_set_y(s_ctx.ta_val, set_y + 58);
-    lv_obj_set_y(s_ctx.lbl_custom, set_y + 98);
-
     /* keep the same node selected across a reorder */
     if (sel_node) for (int i = 0; i < s_ctx.rows_n; i++) if (s_ctx.rows[i].node == sel_node) s_ctx.bstep = i;
     if (s_ctx.bstep >= s_ctx.rows_n) s_ctx.bstep = s_ctx.rows_n ? s_ctx.rows_n - 1 : 0;
+    /* fixed layout: the list is a fixed box so the Add row and settings never
+     * move; it scrolls internally. */
     restyle_steps();
-    /* keep the selected step visible (a newly added one may be below the fold) */
     if (s_ctx.rows_n > 0)
         lv_obj_scroll_to_y(s_ctx.step_list, s_ctx.bstep * STEP_H, LV_ANIM_OFF);
 }
@@ -298,7 +280,7 @@ static void builder_inspector(void)
     set_visible(s_ctx.dd_choice, false);
     set_visible(s_ctx.ta_val, false);
 
-    if (!node) { devos_w_set_text(s_ctx.lbl_custom, "No step selected."); set_visible(s_ctx.lbl_custom, true); return; }
+    if (!node) { devos_w_set_text(s_ctx.lbl_custom, "No steps yet - press Sym+U (or the Add button) to add one."); set_visible(s_ctx.lbl_custom, true); return; }
 
     if (node->kind == JN_IF) {
         s_ctx.insp = INSP_IF;
@@ -745,10 +727,12 @@ static void jobs_init(void)
 
     mk_label(s_ctx.bld, "Steps  (tap to select, drag to reorder)", DEVOS_W_TEXT_DIM, 0, 56);
     s_ctx.step_list = lv_obj_create(s_ctx.bld);
-    lv_obj_remove_style_all(s_ctx.step_list);
     lv_obj_set_pos(s_ctx.step_list, 0, 72);
-    lv_obj_set_size(s_ctx.step_list, 740, 130);
-    lv_obj_set_style_bg_opa(s_ctx.step_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(s_ctx.step_list, 740, 120);
+    lv_obj_set_style_radius(s_ctx.step_list, 4, 0);
+    lv_obj_set_style_pad_all(s_ctx.step_list, 2, 0);
+    lv_obj_set_style_border_width(s_ctx.step_list, 1, 0);
+    devos_w_track(s_ctx.step_list, DEVOS_W_PANEL);
     lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_CLICKABLE);
     for (int i = 0; i < STEP_ROWS; i++) {
         lv_obj_t *row = lv_obj_create(s_ctx.step_list);
