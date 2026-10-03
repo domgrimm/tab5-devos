@@ -198,6 +198,7 @@ static void refresh_steps(void)
             devos_w_set_text(s_ctx.step_lbl[i], txt);
             lv_obj_set_y(s_ctx.step_row[i], i * STEP_H);
             devos_w_track(s_ctx.step_row[i], i == s_ctx.bstep ? DEVOS_W_BTN_PRIMARY : DEVOS_W_PANEL_ALT);
+            devos_w_track(s_ctx.step_lbl[i], i == s_ctx.bstep ? DEVOS_W_TEXT_ON_ACCENT : DEVOS_W_TEXT);
             set_visible(s_ctx.step_row[i], true);
         } else {
             set_visible(s_ctx.step_row[i], false);
@@ -724,15 +725,17 @@ static void jobs_init(void)
     lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_CLICKABLE);
     for (int i = 0; i < STEP_ROWS; i++) {
         lv_obj_t *row = lv_obj_create(s_ctx.step_list);
-        lv_obj_remove_style_all(row);
         lv_obj_set_size(row, 736, STEP_H - 2);
         lv_obj_set_pos(row, 0, i * STEP_H);
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_pad_all(row, 2, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row, step_row_cb, LV_EVENT_ALL, (void *)(intptr_t)i);
         s_ctx.step_row[i] = row;
         s_ctx.step_lbl[i] = devos_w_label(row, NULL, DEVOS_W_TEXT, "");
-        lv_obj_set_pos(s_ctx.step_lbl[i], 6, 4);
-        lv_obj_set_width(s_ctx.step_lbl[i], 724);
+        lv_obj_set_pos(s_ctx.step_lbl[i], 4, 2);
+        lv_obj_set_width(s_ctx.step_lbl[i], 720);
         devos_w_track(row, DEVOS_W_PANEL_ALT);
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
