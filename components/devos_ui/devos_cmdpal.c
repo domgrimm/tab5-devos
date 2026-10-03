@@ -266,8 +266,7 @@ void devos_cmdpal_open(void)
 }
 
 /* Open with `query` already typed. When `run_first` is set, the best match's
- * action runs at once (used by the Sym+R / Sym+Q shortcuts: they land on the
- * restart / shutdown command and show its confirmation). */
+ * action runs at once. */
 void devos_cmdpal_open_with(const char *query, bool run_first)
 {
     if (devos_cmdpal_is_open()) devos_cmdpal_close();

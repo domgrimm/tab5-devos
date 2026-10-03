@@ -33,6 +33,7 @@
 #include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_power.h"
+#include "devos_powerdlg.h"
 #include "devos_ota.h"
 #include "devos_net.h"
 #include "devos_storage.h"
@@ -1569,145 +1570,19 @@ static void ota_feed_cb(lv_event_t *e)
     if (!devos_ota_busy()) open_feed_modal();
 }
 
-/* ---- Restart devOS (System), asking first ---- */
-static devos_w_dialog_t s_rb;
-static devos_focus_t s_rb_f;
-static lv_obj_t *lbl_rb_msg, *btn_rb_ok;
-
-static void restart_close(void)
-{
-    devos_focus_clear(&s_rb_f);
-    devos_w_dialog_show(&s_rb, false);
-}
-
-static void restart_cancel_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    restart_close();
-}
-
-static void restart_ok_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    set_text(lbl_rb_msg, "Restarting...");
-    lv_refr_now(NULL);
-    devos_core_restart();       /* the current app finishes up first (hide) */
-}
-
-static void restart_open(void)
-{
-    const char *why = devos_core_restart_check();
-    char m[200];
-    if (why) snprintf(m, sizeof(m), "%s - restarting now stops it.", why);
-    else snprintf(m, sizeof(m), "The Tab5 starts again in a few seconds. Apps save their work first; "
-                                "SSH sessions and the VPNs reconnect afterwards.");
-    set_text(lbl_rb_msg, m);
-    devos_w_track(lbl_rb_msg, why ? DEVOS_W_TEXT_WARN : DEVOS_W_TEXT_DIM);
-    devos_w_dialog_show(&s_rb, true);
-    devos_focus_set(&s_rb_f, btn_rb_ok);             /* Enter restarts, Esc cancels */
-}
-
+/* ---- Restart / shut down, asking first ----
+ * The dialog itself lives in devos_ui (devos_powerdlg) so the global
+ * Sym+Shift+R / Sym+Shift+Q shortcuts raise the very same one. */
 static void restart_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    restart_open();
-}
-
-static bool restart_dialog_key(uint32_t key, uint8_t mods)
-{
-    if (!devos_w_dialog_open(&s_rb)) return false;
-    if (key == LV_KEY_ESC) restart_close();
-    else if (devos_focus_key(&s_rb_f, key, mods)) {}           /* Left / Right, Enter presses */
-    return true;                                               /* the dialog has the keyboard */
-}
-
-static void build_restart_dialog(void)
-{
-    devos_w_dialog(&s_rb, screen, 520, 200, "Restart devOS?");
-    lbl_rb_msg = devos_w_label(s_rb.box, &lv_font_montserrat_14, DEVOS_W_TEXT_DIM, "");
-    lv_obj_set_width(lbl_rb_msg, 520 - 44);
-    lv_label_set_long_mode(lbl_rb_msg, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(lbl_rb_msg, 0, 34);
-    lv_obj_t *cancel = devos_w_btn(s_rb.box, "Cancel  (Esc)", 130, restart_cancel_cb, NULL, NULL);
-    lv_obj_set_height(cancel, 36);
-    lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
-    btn_rb_ok = devos_w_btn_kind(s_rb.box, DEVOS_W_BTN_PRIMARY, LV_SYMBOL_REFRESH "  Restart", 136, restart_ok_cb,
-                                 NULL, NULL);
-    lv_obj_set_height(btn_rb_ok, 36);
-    lv_obj_align(btn_rb_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    devos_focus_init(&s_rb_f);
-    devos_focus_add(&s_rb_f, cancel);
-    devos_focus_add(&s_rb_f, btn_rb_ok);
-}
-
-/* ---- Shutdown (Power), asking first ---- */
-static devos_w_dialog_t s_sd;
-static devos_focus_t s_sd_f;
-static lv_obj_t *lbl_sd_msg, *btn_sd_ok;
-
-static void shutdown_close(void)
-{
-    devos_focus_clear(&s_sd_f);
-    devos_w_dialog_show(&s_sd, false);
-}
-
-static void shutdown_cancel_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    shutdown_close();
-}
-
-static void shutdown_ok_cb(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    set_text(lbl_sd_msg, "Shutting down...");
-    lv_refr_now(NULL);
-    devos_core_shutdown();       /* the current app finishes up first (hide) */
-}
-
-static void shutdown_open(void)
-{
-    const char *why = devos_core_restart_check();
-    char m[200];
-    if (why) snprintf(m, sizeof(m), "%s - shutting down now stops it.", why);
-    else snprintf(m, sizeof(m), "The Tab5 will power off. Apps save their work first.");
-    set_text(lbl_sd_msg, m);
-    devos_w_track(lbl_sd_msg, why ? DEVOS_W_TEXT_WARN : DEVOS_W_TEXT_DIM);
-    devos_w_dialog_show(&s_sd, true);
-    devos_focus_set(&s_sd_f, btn_sd_ok);             /* Enter shuts down, Esc cancels */
+    devos_powerdlg_restart();
 }
 
 static void shutdown_btn_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    shutdown_open();
-}
-
-static bool shutdown_dialog_key(uint32_t key, uint8_t mods)
-{
-    if (!devos_w_dialog_open(&s_sd)) return false;
-    if (key == LV_KEY_ESC) shutdown_close();
-    else if (devos_focus_key(&s_sd_f, key, mods)) {}           /* Left / Right, Enter presses */
-    return true;                                               /* the dialog has the keyboard */
-}
-
-static void build_shutdown_dialog(void)
-{
-    devos_w_dialog(&s_sd, screen, 520, 200, "Shut down?");
-    lbl_sd_msg = devos_w_label(s_sd.box, &lv_font_montserrat_14, DEVOS_W_TEXT_DIM, "");
-    lv_obj_set_width(lbl_sd_msg, 520 - 44);
-    lv_label_set_long_mode(lbl_sd_msg, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(lbl_sd_msg, 0, 34);
-    lv_obj_t *cancel = devos_w_btn(s_sd.box, "Cancel  (Esc)", 130, shutdown_cancel_cb, NULL, NULL);
-    lv_obj_set_height(cancel, 36);
-    lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, -150, 0);
-    btn_sd_ok = devos_w_btn_kind(s_sd.box, DEVOS_W_BTN_PRIMARY, LV_SYMBOL_POWER "  Shutdown", 136, shutdown_ok_cb,
-                                 NULL, NULL);
-    lv_obj_set_height(btn_sd_ok, 36);
-    lv_obj_align(btn_sd_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    devos_focus_init(&s_sd_f);
-    devos_focus_add(&s_sd_f, cancel);
-    devos_focus_add(&s_sd_f, btn_sd_ok);
+    devos_powerdlg_shutdown();
 }
 
 static void build_system_panel(lv_obj_t *pn)
@@ -2338,8 +2213,6 @@ static void settings_init(void)
         lv_obj_align(lbl_hint[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
     }
     build_modal();
-    build_restart_dialog();
-    build_shutdown_dialog();
 
     devos_theme_add_listener(apply_theme, NULL);
     lv_timer_create(settings_timer_cb, 500, NULL);
@@ -2372,7 +2245,7 @@ static void settings_hide(void)
 {
     if (!screen) return;
     close_modal();
-    restart_close();
+    devos_powerdlg_close();
     /* don't leave a dropdown list open on the top layer */
     for (int i = 0; i < SEC_COUNT; i++) devos_focus_clear(&s_pf[i]);
     lv_obj_t *dds[] = { dd_dim, dd_sleep, dd_light[0], dd_light[1], dd_tz };
@@ -2659,8 +2532,6 @@ static bool modal_handle_key(uint32_t key, uint8_t mods)
 static bool settings_handle_key(uint32_t key, uint8_t mods)
 {
     if (modal_open()) return modal_handle_key(key, mods);
-    if (restart_dialog_key(key, mods)) return true;
-    if (shutdown_dialog_key(key, mods)) return true;
     if (mods & (DEVOS_MOD_FN | DEVOS_MOD_CTRL | DEVOS_MOD_ALT)) return false;   /* global shortcuts */
 
     bool used = wifi_shortcut_key(key) || (s_in_panel ? panel_handle_key(key, mods) : nav_handle_key(key, mods));
