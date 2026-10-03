@@ -1,8 +1,8 @@
 {
   "version": "0.5.3",
   "url": "tab5-devos-0.5.3.bin",
-  "size": 2607760,
-  "sha256": "145feab163662f0215eff85c4dc2fa1f078a8bfbf0e7b635a756ab8f46561d88",
-  "build": "f6907d01a9e8744119a27795a0adbe6d333dbf63304908c41e781b48691e674e",
+  "size": 2608624,
+  "sha256": "ccd19cc2c9514edae0db157722a7877a3ff459a9e379d16e99b45db1fcc502c7",
+  "build": "b4b00f2abc656a0e73d6f3f8d6bc590288e00e27893e8d5b5001799e2baced13",
   "notes": "File Sharing: paste text from the web page onto the Tab5's Universal Clipboard (also saved to /.devos/clipboard.txt), with a read-back button."
 }
