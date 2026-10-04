@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
 
 #define OUT_MAX 4096
 #define SRCMAX  (JOBS_MAX_SOURCE + 64)
@@ -120,6 +121,15 @@ static char s_del_name[DEVOS_JOBS_NAME_MAX];
 #define TOPIC_OPTS_MAX (DEVOS_EVENTS_MAX_TOPICS + 1)
 static char s_topic_ids[TOPIC_OPTS_MAX][DEVOS_EVENTS_TOPIC_MAX];
 static int s_topic_n;
+
+/* New-job picker: Blank / Duplicate / jobs/examples starters */
+#define NEW_EX_MAX 8
+static devos_w_dialog_t s_new_dlg;
+static bool s_new_open;
+static lv_obj_t *s_new_dd;
+static char s_new_files[NEW_EX_MAX][48];
+static int s_new_n;
+static devos_focus_t s_new_focus;
 
 static void set_mode(ui_mode_t m);
 static void set_tab(jobs_tab_t t);
@@ -994,8 +1004,72 @@ static void act_cancel(void)
     if (devos_jobs_cancel(s_ctx.ids[s_ctx.sel]) == DEVOS_OK) devos_toast_show("Cancelling", DEVOS_TOAST_WARN, 0);
 }
 
-static void act_new(void)
+/* Name the duplicate "Copy of <name>" by replacing the job's quoted name. */
+static void dup_rename(const char *src, char *out, size_t cap)
 {
+    snprintf(out, cap, "%s", src);
+    char *j = strstr(out, "job \"");
+    if (!j) return;
+    j += 5;
+    char *e = strchr(j, '"');
+    if (!e) return;
+    char name[DEVOS_JOBS_NAME_MAX];
+    size_t old_len = (size_t)(e - j);
+    if (old_len > 48) old_len = 48;
+    snprintf(name, sizeof(name), "Copy of %.*s", (int)old_len, j);
+    size_t head = (size_t)(j - out);
+    size_t tail = strlen(e + 1) + 1;                  /* incl. NUL */
+    if (head + strlen(name) + 1 + tail > cap) return;  /* name + quote + tail */
+    memmove(j + strlen(name) + 1, e + 1, tail);
+    memcpy(j, name, strlen(name));
+    j[strlen(name)] = '"';
+}
+
+static void close_new_dialog(void)
+{
+    s_new_open = false;
+    devos_w_dialog_show(&s_new_dlg, false);
+}
+
+static void new_confirmed(void)
+{
+    close_new_dialog();
+    int sel = (int)lv_dropdown_get_selected(s_new_dd);
+    /* entry 0 = Blank, 1 = Duplicate (when a job is selected), then examples */
+    static char src[SRCMAX];
+    bool have = false;
+    if (sel == 0) {
+        snprintf(src, sizeof(src), "%s", NEW_TEMPLATE);
+        have = true;
+    } else if (sel == 1 && s_ctx.n > 0) {
+        static char cur[SRCMAX];
+        size_t len = 0;
+        if (devos_jobs_source(s_ctx.ids[s_ctx.sel], cur, sizeof(cur), &len) == DEVOS_OK) {
+            dup_rename(cur, src, sizeof(src));
+            have = true;
+        }
+    } else {
+        int idx = sel - (s_ctx.n > 0 ? 2 : 1);
+        if (idx >= 0 && idx < s_new_n) {
+            char path[160];
+            snprintf(path, sizeof(path), "%s/jobs/examples/%s", TAB5_SD_MOUNT_POINT, s_new_files[idx]);
+            FILE *f = fopen(path, "r");
+            if (f) {
+                size_t n = fread(src, 1, sizeof(src) - 1, f);
+                fclose(f);
+                src[n] = '\0';
+                have = true;
+            }
+        }
+    }
+    if (!have) { say("Couldn't read that starter."); return; }
+    char diag[160];
+    if (devos_jobs_check(src, strlen(src), diag, sizeof(diag)) != DEVOS_OK) {
+        char b[200];
+        snprintf(b, sizeof(b), "That starter is invalid: %s", diag);
+        say(b);
+        return;
+    }
     draft_save();
     char id[DEVOS_JOBS_ID_MAX];
     for (int k = 1; k < 1000; k++) {
@@ -1004,12 +1078,52 @@ static void act_new(void)
         for (int i = 0; i < s_ctx.n; i++) if (strcmp(s_ctx.ids[i], id) == 0) taken = true;
         if (!taken) break;
     }
-    if (devos_jobs_apply(id, NEW_TEMPLATE, strlen(NEW_TEMPLATE), NULL) != DEVOS_OK) { say("Couldn't create the job."); return; }
+    if (devos_jobs_apply(id, src, strlen(src), NULL) != DEVOS_OK) { say("Couldn't create the job."); return; }
     s_ctx.sel = s_ctx.n;
     refresh_list();
     load_selected();
     if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER);
     devos_toast_show("New job (disabled)", DEVOS_TOAST_OK, 0);
+}
+
+static void new_ok_cb(lv_event_t *e) { LV_UNUSED(e); new_confirmed(); }
+static void new_cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_new_dialog(); }
+
+static void act_new(void)
+{
+    /* scan the examples folder for starters */
+    s_new_n = 0;
+    char dir[160];
+    snprintf(dir, sizeof(dir), "%s/jobs/examples", TAB5_SD_MOUNT_POINT);
+    DIR *d = opendir(dir);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL && s_new_n < NEW_EX_MAX) {
+            size_t L = strlen(e->d_name);
+            if (L < 5 || strcmp(e->d_name + L - 4, ".job") != 0) continue;
+            snprintf(s_new_files[s_new_n], sizeof(s_new_files[0]), "%s", e->d_name);
+            s_new_n++;
+        }
+        closedir(d);
+    }
+    char opts[NEW_EX_MAX * 64 + 128];
+    size_t o = 0;
+    o += (size_t)snprintf(opts + o, sizeof(opts) - o, "Blank job");
+    if (s_ctx.n > 0)
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "\nDuplicate \"%.*s\"",
+                              (int)sizeof(s_ctx.cur_name) - 16, s_ctx.cur_name);
+    for (int i = 0; i < s_new_n; i++) {
+        char base[48];
+        snprintf(base, sizeof(base), "%s", s_new_files[i]);
+        base[strlen(base) - 4] = '\0';
+        for (char *q = base; *q; q++) if (*q == '-' || *q == '_') *q = ' ';
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "\nExample: %s", base);
+    }
+    lv_dropdown_set_options(s_new_dd, opts);
+    lv_dropdown_set_selected(s_new_dd, 0);
+    s_new_open = true;
+    devos_w_dialog_show(&s_new_dlg, true);
+    devos_focus_first(&s_new_focus);
 }
 
 static void close_delete_dialog(void)
@@ -1750,6 +1864,22 @@ static void jobs_init(void)
     devos_w_set_text(s_del_dlg.msg, "Enter = delete      Esc = cancel");
     devos_core_add_restart_check(jobs_restart_check);
 
+    /* New-job picker: Blank / Duplicate / jobs/examples starters */
+    devos_w_dialog(&s_new_dlg, scr, 560, 170, LV_SYMBOL_PLUS "  New job");
+    s_new_dd = devos_w_dd(s_new_dlg.box, "Blank job", 480);
+    lv_obj_align(s_new_dd, LV_ALIGN_TOP_LEFT, 0, 44);
+    devos_w_set_text(s_new_dlg.msg, "Left/Right pick  Enter = create      Esc = cancel");
+    lv_obj_t *nok = devos_w_btn_kind(s_new_dlg.box, DEVOS_W_BTN_PRIMARY, "Create", 120, new_ok_cb, NULL, NULL);
+    lv_obj_set_size(nok, 120, 36);
+    lv_obj_align(nok, LV_ALIGN_BOTTOM_RIGHT, -132, 0);
+    lv_obj_t *ncl = devos_w_btn(s_new_dlg.box, "Cancel", 120, new_cancel_cb, NULL, NULL);
+    lv_obj_set_size(ncl, 120, 36);
+    lv_obj_align(ncl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    devos_focus_init(&s_new_focus);
+    devos_focus_add(&s_new_focus, s_new_dd);
+    devos_focus_add(&s_new_focus, nok);
+    devos_focus_add(&s_new_focus, ncl);
+
     /* Job settings dialog: name, timeout, overlap, cooldown */
     devos_w_dialog(&s_ctx.dlg_job, scr, 560, 360, LV_SYMBOL_SETTINGS "  Job settings");
     lv_obj_t *jrow = lv_obj_create(s_ctx.dlg_job.box);
@@ -1875,6 +2005,29 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         if (key == '\r' || key == '\n') { commit_job_settings(); return true; }
         if (key == LV_KEY_ESC) { close_job_settings(); return true; }
         if (devos_focus_key(&s_ctx.job_focus, key, mods)) return true;
+        return true;
+    }
+
+    /* The New-job picker owns the keyboard. Arrows pick the starter directly;
+     * Enter creates (unless the option list is open - then it selects);
+     * Tab reaches the buttons, Esc cancels. */
+    if (s_new_open) {
+        bool dd_open = lv_dropdown_is_open(s_new_dd);
+        lv_obj_t *nf = devos_focus_get(&s_new_focus);
+        if (!dd_open && nf == s_new_dd &&
+            (key == LV_KEY_UP || key == LV_KEY_DOWN || key == LV_KEY_LEFT || key == LV_KEY_RIGHT)) {
+            int n = (int)lv_dropdown_get_option_count(s_new_dd);
+            int sel = (int)lv_dropdown_get_selected(s_new_dd);
+            if (key == LV_KEY_DOWN || key == LV_KEY_RIGHT) sel++;
+            else sel--;
+            if (sel < 0) sel = 0;
+            if (sel >= n) sel = n - 1;
+            lv_dropdown_set_selected(s_new_dd, (uint32_t)sel);
+            return true;
+        }
+        if (!dd_open && (key == '\r' || key == '\n')) { new_confirmed(); return true; }
+        if (devos_focus_key(&s_new_focus, key, mods)) return true;
+        if (key == LV_KEY_ESC) { close_new_dialog(); return true; }
         return true;
     }
 
