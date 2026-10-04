@@ -65,6 +65,7 @@ typedef struct {
     lv_obj_t *btn_new, *btn_validate, *btn_apply, *btn_enable, *btn_run, *btn_cancel, *btn_hist, *btn_del;
     /* Builder */
     lv_obj_t *dd_kind, *ta_trig, *ta_where, *dd_topic, *dd_hour, *dd_min;
+    lv_obj_t *day_cb[7];                     /* weekday picker (Weekdays kind) */
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
     lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *ta_add_filter, *btn_add, *btn_bdel, *btn_up, *btn_dn;
@@ -515,6 +516,7 @@ static void builder_refresh(void)
         if (s_ctx.dd_topic) refresh_topics();
         bool ev = kind == JTRIG_EVENT;
         bool hm = kind == JTRIG_DAILY || kind == JTRIG_WEEKDAYS;
+        bool wd = kind == JTRIG_WEEKDAYS;
         if (hm && s_ctx.dd_hour) {
             int hh = 8, mm = 0;
             sscanf(v, "%d:%d", &hh, &mm);
@@ -522,6 +524,17 @@ static void builder_refresh(void)
             if (mm < 0 || mm > 59) mm = 0;
             lv_dropdown_set_selected(s_ctx.dd_hour, (uint32_t)hh);
             lv_dropdown_set_selected(s_ctx.dd_min, (uint32_t)mm);
+        }
+        if (s_ctx.day_cb[0]) {
+            uint8_t m = jobs_build_trigger_days_mask(t);
+            for (int i = 0; i < 7; i++) {
+                bool on = (m & (uint8_t)(1u << ((i + 1) % 7))) != 0;
+                if (on != lv_obj_has_state(s_ctx.day_cb[i], LV_STATE_CHECKED)) {
+                    if (on) lv_obj_add_state(s_ctx.day_cb[i], LV_STATE_CHECKED);
+                    else lv_obj_remove_state(s_ctx.day_cb[i], LV_STATE_CHECKED);
+                }
+                set_visible(s_ctx.day_cb[i], wd);
+            }
         }
         set_visible(s_ctx.ta_trig, !ev && !hm);
         if (s_ctx.dd_hour) set_visible(s_ctx.dd_hour, hm);
@@ -838,6 +851,29 @@ static void time_spinner_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     if (s_ctx.tab == TAB_BUILDER) builder_commit_trigger();
+}
+
+/* Weekday chips: collect the mask, clear back to Mon-Fri when it matches. */
+static void days_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (s_ctx.tab != TAB_BUILDER) return;
+    uint8_t mask = 0;
+    for (int i = 0; i < 7; i++)
+        if (lv_obj_has_state(s_ctx.day_cb[i], LV_STATE_CHECKED))
+            mask |= (uint8_t)(1u << ((i + 1) % 7));
+    if (mask == 0) {
+        say("Pick at least one day.");
+        builder_refresh();                   /* restore the previous checks */
+        return;
+    }
+    if (mask == JOBS_DAYS_DEFAULT) jobs_build_set_trigger_days(&s_ctx.build, NULL);
+    else {
+        char d[32];
+        jobs_days_format(mask, d, sizeof(d));
+        if (!jobs_build_set_trigger_days(&s_ctx.build, d)) { say(s_ctx.build.diag); return; }
+    }
+    builder_sync();
 }
 
 static void builder_commit_value(void)
@@ -1644,7 +1680,18 @@ static void trigger_words(const char *trig, char *out, size_t cap)
     } else if (strncmp(trig, "daily ", 6) == 0) {
         snprintf(out, cap, "Every day at %s", trig + 6);
     } else if (strncmp(trig, "weekdays ", 9) == 0) {
-        snprintf(out, cap, "Weekdays at %s", trig + 9);
+        const char *rest = trig + 9;                   /* "HH:MM" or "HH:MM Days" */
+        char hm[8] = "";
+        snprintf(hm, sizeof(hm), "%.5s", rest);
+        const char *sp = strchr(rest, ' ');
+        if (sp && sp[1]) {
+            char days[32];
+            snprintf(days, sizeof(days), "%s", sp + 1);
+            for (char *q = days; *q; q++) if (*q == ',') *q = ' ';
+            snprintf(out, cap, "Weekly on %s at %s", days, hm);
+        } else {
+            snprintf(out, cap, "Weekdays at %s", hm);
+        }
     } else if (strncmp(trig, "on ", 3) == 0) {
         snprintf(out, cap, "When \"%s\" fires", trig + 3);
     } else {
@@ -2017,6 +2064,19 @@ static void jobs_init(void)
         lv_obj_add_flag(s_ctx.dd_min, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(s_ctx.dd_min, time_spinner_cb, LV_EVENT_VALUE_CHANGED, NULL);
     }
+    /* P2: weekday picker - 7 toggle chips, shown for the Weekdays kind. */
+    {
+        static const char *dn[7] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+        for (int i = 0; i < 7; i++) {
+            lv_obj_t *cb = lv_checkbox_create(s_ctx.bld);
+            lv_checkbox_set_text(cb, dn[i]);
+            lv_obj_set_pos(cb, 340 + i * 66, 22);
+            lv_obj_set_size(cb, 62, 28);
+            lv_obj_add_flag(cb, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_event_cb(cb, days_cb, LV_EVENT_VALUE_CHANGED, NULL);
+            s_ctx.day_cb[i] = cb;
+        }
+    }
     s_ctx.dd_topic = devos_w_dd(s_ctx.bld, "(no topics registered)", 250);
     lv_obj_set_pos(s_ctx.dd_topic, 160, 18);
     lv_obj_add_flag(s_ctx.dd_topic, LV_OBJ_FLAG_HIDDEN);
@@ -2299,6 +2359,7 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.ta_trig);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_hour);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_min);
+    for (int i = 0; i < 7; i++) devos_focus_add(&s_ctx.focus, s_ctx.day_cb[i]);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_topic);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);

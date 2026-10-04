@@ -170,6 +170,40 @@ const char *jobs_build_trigger_event_topic(const jobs_node_t *t)
     return (t && t->sub == JTRIG_EVENT) ? t->u.str.s : NULL;
 }
 
+/* Weekday selector: canonical "Mon,Wed" text, or "" when default/absent. */
+const char *jobs_build_trigger_days_text(const jobs_node_t *t)
+{
+    if (!t || (t->kind != JN_TRIGGER && t->sub != JTRIG_WEEKDAYS)) return "";
+    return (t->sub == JTRIG_WEEKDAYS && t->u.str.s2) ? t->u.str.s2 : "";
+}
+
+uint8_t jobs_build_trigger_days_mask(const jobs_node_t *t)
+{
+    uint8_t m = 0;
+    if (t && t->sub == JTRIG_WEEKDAYS && t->u.str.s2)
+        jobs_days_parse(t->u.str.s2, &m);
+    return m ? m : JOBS_DAYS_DEFAULT;
+}
+
+/* Set (or, with NULL/"", clear back to the Mon-Fri default) the day list.
+ * Only meaningful on a weekdays trigger. */
+bool jobs_build_set_trigger_days(jobs_build_t *b, const char *days)
+{
+    if (!b) return false;
+    jobs_node_t *t = jobs_build_trigger(b);
+    if (!t || t->sub != JTRIG_WEEKDAYS) return false;
+    if (!days || !days[0]) { t->u.str.s2 = NULL; return true; }
+    uint8_t m = 0;
+    if (!jobs_days_parse(days, &m)) {
+        snprintf(b->diag, sizeof(b->diag), "days must be like \"Mon,Wed,Fri\"");
+        return false;
+    }
+    char canon[32];
+    jobs_days_format(m, canon, sizeof(canon));
+    t->u.str.s2 = jobs_pool_str(b->ast, canon, (uint32_t)strlen(canon));
+    return t->u.str.s2 != NULL;
+}
+
 const char *jobs_build_trigger_where_text(const jobs_node_t *t)
 {
     static char buf[192];

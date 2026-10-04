@@ -191,6 +191,36 @@ static void test_roundtrip(void)
     jobs_ast_t *c = pv(C);
     CHECK(c && c->diag_count == 0);
     if (c) { char o[512]; CHECK(jobs_serialize(c, o, sizeof(o)) > 0); jobs_ast_free(c); }
+    /* weekdays with an explicit day list round-trips (mixed case, any order) */
+    const char *D =
+        "version 1;\n"
+        "job \"d\" {\n"
+        "    trigger weekdays \"08:00\" days \"wed,MON\";\n"
+        "    system.log(message: \"hi\");\n"
+        "}\n";
+    jobs_ast_t *d = pv(D);
+    CHECK(d && d->diag_count == 0);
+    if (d) {
+        char o[512];
+        CHECK(jobs_serialize(d, o, sizeof(o)) > 0);
+        CHECK(strstr(o, "trigger weekdays \"08:00\" days \"wed,MON\";") != NULL);
+        jobs_ast_free(d);
+    }
+    /* bare weekdays keeps the Mon-Fri default (no days clause emitted) */
+    const char *E =
+        "version 1;\n"
+        "job \"e\" {\n"
+        "    trigger weekdays \"08:00\";\n"
+        "    system.log(message: \"hi\");\n"
+        "}\n";
+    jobs_ast_t *e = pv(E);
+    CHECK(e && e->diag_count == 0);
+    if (e) {
+        char o[512];
+        CHECK(jobs_serialize(e, o, sizeof(o)) > 0);
+        CHECK(strstr(o, " days \"") == NULL);
+        jobs_ast_free(e);
+    }
 }
 
 static void test_parse_errors(void)
@@ -205,6 +235,7 @@ static void test_parse_errors(void)
         { "version 1;\njob \"x\" { system.log(message: \"a\"); }\n", "trigger" },
         { "version 1;\njob \"x\" { trigger manual; run (); }\n", "expected a job name" },
         { "version 1;\njob \"x\"(a: integer) { trigger manual; }\n", "unknown parameter type" },
+        { "version 1;\njob \"x\" { trigger daily \"08:00\" days \"Mon\"; }\n", "';'" },
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         jobs_ast_t *ast = jobs_parse(bad[i].src, strlen(bad[i].src), NULL);
@@ -238,6 +269,9 @@ static void test_validate_errors(void)
         { "version 1;\njob \"x\"(a: int, a: string) { trigger manual; }\n", "duplicate parameter" },
         { "version 1;\njob \"x\"(a: int) { trigger manual; set a = 2; }\n", "read-only" },
         { "version 1;\njob \"x\" { trigger manual; run \"S\"(a: 1, a: 2) as v; }\n", "duplicate input" },
+        { "version 1;\njob \"x\" { trigger weekdays \"08:00\" days \"Funday\"; system.log(message: \"x\"); }\n", "days must be" },
+        { "version 1;\njob \"x\" { trigger weekdays \"08:00\" days \"Mon,Mon\"; system.log(message: \"x\"); }\n", "days must be" },
+        { "version 1;\njob \"x\" { trigger weekdays \"08:00\" days \"\"; system.log(message: \"x\"); }\n", "days must be" },
         { "version 1;\njob \"x\" { trigger manual; run \"S\"() as v; run \"T\"() as v; }\n", "already defined" },
         { "version 1;\njob \"x\" { trigger manual; network.ping(host: \"a\") as p; return p; }\n", "is an output" },
         { "version 1;\njob \"x\" { trigger manual; return secret(\"t\"); }\n", "cannot return a secret" },

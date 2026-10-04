@@ -1,5 +1,6 @@
 /* jobs_model: AST arena, string pool, diagnostics (see jobs_model.h). */
 #include "jobs_model.h"
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,6 +135,66 @@ const char *jobs_trigger_name(jobs_trigger_kind_t k)
     case JTRIG_EVENT:    return "event";
     default:             return "?";
     }
+}
+
+static const char *const JOBS_DAY_NAMES[7] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+
+int jobs_day_index(const char *name)
+{
+    if (!name) return -1;
+    char c0 = name[0], c1 = name[1], c2 = name[2];
+    if (!c0 || !c1 || !c2 || name[3] != '\0') return -1;
+    c0 = (char)tolower((unsigned char)c0);
+    c1 = (char)tolower((unsigned char)c1);
+    c2 = (char)tolower((unsigned char)c2);
+    for (int i = 0; i < 7; i++) {
+        if (c0 == (char)tolower((unsigned char)JOBS_DAY_NAMES[i][0]) &&
+            c1 == (char)tolower((unsigned char)JOBS_DAY_NAMES[i][1]) &&
+            c2 == (char)tolower((unsigned char)JOBS_DAY_NAMES[i][2])) return i;
+    }
+    return -1;
+}
+
+bool jobs_days_parse(const char *list, uint8_t *mask_out)
+{
+    if (mask_out) *mask_out = 0;
+    if (!list || !list[0]) return false;
+    uint8_t mask = 0;
+    const char *p = list;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        char tok[8];
+        int k = 0;
+        while (*p && *p != ',' && k < 7) tok[k++] = *p++;
+        tok[k] = '\0';
+        while (k > 0 && (tok[k - 1] == ' ' || tok[k - 1] == '\t')) tok[--k] = '\0';
+        int idx = jobs_day_index(tok);
+        if (idx < 0) return false;
+        int dow = (idx + 1) % 7;
+        if (mask & (uint8_t)(1u << dow)) return false;      /* duplicate day */
+        mask |= (uint8_t)(1u << dow);
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (*p != ',') return false;
+        p++;
+    }
+    if (mask == 0) return false;
+    if (mask_out) *mask_out = mask;
+    return true;
+}
+
+int jobs_days_format(uint8_t mask, char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    size_t o = 0;
+    for (int i = 0; i < 7; i++) {
+        int dow = (i + 1) % 7;
+        if (!(mask & (uint8_t)(1u << dow))) continue;
+        o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? "," : "", JOBS_DAY_NAMES[i]);
+        if (o + 1 >= cap) break;
+    }
+    return (int)o;
 }
 
 const char *jobs_op_name(jobs_op_t op)

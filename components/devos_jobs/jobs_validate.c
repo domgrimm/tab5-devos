@@ -474,6 +474,11 @@ static void check_trigger(V *v, jobs_node_t *t)
     case JTRIG_DAILY:
     case JTRIG_WEEKDAYS:
         if (!valid_hhmm(t->u.str.s)) verr(v, t, "time must be \"HH:MM\" (00:00-23:59)");
+        if (t->sub == JTRIG_WEEKDAYS && t->u.str.s2) {
+            uint8_t dm = 0;
+            if (!jobs_days_parse(t->u.str.s2, &dm))
+                verr(v, t, "days must be like \"Mon,Wed,Fri\" (3-letter names, no repeats)");
+        }
         break;
     case JTRIG_EVENT: {
         v->in_event = true;

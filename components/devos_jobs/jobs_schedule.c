@@ -59,7 +59,16 @@ static void fmt_trigger(const jobs_job_t *j, char *out, size_t cap)
     switch (j->trigger_kind) {
     case JTRIG_EVERY:    fmt_interval(j->interval_ms, out, cap); break;
     case JTRIG_DAILY:    snprintf(out, cap, "daily %02d:%02d", j->trig_hh, j->trig_mm); break;
-    case JTRIG_WEEKDAYS: snprintf(out, cap, "weekdays %02d:%02d", j->trig_hh, j->trig_mm); break;
+    case JTRIG_WEEKDAYS: {
+        char days[32] = "";
+        if (j->trig_days && j->trig_days != JOBS_DAYS_DEFAULT) {
+            char d[28];
+            jobs_days_format(j->trig_days, d, sizeof(d));
+            snprintf(days, sizeof(days), " %s", d);
+        }
+        snprintf(out, cap, "weekdays %02d:%02d%s", j->trig_hh, j->trig_mm, days);
+        break;
+    }
     case JTRIG_EVENT:    snprintf(out, cap, "on %s", j->event_topic[0] ? j->event_topic : "?"); break;
     default:             snprintf(out, cap, "manual"); break;
     }
@@ -135,8 +144,8 @@ bool jobs_calendar_recompute(jobs_job_t *j)
     if (target <= sod) day++;                 /* next future occurrence */
     for (int i = 0; i < 400; i++) {           /* bounded: at most ~1 year of skips */
         if (j->trigger_kind == JTRIG_WEEKDAYS) {
-            int dow = weekday_of(day);
-            if (dow == 0 || dow == 6) { day++; continue; }
+            uint8_t mask = j->trig_days ? j->trig_days : JOBS_DAYS_DEFAULT;
+            if (!(mask & (uint8_t)(1u << weekday_of(day)))) { day++; continue; }
         }
         int64_t cand_local = day * 86400 + target;
         int64_t cand_utc = cand_local - jobs_offset_at(cand_local);
@@ -171,6 +180,7 @@ static void read_trigger(jobs_job_t *j, const jobs_ast_t *ast)
     j->interval_ms = 0;
     j->trig_hh = 8;
     j->trig_mm = 0;
+    j->trig_days = 0;
     j->event_topic[0] = '\0';
     j->mqtt_topic[0] = '\0';
     j->mqtt_sub_handle = 0;
@@ -188,6 +198,9 @@ static void read_trigger(jobs_job_t *j, const jobs_ast_t *ast)
             const char *s = (t->u.str.s && strlen(t->u.str.s) == 5) ? t->u.str.s : "08:00";
             j->trig_hh = (s[0] - '0') * 10 + (s[1] - '0');
             j->trig_mm = (s[3] - '0') * 10 + (s[4] - '0');
+            j->trig_days = 0;
+            if (t->sub == JTRIG_WEEKDAYS && t->u.str.s2)
+                jobs_days_parse(t->u.str.s2, &j->trig_days);   /* validated; 0 = default */
         } else if (t->sub == JTRIG_EVENT) {
             snprintf(j->event_topic, sizeof(j->event_topic), "%s", t->u.str.s ? t->u.str.s : "");
             for (const jobs_node_t *a = t->a; a; a = a->next) {

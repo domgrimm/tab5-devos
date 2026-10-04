@@ -145,6 +145,13 @@ size_t jobs_serialize_expr(const jobs_node_t *e, char *out, size_t cap);
 
 /* ---- helpers ---- */
 const char *jobs_trigger_name(jobs_trigger_kind_t k);
+/* Weekday sets for `weekdays "HH:MM" days "Mon,Wed"`. Display order is
+ * Monday-first; the mask uses dow bits (Sun=0 .. Sat=6, matching the
+ * scheduler). JOBS_DAYS_DEFAULT is Mon-Fri, used when days is absent. */
+#define JOBS_DAYS_DEFAULT 0x3E
+int jobs_day_index(const char *name);   /* Mon..Sun -> 0..6, -1 unknown (3 letters, any case) */
+bool jobs_days_parse(const char *list, uint8_t *mask_out);  /* comma list; false on unknown/dup/empty */
+int jobs_days_format(uint8_t mask, char *out, size_t cap);  /* canonical Mon-first "Mon,Wed" */
 const char *jobs_op_name(jobs_op_t op);
 
 #ifdef __cplusplus

@@ -122,6 +122,7 @@ typedef struct {
 
     /* daily/weekdays (wall clock) */
     int trig_hh, trig_mm;
+    uint8_t trig_days;              /* dow-bit mask, 0 = default Mon-Fri */
     int64_t next_wall_s;            /* UTC seconds of the next occurrence */
     bool next_wall_valid;
     int32_t claim_date;             /* local YYYYMMDD already claimed (dedupe) */

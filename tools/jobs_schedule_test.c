@@ -168,6 +168,39 @@ int main(void)
     devos_jobs_tick();
     CHECK(log_count() == base + 1);
 
+    /* ================= custom days ================= */
+    /* Weekend-only: fires Saturday, skips Monday. */
+    disable_all();
+    set_wall(mk(2026, 1, 9, 9, 0), 0);               /* Friday 09:00 */
+    apply_ok("we", "version 1;\njob \"we\" {\n trigger weekdays \"08:00\" days \"Sat,Sun\";\n system.log(message: \"we\");\n}\n");
+    CHECK(devos_jobs_set_enabled("we", true) == DEVOS_OK);
+    base = log_count();
+    s_now += 1000; devos_jobs_tick();
+    CHECK(log_count() == base);
+    set_wall(mk(2026, 1, 10, 8, 0), 0);              /* Saturday */
+    devos_jobs_tick();
+    CHECK(log_count() == base + 1);
+    set_wall(mk(2026, 1, 11, 8, 0), 0);              /* Sunday */
+    devos_jobs_tick();
+    CHECK(log_count() == base + 2);
+    set_wall(mk(2026, 1, 12, 8, 0), 0);              /* Monday: skipped */
+    devos_jobs_tick();
+    CHECK(log_count() == base + 2);
+    set_wall(mk(2026, 1, 18, 8, 0), 0);              /* next Sunday */
+    devos_jobs_tick();
+    CHECK(log_count() == base + 3);
+    /* a single day narrows to it */
+    CHECK(devos_jobs_set_enabled("we", false) == DEVOS_OK);
+    apply_ok("we2", "version 1;\njob \"we2\" {\n trigger weekdays \"08:00\" days \"Wed\";\n system.log(message: \"we2\");\n}\n");
+    CHECK(devos_jobs_set_enabled("we2", true) == DEVOS_OK);
+    base = log_count();
+    set_wall(mk(2026, 1, 19, 8, 0), 0);              /* Monday: skipped */
+    devos_jobs_tick();
+    CHECK(log_count() == base);
+    set_wall(mk(2026, 1, 21, 8, 0), 0);              /* Wednesday */
+    devos_jobs_tick();
+    CHECK(log_count() == base + 1);
+
     /* ================= timezone change recomputes ================= */
     disable_all();
     set_wall(mk(2026, 1, 13, 7, 0), 0);

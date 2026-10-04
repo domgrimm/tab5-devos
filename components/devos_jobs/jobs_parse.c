@@ -506,7 +506,8 @@ static jobs_node_t *parse_trigger(P *p)
         n->u.i = p->cur.i;
         next(p);
     } else if (ident_is(p, "daily") || ident_is(p, "weekdays")) {
-        n->sub = ident_is(p, "daily") ? JTRIG_DAILY : JTRIG_WEEKDAYS;
+        bool weekly = ident_is(p, "weekdays");
+        n->sub = weekly ? JTRIG_WEEKDAYS : JTRIG_DAILY;
         next(p);
         if (!at(p, T_STRING)) { perr(p, &p->cur, "expected a time \"HH:MM\""); return NULL; }
         tok_t ts = p->cur;
@@ -515,8 +516,18 @@ static jobs_node_t *parse_trigger(P *p)
         if (!str) return NULL;
         if (str->a && str->a->next) { perr(p, &ts, "a time cannot contain ${...}"); return NULL; }
         n->u.str.s = str->a ? str->a->u.str.s : "";
-    } else if (ident_is(p, "event")) {
-        n->sub = JTRIG_EVENT; next(p);
+        /* optional day selector: weekdays "08:00" days "Mon,Wed" */
+        if (weekly && ident_is(p, "days")) {
+            next(p);
+            if (!at(p, T_STRING)) { perr(p, &p->cur, "expected days like \"Mon,Wed,Fri\""); return NULL; }
+            tok_t ds = p->cur;
+            next(p);
+            jobs_node_t *dstr = parse_string(p, &ds);
+            if (!dstr) return NULL;
+            if (dstr->a && dstr->a->next) { perr(p, &ds, "days cannot contain ${...}"); return NULL; }
+            n->u.str.s2 = dstr->a ? dstr->a->u.str.s : "";
+        }
+    } else if (ident_is(p, "event")) {        n->sub = JTRIG_EVENT; next(p);
         if (!at(p, T_STRING)) { perr(p, &p->cur, "expected an event topic"); return NULL; }
         tok_t ts = p->cur;
         next(p);

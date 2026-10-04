@@ -223,7 +223,12 @@ static void emit_trigger(SB *b, const jobs_node_t *t, int d)
     switch (t->sub) {
     case JTRIG_EVERY: sb_put(b, " ", 1); emit_dur(b, t->u.i); break;
     case JTRIG_DAILY:
-    case JTRIG_WEEKDAYS: sb_put(b, " ", 1); emit_quoted(b, t->u.str.s); break;
+    case JTRIG_WEEKDAYS:
+        sb_put(b, " ", 1); emit_quoted(b, t->u.str.s);
+        if (t->sub == JTRIG_WEEKDAYS && t->u.str.s2) {
+            sb_put(b, " days ", 6); emit_quoted(b, t->u.str.s2);
+        }
+        break;
     case JTRIG_EVENT:
         sb_put(b, " ", 1);
         emit_quoted(b, t->u.str.s);

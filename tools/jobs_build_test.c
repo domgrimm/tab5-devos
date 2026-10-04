@@ -338,6 +338,27 @@ int main(void)
         jobs_build_free(&ib);
     }
 
+    /* weekday selector: set, canonicalize, clear, refuse off-weekdays */
+    {
+        const char *CW = "version 1;\njob \"W\" {\n trigger weekdays \"08:00\";\n system.log(message: \"x\");\n}\n";
+        jobs_build_t wb;
+        memset(&wb, 0, sizeof(wb));
+        CHECK(jobs_build_load(&wb, CW, strlen(CW)));
+        CHECK(strcmp(jobs_build_trigger_days_text(jobs_build_trigger(&wb)), "") == 0);
+        CHECK(jobs_build_trigger_days_mask(jobs_build_trigger(&wb)) == 0x3E);
+        CHECK(jobs_build_set_trigger_days(&wb, "wed,MON"));
+        CHECK(strcmp(jobs_build_trigger_days_text(jobs_build_trigger(&wb)), "Mon,Wed") == 0);
+        CHECK(!jobs_build_set_trigger_days(&wb, "Funday"));
+        char wo[512];
+        CHECK(jobs_build_source(&wb, wo, sizeof(wo)) > 0);
+        CHECK(strstr(wo, "days \"Mon,Wed\"") != NULL);
+        CHECK(jobs_build_set_trigger_days(&wb, ""));
+        CHECK(strcmp(jobs_build_trigger_days_text(jobs_build_trigger(&wb)), "") == 0);
+        CHECK(jobs_build_set_trigger_kind(&wb, JTRIG_DAILY));
+        CHECK(!jobs_build_set_trigger_days(&wb, "Mon"));
+        jobs_build_free(&wb);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

@@ -56,6 +56,11 @@ bool jobs_build_set_trigger_where(jobs_build_t *b, const char *expr);
 const char *jobs_build_trigger_event_topic(const jobs_node_t *t);
 /* Canonical text of the trigger's `where` ("" when none). */
 const char *jobs_build_trigger_where_text(const jobs_node_t *t);
+/* Weekday selector: canonical text ("" = Mon-Fri default), the effective
+ * mask, and a setter (NULL/"" clears back to the default). */
+const char *jobs_build_trigger_days_text(const jobs_node_t *t);
+uint8_t jobs_build_trigger_days_mask(const jobs_node_t *t);
+bool jobs_build_set_trigger_days(jobs_build_t *b, const char *days);
 
 /* ---- steps ---- */
 /* Append an action built from its schema (all params defaulted) to `block`. */

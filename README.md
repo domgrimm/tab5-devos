@@ -91,7 +91,8 @@ kept under `/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/exa
 
 A job has exactly one trigger: `manual`, `every <dur>` (phase-anchored, missed periods skipped),
 `daily "HH:MM"` or `weekdays "HH:MM"` (device-local time; one run per local date, DST-safe, and
-blocked while the clock is not set), or `event "topic"` (with an optional `where` filter over
+blocked while the clock is not set; `weekdays` accepts an optional day list,
+`weekdays "08:00" days "Mon,Wed,Fri"` defaulting to Mon-Fri), or `event "topic"` (with an optional `where` filter over
 `event.topic`, `event.source`, `event.payload`, `event.seq`, `event.retain` and `event.truncated`,
 and a bounded `debounce`). The system events are `system.boot` (once per normal boot),
 `network.wifi_connected` / `network.wifi_disconnected`, `network.tailscale_connected` /
