@@ -258,6 +258,47 @@ int main(void)
     jobs_build_free(&b2);
     jobs_build_free(&b);
 
+    /* P2: add control statements, bind an output, rename, set the policy */
+    {
+        const char *CP2 = "version 1;\njob \"Cap\" {\n trigger manual;\n system.log(message: \"x\");\n}\n";
+        jobs_build_t cb;
+        memset(&cb, 0, sizeof(cb));
+        CHECK(jobs_build_load(&cb, CP2, strlen(CP2)));
+        jobs_node_t *body = jobs_build_trigger(&cb) ? cb.ast->root->c : NULL;
+        CHECK(body != NULL);
+        int before = jobs_build_block_count(body);
+        CHECK(jobs_build_add_if(&cb, body, "true"));
+        CHECK(jobs_build_add_set(&cb, body, "n", "42"));
+        CHECK(jobs_build_add_wait(&cb, body, 250));
+        CHECK(jobs_build_add_repeat(&cb, body, 3, "i"));
+        CHECK(jobs_build_add_run(&cb, body, "Echo", "out"));
+        CHECK(jobs_build_block_count(body) == before + 5);
+        /* the new run statement carries its output binding */
+        jobs_node_t *run = NULL;
+        for (jobs_node_t *s = body->a; s; s = s->next) if (s->kind == JN_RUN) run = s;
+        CHECK(run && jobs_build_output(run) && strcmp(jobs_build_output(run), "out") == 0);
+        CHECK(jobs_build_set_output(&cb, run, "reply") &&
+              strcmp(jobs_build_output(run), "reply") == 0);
+        CHECK(jobs_build_set_job_name(&cb, "Renamed"));
+        CHECK(strcmp(cb.ast->root->u.str.s, "Renamed") == 0);
+        CHECK(jobs_build_set_policy(&cb, 5000, 1, 1000));
+        CHECK(jobs_build_policy_timeout(cb.ast->root->b) == 5000);
+        CHECK(jobs_build_policy_overlap(cb.ast->root->b) == 1);
+        CHECK(jobs_build_policy_cooldown(cb.ast->root->b) == 1000);
+        /* the result still validates and round-trips */
+        CHECK(jobs_build_revalidate(&cb));
+        char co[2048];
+        size_t cl = jobs_build_source(&cb, co, sizeof(co));
+        CHECK(cl > 0 && strstr(co, "if true {") != NULL);
+        CHECK(strstr(co, "set n = 42;") != NULL);
+        CHECK(strstr(co, "wait 250ms;") != NULL);
+        CHECK(strstr(co, "repeat 3 as i {") != NULL);
+        CHECK(strstr(co, "run \"Echo\" as reply;") != NULL);
+        CHECK(strstr(co, "job \"Renamed\"") != NULL);
+        CHECK(strstr(co, "policy(timeout: 5s") != NULL);
+        jobs_build_free(&cb);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

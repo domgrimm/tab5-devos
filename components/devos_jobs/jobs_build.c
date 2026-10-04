@@ -251,6 +251,167 @@ bool jobs_build_add_action(jobs_build_t *b, const jobs_node_t *block, const char
     return block_append(b->ast, (jobs_node_t *)block, n);
 }
 
+/* ---- P2: add non-action statements and bind outputs / job metadata ---- */
+static jobs_node_t *new_block_node(jobs_ast_t *ast)
+{
+    return jobs_node_new(ast, JN_BLOCK, 0, 0, 0, 0);
+}
+
+bool jobs_build_add_if(jobs_build_t *b, const jobs_node_t *block, const char *cond)
+{
+    if (!b || !b->ast || !block) return false;
+    jobs_node_t *n = jobs_node_new(b->ast, JN_IF, 0, 0, 0, 0);
+    if (!n) return false;
+    const char *err = NULL;
+    n->a = jobs_parse_expr(cond ? cond : "true", strlen(cond ? cond : "true"), b->ast, &err);
+    if (!n->a) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "bad condition"); return false; }
+    n->b = new_block_node(b->ast);
+    if (!n->b) return false;
+    return block_append(b->ast, (jobs_node_t *)block, n);
+}
+
+bool jobs_build_add_set(jobs_build_t *b, const jobs_node_t *block, const char *name, const char *value)
+{
+    if (!b || !b->ast || !block || !name || !name[0]) return false;
+    jobs_node_t *n = jobs_node_new(b->ast, JN_SET, 0, 0, 0, 0);
+    if (!n) return false;
+    n->u.str.s = jobs_pool_str(b->ast, name, (uint32_t)strlen(name));
+    if (!n->u.str.s) return false;
+    const char *err = NULL;
+    n->a = jobs_parse_expr(value ? value : "0", strlen(value ? value : "0"), b->ast, &err);
+    if (!n->a) { snprintf(b->diag, sizeof(b->diag), "%s", err ? err : "bad value"); return false; }
+    return block_append(b->ast, (jobs_node_t *)block, n);
+}
+
+bool jobs_build_add_wait(jobs_build_t *b, const jobs_node_t *block, int64_t ms)
+{
+    if (!b || !b->ast || !block) return false;
+    jobs_node_t *n = jobs_node_new(b->ast, JN_WAIT, 0, 0, 0, 0);
+    if (!n) return false;
+    n->u.i = ms > 0 ? ms : 1000;
+    return block_append(b->ast, (jobs_node_t *)block, n);
+}
+
+bool jobs_build_add_repeat(jobs_build_t *b, const jobs_node_t *block, int64_t count, const char *index)
+{
+    if (!b || !b->ast || !block) return false;
+    jobs_node_t *n = jobs_node_new(b->ast, JN_REPEAT, 0, 0, 0, 0);
+    if (!n) return false;
+    n->count = (count >= 1 && count <= JOBS_MAX_REPEAT) ? count : 1;
+    const char *ix = (index && index[0]) ? index : "i";
+    n->u.str.s = jobs_pool_str(b->ast, ix, (uint32_t)strlen(ix));
+    if (!n->u.str.s) return false;
+    n->a = new_block_node(b->ast);
+    if (!n->a) return false;
+    return block_append(b->ast, (jobs_node_t *)block, n);
+}
+
+bool jobs_build_add_run(jobs_build_t *b, const jobs_node_t *block, const char *name, const char *as)
+{
+    if (!b || !b->ast || !block || !name || !name[0]) return false;
+    jobs_node_t *n = jobs_node_new(b->ast, JN_RUN, 0, 0, 0, 0);
+    if (!n) return false;
+    n->u.str.s = jobs_pool_str(b->ast, name, (uint32_t)strlen(name));
+    if (!n->u.str.s) return false;
+    if (as && as[0]) n->u.str.s2 = jobs_pool_str(b->ast, as, (uint32_t)strlen(as));
+    return block_append(b->ast, (jobs_node_t *)block, n);
+}
+
+/* "Save result as" for an action/run statement ("" clears it). */
+bool jobs_build_set_output(jobs_build_t *b, const jobs_node_t *stmt, const char *name)
+{
+    if (!b || !b->ast || !stmt) return false;
+    if (stmt->kind != JN_ACTION && stmt->kind != JN_RUN) return false;
+    jobs_node_t *s = (jobs_node_t *)stmt;
+    s->u.str.s2 = (name && name[0]) ? jobs_pool_str(b->ast, name, (uint32_t)strlen(name)) : NULL;
+    return true;
+}
+const char *jobs_build_output(const jobs_node_t *stmt)
+{
+    if (!stmt || (stmt->kind != JN_ACTION && stmt->kind != JN_RUN)) return NULL;
+    return stmt->u.str.s2;
+}
+
+/* The job's name (the header field). */
+bool jobs_build_set_job_name(jobs_build_t *b, const char *name)
+{
+    if (!b || !b->ast || !b->ast->root || b->ast->root->kind != JN_JOB) return false;
+    if (!name || !name[0]) return false;
+    b->ast->root->u.str.s = jobs_pool_str(b->ast, name, (uint32_t)strlen(name));
+    return b->ast->root->u.str.s != NULL;
+}
+
+/* ---- policy card: timeout / overlap / cooldown (creates the node if absent) ---- */
+static jobs_node_t *policy_arg(jobs_ast_t *ast, const char *name, devos_val_type_t type,
+                               int64_t ms, const char *str)
+{
+    jobs_node_t *a = jobs_node_new(ast, JN_ARG, 0, 0, 0, 0);
+    if (!a) return NULL;
+    a->u.str.s = jobs_pool_str(ast, name, (uint32_t)strlen(name));
+    if (!a->u.str.s) return NULL;
+    if (type == DEVOS_VAL_DURATION) {
+        a->a = new_lit(ast, DEVOS_VAL_DURATION);
+        if (!a->a) return NULL;
+        a->a->u.lit.v.ms = ms;
+    } else {
+        a->a = new_str_lit(ast, str ? str : "");
+        if (!a->a) return NULL;
+    }
+    return a;
+}
+
+bool jobs_build_set_policy(jobs_build_t *b, int64_t timeout_ms, int overlap, int64_t cooldown_ms)
+{
+    if (!b || !b->ast || !b->ast->root || b->ast->root->kind != JN_JOB) return false;
+    jobs_ast_t *ast = b->ast;
+    jobs_node_t *pol = jobs_node_new(ast, JN_POLICY, 0, 0, 0, 0);
+    if (!pol) return false;
+    jobs_node_t *tail = NULL;
+    if (timeout_ms > 0) {
+        jobs_node_t *a = policy_arg(ast, "timeout", DEVOS_VAL_DURATION, timeout_ms, NULL);
+        if (!a) return false;
+        pol->a = a; tail = a;
+    }
+    if (cooldown_ms > 0) {
+        jobs_node_t *a = policy_arg(ast, "cooldown", DEVOS_VAL_DURATION, cooldown_ms, NULL);
+        if (!a) return false;
+        if (tail) tail->next = a; else pol->a = a;
+        tail = a;
+    }
+    jobs_node_t *a = policy_arg(ast, "overlap", DEVOS_VAL_STR, 0, overlap ? "queue_one" : "skip");
+    if (!a) return false;
+    if (tail) tail->next = a; else pol->a = a;
+    b->ast->root->b = pol;
+    return true;
+}
+/* Read one policy argument back (0/"" when absent). */
+static jobs_node_t *policy_find(const jobs_node_t *t, const char *name)
+{
+    if (!t || t->kind != JN_POLICY) return NULL;
+    for (jobs_node_t *a = t->a; a; a = a->next)
+        if (a->u.str.s && strcmp(a->u.str.s, name) == 0) return a;
+    return NULL;
+}
+int64_t jobs_build_policy_timeout(const jobs_node_t *t)
+{
+    jobs_node_t *a = policy_find(t, "timeout");
+    return a ? a->a->u.lit.v.ms : 0;
+}
+int jobs_build_policy_overlap(const jobs_node_t *t)
+{
+    jobs_node_t *a = policy_find(t, "overlap");
+    if (!a || !a->a) return 0;
+    const jobs_node_t *e = a->a;
+    if (e->kind == JN_EXPR_STR && e->a && !e->a->next && e->a->sub == JSP_LITERAL)
+        return strcmp(e->a->u.str.s, "queue_one") == 0 ? 1 : 0;
+    return 0;
+}
+int64_t jobs_build_policy_cooldown(const jobs_node_t *t)
+{
+    jobs_node_t *a = policy_find(t, "cooldown");
+    return a ? a->a->u.lit.v.ms : 0;
+}
+
 bool jobs_build_delete(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt)
 {
     (void)b;

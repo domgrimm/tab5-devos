@@ -416,6 +416,45 @@ static void jobs_secret_wipe(void *p, size_t len)
 
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
+/* P3: one rate-limited toast when a job's last run turns to failed. Polls the
+ * summaries from the 1 Hz system sync, so it works whether or not the app is
+ * open, and never blocks. */
+#define JOBS_WATCH_MAX 32
+static void jobs_watch_failures(void)
+{
+    static struct { char id[DEVOS_JOBS_ID_MAX]; bool failed; bool seen; } s_seen[JOBS_WATCH_MAX];
+    static int s_n;
+    static int s_cooldown;
+    devos_job_summary_t sum;
+    int total = devos_jobs_count();
+    if (s_cooldown > 0) s_cooldown--;
+    for (int i = 0; i < total; i++) {
+        if (!devos_jobs_summary_at(i, &sum)) continue;
+        bool failed = sum.last_run_wall_s > 0 && !sum.last_ok;
+        bool known = false;
+        for (int k = 0; k < s_n; k++) {
+            if (strcmp(s_seen[k].id, sum.id) == 0) {
+                known = true;
+                if (failed && !s_seen[k].failed && s_cooldown == 0) {
+                    char m[96];
+                    snprintf(m, sizeof(m), "Job \"%s\" failed: %s", sum.name,
+                             sum.last_result[0] ? sum.last_result : "see Runs");
+                    devos_toast_show(m, DEVOS_TOAST_ERROR, 0);
+                    s_cooldown = 30;                 /* at most one every ~30 s */
+                }
+                s_seen[k].failed = failed;
+                break;
+            }
+        }
+        if (!known && s_n < JOBS_WATCH_MAX) {
+            snprintf(s_seen[s_n].id, sizeof(s_seen[0].id), "%s", sum.id);
+            s_seen[s_n].failed = failed;
+            s_seen[s_n].seen = true;
+            s_n++;
+        }
+    }
+}
+
 static void jobs_sync_system(void)
 {
     devos_sysmon_snapshot_t s;
@@ -454,6 +493,7 @@ static void jobs_sync_system(void)
     j.sram_largest_kb = s.sram_largest_kb;
     devos_jobs_set_system(&j);
     jobs_events_poll(&j);     /* Wi-Fi/battery transitions -> typed events */
+    jobs_watch_failures();    /* rate-limited "Job X failed: ..." notice */
 }
 
 static void devos_system_bringup(void)

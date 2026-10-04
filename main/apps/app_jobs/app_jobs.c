@@ -109,6 +109,7 @@ static void refresh_overview(void);
 static void refresh_runs(void);
 static void refresh_problems(void);
 static void update_footer(void);
+static void refresh_add_picker(void);
 
 static const char *NEW_TEMPLATE =
     "version 1;\n"
@@ -436,17 +437,7 @@ static void refresh_steps(void)
 
 static void builder_refresh(void)
 {
-    char aopts[1024];
-    size_t ao = 0;
-    aopts[0] = '\0';
-    for (int i = 0; i < devos_actions_count(); i++) {
-        const devos_action_descriptor_t *d = devos_actions_at(i);
-        if (!d) continue;
-        ao += (size_t)snprintf(aopts + ao, sizeof(aopts) - ao, "%s%s%s", i ? "\n" : "", d->id,
-                               d->effect == DEVOS_EFFECT_MUTATE ? "  (mutates)" : "");
-    }
-    if (ao) lv_dropdown_set_options(s_ctx.dd_add, aopts);
-
+    refresh_add_picker();
     jobs_node_t *t = jobs_build_trigger(&s_ctx.build);
     if (t) {
         int kind = t->sub;
@@ -677,18 +668,94 @@ static void builder_commit_all(void)
     builder_commit_value();
 }
 
+/* ---- Add-step picker (P2): Control entries then actions by category ---- */
+#define ADD_MAX (16 + 64)
+static char s_add_kind[ADD_MAX];            /* 0=control, 1=action */
+static char s_add_id[ADD_MAX][64];          /* action id, or control key */
+static int  s_add_n;
+
+static void refresh_add_picker(void)
+{
+    if (!s_ctx.dd_add) return;
+    char opts[ADD_MAX * 76];
+    size_t o = 0;
+    opts[0] = '\0';
+    s_add_n = 0;
+    struct { const char *key, *label; } ctl[] = {
+        { "if",     "Control: if ... { }" },
+        { "wait",   "Control: wait <duration>" },
+        { "repeat", "Control: repeat N as i { }" },
+        { "set",    "Control: set name = value" },
+        { "run",    "Control: run \"job\" as out" },
+    };
+    for (unsigned i = 0; i < sizeof(ctl) / sizeof(ctl[0]) && s_add_n < ADD_MAX; i++) {
+        s_add_kind[s_add_n] = 0;
+        snprintf(s_add_id[s_add_n], sizeof(s_add_id[0]), "%s", ctl[i].key);
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%s%s", s_add_n ? "\n" : "", ctl[i].label);
+        s_add_n++;
+    }
+    const char *last_cat = NULL;
+    for (int i = 0; i < devos_actions_count() && s_add_n < ADD_MAX; i++) {
+        const devos_action_descriptor_t *d = devos_actions_at(i);
+        if (!d || !d->id) continue;
+        if (d->category && (!last_cat || strcmp(d->category, last_cat) != 0)) {
+            /* a section heading is just visual; skip it in the selectable list */
+            last_cat = d->category;
+        }
+        char reason[80];
+        bool ok = devos_actions_available(d->id, reason, sizeof(reason));
+        s_add_kind[s_add_n] = 1;
+        snprintf(s_add_id[s_add_n], sizeof(s_add_id[0]), "%s", d->id);
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%s%s%s",
+                              s_add_n ? "\n" : "",
+                              d->label ? d->label : d->id,
+                              ok ? "" : "  (unavailable)");
+        s_add_n++;
+    }
+    if (s_add_n == 0) snprintf(opts, sizeof(opts), "(no steps available)");
+    lv_dropdown_set_options(s_ctx.dd_add, opts);
+    lv_dropdown_set_selected(s_ctx.dd_add, 0);
+}
+
 static void builder_add_step(void)
 {
-    if (s_ctx.mode != MODE_BUILDER || !s_ctx.build.ast) return;
+    if (s_ctx.tab != TAB_BUILDER || !s_ctx.build.ast) return;
     const jobs_node_t *block = (s_ctx.bstep >= 0 && s_ctx.bstep < s_ctx.rows_n)
                                    ? s_ctx.rows[s_ctx.bstep].block : s_ctx.build.ast->root->c;
-    const devos_action_descriptor_t *d = devos_actions_at((int)lv_dropdown_get_selected(s_ctx.dd_add));
-    if (!d) return;
-    if (jobs_build_add_action(&s_ctx.build, block, d->id)) {
-        builder_sync();
-        s_ctx.bstep = s_ctx.rows_n;
-        builder_refresh();
+    int sel = (int)lv_dropdown_get_selected(s_ctx.dd_add);
+    if (sel < 0 || sel >= s_add_n) return;
+    bool ok = false;
+    if (s_add_kind[sel]) {
+        const devos_action_descriptor_t *d = devos_actions_find(s_add_id[sel]);
+        char reason[80];
+        if (d && !devos_actions_available(d->id, reason, sizeof(reason))) {
+            say(reason[0] ? reason : "That action is unavailable.");
+            return;
+        }
+        ok = jobs_build_add_action(&s_ctx.build, block, s_add_id[sel]);
+    } else if (strcmp(s_add_id[sel], "if") == 0) {
+        ok = jobs_build_add_if(&s_ctx.build, block, "true");
+    } else if (strcmp(s_add_id[sel], "wait") == 0) {
+        ok = jobs_build_add_wait(&s_ctx.build, block, 1000);
+    } else if (strcmp(s_add_id[sel], "repeat") == 0) {
+        ok = jobs_build_add_repeat(&s_ctx.build, block, 3, "i");
+    } else if (strcmp(s_add_id[sel], "set") == 0) {
+        ok = jobs_build_add_set(&s_ctx.build, block, "n", "0");
+    } else if (strcmp(s_add_id[sel], "run") == 0) {
+        /* the only job name we can guess safely is the first other job */
+        ok = jobs_build_add_run(&s_ctx.build, block, s_ctx.cur_name[0] ? s_ctx.cur_name : "job", "out");
+        if (ok) say("Run step added - set the job name in the Step settings field.");
     }
+    if (!ok) { say(s_ctx.build.diag[0] ? s_ctx.build.diag : "Couldn't add that step."); return; }
+    builder_sync();
+    builder_refresh();
+    /* keep the newest step selected so its settings show immediately */
+    int target = jobs_build_block_count(block) - 1;
+    for (int i = 0; i < s_ctx.rows_n; i++)
+        if (s_ctx.rows[i].node && s_ctx.rows[i].block == block && s_ctx.rows[i].index == target)
+            s_ctx.bstep = i;
+    refresh_steps();
+    builder_inspector();
 }
 
 static void builder_delete_step(void)
@@ -1623,26 +1690,32 @@ static bool jobs_key(uint32_t key, uint8_t mods)
 
 static int jobs_telemetry(char lines[3][64])
 {
-    int total = devos_jobs_count(), on = 0, running = 0;
-    devos_job_summary_t sum;
+    int total = devos_jobs_count(), on = 0, running = 0, failed = 0;
+    devos_job_summary_t sum, next;
+    memset(&next, 0, sizeof(next));
+    int64_t soonest = 0;
     for (int i = 0; i < total; i++)
         if (devos_jobs_summary_at(i, &sum)) {
             if (sum.state == DEVOS_JOB_ENABLED) on++;
             if (sum.running) running++;
+            if (sum.last_run_wall_s > 0 && !sum.last_ok) failed++;
+            if (sum.next_run_in_ms > 0 && (soonest == 0 || sum.next_run_in_ms < soonest)) {
+                soonest = sum.next_run_in_ms;
+                next = sum;
+            }
         }
-    snprintf(lines[0], sizeof(lines[0]), "* %d of %d enabled", on, total);
-    devos_jobs_memory_t mem;
-    devos_jobs_memory(&mem);
-    if (mem.sched_stack_free)
-        snprintf(lines[1], sizeof(lines[1]), "* %d running, %uB sched stack", running, (unsigned)mem.sched_stack_free);
-    else
-        snprintf(lines[1], sizeof(lines[1]), "* %d running", running);
-    devos_events_stats_t es;
-    devos_events_stats(&es);
+    snprintf(lines[0], sizeof(lines[0]), "* %d on%s", on,
+             running ? "  * running" : failed ? "  ! failed" : "");
+    if (soonest > 0) {
+        char d[16];
+        fmt_dur(soonest, d, sizeof(d));           /* local: minutes/seconds */
+        snprintf(lines[1], sizeof(lines[1]), "* next: %.16s in %s", next.name, d);
+    } else {
+        snprintf(lines[1], sizeof(lines[1]), "* %d job%s, no next run", total, total == 1 ? "" : "s");
+    }
     const char *state = devos_jobs_safe_paused() ? "paused (recovery)" :
-                        devos_jobs_paused() ? "paused" : "ready";
-    if (es.dropped) snprintf(lines[2], sizeof(lines[2]), "* %s, %u event drops", state, (unsigned)es.dropped);
-    else            snprintf(lines[2], sizeof(lines[2]), "* %s", state);
+                        devos_jobs_paused() ? "paused automatic" : "automatic on";
+    snprintf(lines[2], sizeof(lines[2]), "* %s%s", state, failed ? "" : "");
     return 3;
 }
 

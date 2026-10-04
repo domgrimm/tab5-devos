@@ -60,6 +60,22 @@ const char *jobs_build_trigger_where_text(const jobs_node_t *t);
 /* ---- steps ---- */
 /* Append an action built from its schema (all params defaulted) to `block`. */
 bool jobs_build_add_action(jobs_build_t *b, const jobs_node_t *block, const char *action_id);
+/* P2: append control statements (a fresh body block is created for if/repeat). */
+bool jobs_build_add_if(jobs_build_t *b, const jobs_node_t *block, const char *cond);
+bool jobs_build_add_set(jobs_build_t *b, const jobs_node_t *block, const char *name, const char *value);
+bool jobs_build_add_wait(jobs_build_t *b, const jobs_node_t *block, int64_t ms);
+bool jobs_build_add_repeat(jobs_build_t *b, const jobs_node_t *block, int64_t count, const char *index);
+bool jobs_build_add_run(jobs_build_t *b, const jobs_node_t *block, const char *name, const char *as);
+/* "Save result as" for an action/run statement. */
+bool jobs_build_set_output(jobs_build_t *b, const jobs_node_t *stmt, const char *name);
+const char *jobs_build_output(const jobs_node_t *stmt);
+/* The job's name (the header field). */
+bool jobs_build_set_job_name(jobs_build_t *b, const char *name);
+/* Policy card (timeout / overlap / cooldown); creates the policy node. */
+bool jobs_build_set_policy(jobs_build_t *b, int64_t timeout_ms, int overlap, int64_t cooldown_ms);
+int64_t jobs_build_policy_timeout(const jobs_node_t *t);
+int jobs_build_policy_overlap(const jobs_node_t *t);
+int64_t jobs_build_policy_cooldown(const jobs_node_t *t);
 bool jobs_build_delete(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt);
 bool jobs_build_move(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int dir);
 /* Replace a statement's expression (wait duration / set value) with a literal. */
