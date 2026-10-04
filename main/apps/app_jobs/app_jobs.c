@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <dirent.h>
 
@@ -66,7 +67,7 @@ typedef struct {
     lv_obj_t *dd_kind, *ta_trig, *ta_where, *dd_topic, *dd_hour, *dd_min;
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
     lv_obj_t *lbl_settings;
-    lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
+    lv_obj_t *dd_add, *ta_add_filter, *btn_add, *btn_bdel, *btn_up, *btn_dn;
     lv_obj_t *dd_param, *dd_expr, *ta_val, *dd_choice, *lbl_custom;
     /* P2: per-parameter vertical form (one row per action parameter) */
     lv_obj_t *form;                          /* scrollable container */
@@ -880,9 +881,37 @@ static char s_add_kind[ADD_MAX];            /* 0=control, 1=action */
 static char s_add_id[ADD_MAX][64];          /* action id, or control key */
 static int  s_add_n;
 
+/* Case-insensitive substring match over an action's label, id and category
+ * (empty filter matches everything). */
+static bool add_match(const char *label, const char *id, const char *cat, const char *f)
+{
+    if (!f || !f[0]) return true;
+    const char *hay[3] = { label, id, cat };
+    for (int h = 0; h < 3; h++) {
+        if (!hay[h]) continue;
+        for (const char *p = hay[h]; *p; p++) {
+            size_t k = 0;
+            while (f[k] && p[k] && tolower((unsigned char)p[k]) == tolower((unsigned char)f[k])) k++;
+            if (!f[k]) return true;
+        }
+    }
+    return false;
+}
+
+static void add_filter_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (s_ctx.tab == TAB_BUILDER) refresh_add_picker();
+}
+
 static void refresh_add_picker(void)
 {
     if (!s_ctx.dd_add) return;
+    /* keep the selection across refilters when the entry survives */
+    int prev = (int)lv_dropdown_get_selected(s_ctx.dd_add);
+    char keep[64] = "";
+    if (prev >= 0 && prev < s_add_n) snprintf(keep, sizeof(keep), "%s", s_add_id[prev]);
+    const char *f = s_ctx.ta_add_filter ? lv_textarea_get_text(s_ctx.ta_add_filter) : "";
     char opts[ADD_MAX * 76];
     size_t o = 0;
     opts[0] = '\0';
@@ -895,6 +924,7 @@ static void refresh_add_picker(void)
         { "run",    "Control: run \"job\" as out" },
     };
     for (unsigned i = 0; i < sizeof(ctl) / sizeof(ctl[0]) && s_add_n < ADD_MAX; i++) {
+        if (!add_match(ctl[i].label, ctl[i].label, ctl[i].key, f)) continue;
         s_add_kind[s_add_n] = 0;
         snprintf(s_add_id[s_add_n], sizeof(s_add_id[0]), "%s", ctl[i].key);
         o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%s%s", s_add_n ? "\n" : "", ctl[i].label);
@@ -908,6 +938,7 @@ static void refresh_add_picker(void)
             /* a section heading is just visual; skip it in the selectable list */
             last_cat = d->category;
         }
+        if (!add_match(d->label ? d->label : d->id, d->id, d->category, f)) continue;
         char reason[80];
         bool ok = devos_actions_available(d->id, reason, sizeof(reason));
         s_add_kind[s_add_n] = 1;
@@ -918,9 +949,11 @@ static void refresh_add_picker(void)
                               ok ? "" : "  (unavailable)");
         s_add_n++;
     }
-    if (s_add_n == 0) snprintf(opts, sizeof(opts), "(no steps available)");
+    if (s_add_n == 0) snprintf(opts, sizeof(opts), "(no match - clear the filter)");
     lv_dropdown_set_options(s_ctx.dd_add, opts);
-    lv_dropdown_set_selected(s_ctx.dd_add, 0);
+    int sel = 0;
+    if (keep[0]) for (int i = 0; i < s_add_n; i++) if (strcmp(s_add_id[i], keep) == 0) sel = i;
+    lv_dropdown_set_selected(s_ctx.dd_add, (uint32_t)sel);
 }
 
 static void builder_add_step(void)
@@ -2024,6 +2057,11 @@ static void jobs_init(void)
 
     s_ctx.dd_add = devos_w_dd(s_ctx.bld, "", 300);
     lv_obj_set_pos(s_ctx.dd_add, 0, 202);
+    s_ctx.ta_add_filter = devos_w_ta(s_ctx.bld, true, 150, 36);
+    lv_obj_set_pos(s_ctx.ta_add_filter, 745, 202);
+    lv_textarea_set_max_length(s_ctx.ta_add_filter, 32);
+    lv_textarea_set_placeholder_text(s_ctx.ta_add_filter, "Filter steps");
+    lv_obj_add_event_cb(s_ctx.ta_add_filter, add_filter_cb, LV_EVENT_VALUE_CHANGED, NULL);
     s_ctx.btn_add = devos_w_btn(s_ctx.bld, "Add  [Sym+U]", 110, add_cb, NULL, NULL);
     lv_obj_set_pos(s_ctx.btn_add, 310, 202);
     s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Del step", 100, bdel_cb, NULL, NULL);
@@ -2265,6 +2303,7 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_add);
+    devos_focus_add(&s_ctx.focus, s_ctx.ta_add_filter);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_val);
     for (int i = 0; i < PARAM_MAX; i++) {
         devos_focus_add(&s_ctx.focus, s_ctx.form_ta[i]);
@@ -2418,10 +2457,10 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         }
         return true;
     }
-    /* Tab / Shift+Tab in the step list indents/outdents (P2: edit bodies);
-     * anywhere else Tab keeps moving focus. */
-    if (s_ctx.tab == TAB_BUILDER && cur == s_ctx.step_list && key == '\t') {
-        builder_reblock((mods & DEVOS_MOD_SHIFT) ? -1 : 1);
+    /* [ / ] in the step list outdents/indents (P2: edit bodies). Tab keeps
+     * moving focus (invariant 9) - it must never be trapped here. */
+    if (s_ctx.tab == TAB_BUILDER && cur == s_ctx.step_list && (key == '[' || key == ']')) {
+        builder_reblock(key == ']' ? 1 : -1);
         return true;
     }
 
@@ -2552,7 +2591,8 @@ static const char *jobs_shortcuts(void)
            "Up / Down\tPick a step\n"
            "Sym+U / Del\tAdd a step / delete the selected step\n"
            "Sym+K / Sym+J\tMove the step up / down (or drag it)\n"
-           "Tab / Shift+Tab\tIndent / outdent (into if/repeat bodies)\n"
+           "[ / ]\tOutdent / indent (into if/repeat bodies)\n"
+           "Tab / Shift+Tab\tMove between regions (never trapped)\n"
            "Trigger\tManual / Every / Daily / Weekdays / Event (topic from a list)\n"
            "Event\tpick the topic; then a where filter over event.*\n";
 }
