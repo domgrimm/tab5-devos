@@ -57,8 +57,9 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
 
 ### Jobs
 
-**Jobs** is a small automation app. Open it, pick a job (or press **N** for a new one) and edit its
-source in the Text view:
+**Jobs** is a small automation app built around a **dashboard of jobs first**: a 260 px job list on
+the left, a detail area with **Overview / Builder / Text / Runs** tabs, a Problems strip and a
+state-aware toolbar.
 
 ```text
 version 1;
@@ -73,12 +74,20 @@ job "NAS health check" {
 }
 ```
 
-**V** validates, **A** applies (transactionally, with a conflict check), **E** enables, **R** runs
-now, **X** cancels, **H** shows run history. A job is disabled until you enable it, and an interval
-job first runs one interval after it is enabled. The engine keeps running while you are in another
-app or the screen is off, and is off entirely when Jobs is switched off in **Settings > Apps**.
-Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are kept under
-`/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/examples/`.
+**Keyboard first:** the job list takes **Up/Down** to pick, **Enter** to open, **Space** to
+enable/disable and **R** to run. **Sym+B / Sym+M / Sym+O / Sym+Y** switch to Builder / Text /
+Overview / Runs, **Sym+L** shows or hides the job list, **Sym+C** validates, **Sym+A** applies
+(transactionally, with a conflict check), **Sym+G** enables, **Sym+R** runs now, **Sym+X** cancels
+and **Sym+D** deletes (after a confirmation). `Esc` steps field → view → list → Home. Unsaved edits
+are kept as a draft (shown as `(unsaved)` in the header), restored on the next visit and protected
+from a restart. The Builder can add actions **and** control steps (`if`, `wait`, `repeat`, `set`,
+`run job`); a half-typed value is committed on Enter, not on every keystroke.
+
+A job is disabled until you enable it, and an interval job first runs one interval after it is
+enabled. The engine keeps running while you are in another app or the screen is off, and is off
+entirely when Jobs is switched off in **Settings > Apps**. A failed automatic run raises a
+rate-limited toast. Sources live in `/sdcard/jobs/<id>.job`; the active revision and history are
+kept under `/sdcard/.devos/jobs/`, and starter examples are in `/sdcard/jobs/examples/`.
 
 A job has exactly one trigger: `manual`, `every <dur>` (phase-anchored, missed periods skipped),
 `daily "HH:MM"` or `weekdays "HH:MM"` (device-local time; one run per local date, DST-safe, and
