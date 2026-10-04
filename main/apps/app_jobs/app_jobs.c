@@ -34,6 +34,7 @@
 #define SRCMAX  (JOBS_MAX_SOURCE + 64)
 #define STEP_ROWS 32
 #define STEP_H 30
+#define PARAM_MAX 12                        /* per-parameter form rows */
 
 typedef enum { MODE_TEXT = 0, MODE_BUILDER } ui_mode_t;
 typedef enum { INSP_NONE = 0, INSP_ACTION, INSP_IF, INSP_SET, INSP_WAIT, INSP_REPEAT, INSP_CUSTOM } insp_t;
@@ -65,6 +66,19 @@ typedef struct {
     lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
     lv_obj_t *dd_param, *dd_expr, *ta_val, *dd_choice, *lbl_custom;
+    /* P2: per-parameter vertical form (one row per action parameter) */
+    lv_obj_t *form;                          /* scrollable container */
+    lv_obj_t *form_rows[PARAM_MAX];
+    lv_obj_t *form_lbl[PARAM_MAX];
+    lv_obj_t *form_help[PARAM_MAX];
+    lv_obj_t *form_ta[PARAM_MAX];
+    lv_obj_t *form_dd[PARAM_MAX];
+    lv_obj_t *form_expr[PARAM_MAX];
+    const devos_action_param_t *form_p[PARAM_MAX];
+    int form_n;
+    lv_obj_t *form_out_ta;                   /* "Save result as" */
+    lv_obj_t *form_out_lbl;
+    lv_obj_t *form_hdr;                      /* action title + effect line */
     jobs_build_t build;
     bool build_ok;
     jobs_build_row_t rows[JOBS_BUILD_ROWS];
@@ -110,6 +124,8 @@ static void refresh_runs(void);
 static void refresh_problems(void);
 static void update_footer(void);
 static void refresh_add_picker(void);
+static void form_build(const jobs_node_t *node, const devos_action_descriptor_t *d);
+static void form_commit(const jobs_node_t *node);
 
 static const char *NEW_TEMPLATE =
     "version 1;\n"
@@ -480,6 +496,7 @@ static void builder_inspector(void)
     set_visible(s_ctx.dd_expr, false);
     set_visible(s_ctx.dd_choice, false);
     set_visible(s_ctx.ta_val, false);
+    if (s_ctx.form) set_visible(s_ctx.form, false);
 
     if (!node) { devos_w_set_text(s_ctx.lbl_custom, "No steps yet - press Sym+U (or the Add button) to add one."); set_visible(s_ctx.lbl_custom, true); return; }
 
@@ -528,71 +545,176 @@ static void builder_inspector(void)
 
     /* action parameters */
     s_ctx.insp = INSP_ACTION;
-    char popts[512];
-    size_t o = 0;
-    for (int i = 0; i < d->param_count; i++)
-        o += (size_t)snprintf(popts + o, sizeof(popts) - o, "%s%s", i ? "\n" : "", d->params[i].name);
-    if (s_ctx.bparam >= d->param_count) s_ctx.bparam = 0;
-    lv_dropdown_set_options(s_ctx.dd_param, popts);
-    lv_dropdown_set_selected(s_ctx.dd_param, (uint32_t)s_ctx.bparam);
-    set_visible(s_ctx.dd_param, true);
+    form_build(node, d);
+}
 
-    const devos_action_param_t *p = &d->params[s_ctx.bparam];
-    bool choice = p->choices != NULL || p->type == DEVOS_VAL_BOOL;
-    s_ctx.insp_expr = p->expression && jobs_build_arg_is_expr(node, p->name);
+/* ---- P2: per-parameter vertical form ------------------------------------- */
+static const char *param_type_hint(const devos_action_param_t *p)
+{
+    switch (p->type) {
+    case DEVOS_VAL_STR:      return "text";
+    case DEVOS_VAL_INT:      return "whole number";
+    case DEVOS_VAL_NUM:      return "number";
+    case DEVOS_VAL_BOOL:     return "true / false";
+    case DEVOS_VAL_DURATION: return "duration (e.g. 2s, 250ms)";
+    default:                 return "";
+    }
+}
 
-    set_visible(s_ctx.lbl_custom, true);
-    if (p->credential) {
-        devos_w_set_text(s_ctx.lbl_custom, "Credential: a secret name (e.g. health-token)");
-        set_visible(s_ctx.ta_val, true);
-        const char *n = jobs_build_arg_secret_name(node, p->name);
-        lv_textarea_set_text(s_ctx.ta_val, n ? n : "");
-        return;
-    }
-    if (choice && !s_ctx.insp_expr) {
-        devos_w_set_text(s_ctx.lbl_custom, p->choices ? "Choose a value" : "Toggle");
-        set_visible(s_ctx.dd_choice, true);
-        if (p->choices) {
-            static char c[128];
-            snprintf(c, sizeof(c), "%s", p->choices);
-            for (char *q = c; *q; q++) if (*q == '|') *q = '\n';
-            lv_dropdown_set_options(s_ctx.dd_choice, c);
-            const char *cur = jobs_build_arg_text(node, p->name);
-            int sel = 0, i = 0;
-            char tmp[128];
-            snprintf(tmp, sizeof(tmp), "%s", p->choices);
-            for (char *tok = strtok(tmp, "|"); tok; tok = strtok(NULL, "|"), i++)
-                if (cur && strcmp(tok, cur) == 0) sel = i;
-            lv_dropdown_set_selected(s_ctx.dd_choice, (uint32_t)sel);
-        } else {
-            lv_dropdown_set_options(s_ctx.dd_choice, "false\ntrue");
-            bool b = false;
-            jobs_build_arg_bool(node, p->name, &b);
-            lv_dropdown_set_selected(s_ctx.dd_choice, b ? 1 : 0);
-        }
-        return;
-    }
-    /* free value or expression */
-    if (p->expression) {
-        devos_w_set_text(s_ctx.lbl_custom, "Value - Literal or full expression");
-        set_visible(s_ctx.dd_expr, true);
-        lv_dropdown_set_options(s_ctx.dd_expr, "Literal\nExpression");
-        lv_dropdown_set_selected(s_ctx.dd_expr, s_ctx.insp_expr ? 1 : 0);
-    } else {
-        devos_w_set_text(s_ctx.lbl_custom, "Value");
-    }
-    set_visible(s_ctx.ta_val, true);
-    if (s_ctx.insp_expr) {
-        lv_textarea_set_text(s_ctx.ta_val, jobs_build_expr_text(jobs_build_arg_expr(node, p->name)));
-    } else if (p->type == DEVOS_VAL_DURATION) {
+/* The value text currently shown for a parameter (literal form), or "". */
+static void param_value_text(const jobs_node_t *node, const devos_action_param_t *p, char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (!node || !p) return;
+    if (p->type == DEVOS_VAL_DURATION) {
         int64_t ms = jobs_build_arg_duration(node, p->name);
-        char dv[24];
-        if (ms >= 0) { fmt_dur(ms, dv, sizeof(dv)); lv_textarea_set_text(s_ctx.ta_val, dv); }
-        else lv_textarea_set_text(s_ctx.ta_val, "");
+        if (ms >= 0) fmt_dur(ms, out, cap);
     } else {
         const char *cur = jobs_build_arg_text(node, p->name);
-        lv_textarea_set_text(s_ctx.ta_val, cur ? cur : "");
+        if (cur) snprintf(out, cap, "%s", cur);
     }
+}
+
+/* Build or refresh the form for the selected action node. */
+static void form_build(const jobs_node_t *node, const devos_action_descriptor_t *d)
+{
+    if (!s_ctx.form) return;
+    set_visible(s_ctx.form, true);
+    set_visible(s_ctx.lbl_custom, false);       /* the form replaces the single-line hint */
+    set_visible(s_ctx.ta_val, false);
+    if (!node || !d) { s_ctx.form_n = 0; return; }
+    s_ctx.form_n = d->param_count > PARAM_MAX ? PARAM_MAX : d->param_count;
+
+    if (s_ctx.form_hdr) {
+        char h[160];
+        snprintf(h, sizeof(h), "%s  -  %s", d->label ? d->label : d->id,
+                 d->effect == DEVOS_EFFECT_MUTATE ? "changes state" :
+                 d->effect == DEVOS_EFFECT_NET_SEND ? "sends data" : "read-only");
+        devos_w_set_text(s_ctx.form_hdr, h);
+    }
+
+    for (int i = 0; i < PARAM_MAX; i++) {
+        bool used = i < s_ctx.form_n;
+        if (s_ctx.form_rows[i]) set_visible(s_ctx.form_rows[i], used);
+        if (!used) continue;
+        const devos_action_param_t *p = &d->params[i];
+        s_ctx.form_p[i] = p;
+
+        /* label: name (required *) */
+        char lb[80];
+        snprintf(lb, sizeof(lb), "%s%s", p->name, p->required ? "  *" : "");
+        devos_w_set_text(s_ctx.form_lbl[i], lb);
+        /* help: help text, then type and default */
+        char hb[240];
+        snprintf(hb, sizeof(hb), "%s%sType: %s%s%s%s",
+                 p->help ? p->help : "", p->help ? "\n" : "",
+                 param_type_hint(p),
+                 p->expression ? ", or an expression" : "",
+                 p->def ? "  -  default " : "", p->def ? p->def : "");
+        devos_w_set_text(s_ctx.form_help[i], hb);
+
+        bool choice = p->choices != NULL || p->type == DEVOS_VAL_BOOL;
+        bool is_expr = p->expression && jobs_build_arg_is_expr(node, p->name);
+        if (is_expr) choice = false;        /* an expression overrides a choice list */
+
+        set_visible(s_ctx.form_ta[i], !choice);
+        set_visible(s_ctx.form_dd[i], choice);
+        if (s_ctx.form_expr[i]) set_visible(s_ctx.form_expr[i], p->expression && !p->credential);
+
+        if (choice) {
+            if (p->choices) {
+                static char c[160];
+                snprintf(c, sizeof(c), "%s", p->choices);
+                for (char *q = c; *q; q++) if (*q == '|') *q = '\n';
+                lv_dropdown_set_options(s_ctx.form_dd[i], c);
+                const char *cur = jobs_build_arg_text(node, p->name);
+                int sel = 0, k = 0;
+                char tmp[160];
+                snprintf(tmp, sizeof(tmp), "%s", p->choices);
+                for (char *tok = strtok(tmp, "|"); tok; tok = strtok(NULL, "|"), k++)
+                    if (cur && strcmp(tok, cur) == 0) sel = k;
+                lv_dropdown_set_selected(s_ctx.form_dd[i], (uint32_t)sel);
+            } else {
+                lv_dropdown_set_options(s_ctx.form_dd[i], "false\ntrue");
+                bool b = false;
+                jobs_build_arg_bool(node, p->name, &b);
+                lv_dropdown_set_selected(s_ctx.form_dd[i], b ? 1 : 0);
+            }
+        } else {
+            if (p->credential) {
+                const char *n = jobs_build_arg_secret_name(node, p->name);
+                lv_textarea_set_text(s_ctx.form_ta[i], n ? n : "");
+            } else if (is_expr) {
+                lv_textarea_set_text(s_ctx.form_ta[i], jobs_build_expr_text(jobs_build_arg_expr(node, p->name)));
+            } else {
+                char v[128];
+                param_value_text(node, p, v, sizeof(v));
+                lv_textarea_set_text(s_ctx.form_ta[i], v);
+            }
+        }
+        if (s_ctx.form_expr[i]) {
+            lv_dropdown_set_options(s_ctx.form_expr[i], "Literal\nExpression");
+            lv_dropdown_set_selected(s_ctx.form_expr[i], is_expr ? 1 : 0);
+        }
+    }
+
+    /* "Save result as": any action/run may bind its result to a name */
+    if (s_ctx.form_out_ta) {
+        set_visible(s_ctx.form_out_ta, true);
+        set_visible(s_ctx.form_out_lbl, true);
+        const char *o = jobs_build_output(node);
+        lv_textarea_set_text(s_ctx.form_out_ta, o ? o : "");
+    }
+}
+
+/* Commit the whole form for the selected action, then re-serialize once. */
+static void form_commit(const jobs_node_t *node)
+{
+    if (!node) return;
+    const devos_action_descriptor_t *d = cur_action();
+    if (!d) return;
+    bool bad = false;
+    for (int i = 0; i < s_ctx.form_n && i < d->param_count; i++) {
+        const devos_action_param_t *p = s_ctx.form_p[i];
+        if (!p) continue;
+        bool choice = (p->choices != NULL || p->type == DEVOS_VAL_BOOL) && !lv_obj_has_flag(s_ctx.form_ta[i], LV_OBJ_FLAG_HIDDEN);
+        if (!choice) {
+            bool as_expr = s_ctx.form_expr[i] &&
+                           lv_dropdown_get_selected(s_ctx.form_expr[i]) == 1;
+            const char *val = lv_textarea_get_text(s_ctx.form_ta[i]);
+            if (p->credential) {
+                jobs_build_set_arg_secret(&s_ctx.build, node, p->name, val);
+            } else if (as_expr && p->expression) {
+                if (!val[0]) continue;          /* empty expression: leave as-is */
+                if (!jobs_build_set_arg_expr(&s_ctx.build, node, p->name, val)) bad = true;
+            } else if (p->type == DEVOS_VAL_DURATION) {
+                int64_t ms = parse_dur(val);
+                if (ms >= 0) jobs_build_set_arg_duration(&s_ctx.build, node, p->name, ms);
+            } else if (p->type == DEVOS_VAL_INT) {
+                jobs_build_set_arg_int(&s_ctx.build, node, p->name, strtoll(val, NULL, 10));
+            } else if (p->type == DEVOS_VAL_NUM) {
+                jobs_build_set_arg_expr(&s_ctx.build, node, p->name, val);
+            } else {
+                jobs_build_set_arg_str(&s_ctx.build, node, p->name, val);
+            }
+        } else if (p->choices) {
+            char opts[160];
+            snprintf(opts, sizeof(opts), "%s", p->choices);
+            int sel = (int)lv_dropdown_get_selected(s_ctx.form_dd[i]), k = 0;
+            for (char *tok = strtok(opts, "|"); tok; tok = strtok(NULL, "|"), k++)
+                if (k == sel) { jobs_build_set_arg_str(&s_ctx.build, node, p->name, tok); break; }
+        } else {
+            jobs_build_set_arg_bool(&s_ctx.build, node, p->name,
+                                    lv_dropdown_get_selected(s_ctx.form_dd[i]) == 1);
+        }
+    }
+    if (s_ctx.form_out_ta) {
+        const char *o = lv_textarea_get_text(s_ctx.form_out_ta);
+        jobs_build_set_output(&s_ctx.build, node, o);
+    }
+    if (bad) { say(s_ctx.build.diag); return; }
+    builder_sync();
+    if (s_ctx.tab == TAB_BUILDER) refresh_steps();
 }
 
 static void builder_commit_trigger(void)
@@ -631,29 +753,8 @@ static void builder_commit_value(void)
         if (sscanf(val, "%lld as %39s", &count, idx) != 2 || !jobs_build_set_repeat(&s_ctx.build, node, (int64_t)count, idx))
             { say("Repeat: write it as \"3 as i\" (count 1-32)"); return; }
     } else if (s_ctx.insp == INSP_ACTION) {
-        const devos_action_descriptor_t *d = cur_action();
-        if (!d || s_ctx.bparam >= d->param_count) return;
-        const devos_action_param_t *p = &d->params[s_ctx.bparam];
-        if (p->credential) {
-            jobs_build_set_arg_secret(&s_ctx.build, node, p->name, val);
-        } else if (s_ctx.insp_expr) {
-            if (!jobs_build_set_arg_expr(&s_ctx.build, node, p->name, val)) { say(s_ctx.build.diag); return; }
-        } else if (p->choices) {
-            char opts[128];
-            snprintf(opts, sizeof(opts), "%s", p->choices);
-            int sel = (int)lv_dropdown_get_selected(s_ctx.dd_choice), i = 0;
-            for (char *tok = strtok(opts, "|"); tok; tok = strtok(NULL, "|"), i++)
-                if (i == sel) { jobs_build_set_arg_str(&s_ctx.build, node, p->name, tok); break; }
-        } else if (p->type == DEVOS_VAL_BOOL) {
-            jobs_build_set_arg_bool(&s_ctx.build, node, p->name, lv_dropdown_get_selected(s_ctx.dd_choice) == 1);
-        } else if (p->type == DEVOS_VAL_DURATION) {
-            int64_t ms = parse_dur(val);
-            if (ms >= 0) jobs_build_set_arg_duration(&s_ctx.build, node, p->name, ms);
-        } else if (p->type == DEVOS_VAL_INT) {
-            jobs_build_set_arg_int(&s_ctx.build, node, p->name, strtoll(val, NULL, 10));
-        } else {
-            jobs_build_set_arg_str(&s_ctx.build, node, p->name, val);
-        }
+        form_commit(node);
+        return;                                 /* form_commit synced already */
     } else {
         return;
     }
@@ -977,9 +1078,8 @@ static void kind_cb(lv_event_t *e)
     builder_refresh();   /* show the new kind's default value/fields */
 }
 static void param_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.bparam = (int)lv_dropdown_get_selected(s_ctx.dd_param); builder_inspector(); }
-static void expr_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.insp_expr = lv_dropdown_get_selected(s_ctx.dd_expr) == 1; builder_inspector(); }
-static void val_cb(lv_event_t *e) { LV_UNUSED(e); builder_commit_value(); }
 static void val_commit_cb(lv_event_t *e) { LV_UNUSED(e); if (s_ctx.insp != INSP_NONE) builder_commit_value(); }
+static void form_row_commit_cb(lv_event_t *e) { LV_UNUSED(e); if (s_ctx.insp == INSP_ACTION) builder_commit_value(); }
 static void src_changed_cb(lv_event_t *e) { LV_UNUSED(e); if (!s_syncing) mark_dirty(); }
 static void add_cb(lv_event_t *e) { LV_UNUSED(e); builder_add_step(); }
 static void bdel_cb(lv_event_t *e) { LV_UNUSED(e); builder_delete_step(); }
@@ -1468,22 +1568,81 @@ static void jobs_init(void)
     lv_obj_set_pos(s_ctx.btn_dn, 635, 232);
 
     s_ctx.lbl_settings = mk_label(s_ctx.bld, "Step settings", DEVOS_W_TEXT_DIM, 0, 268);
+    /* legacy single-value widgets, used by the non-action inspectors */
     s_ctx.dd_param = devos_w_dd(s_ctx.bld, "", 220);
     lv_obj_set_pos(s_ctx.dd_param, 0, 286);
     lv_obj_add_event_cb(s_ctx.dd_param, param_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_ctx.dd_param, LV_OBJ_FLAG_HIDDEN);
     s_ctx.dd_expr = devos_w_dd(s_ctx.bld, "Literal\nExpression", 140);
     lv_obj_set_pos(s_ctx.dd_expr, 230, 286);
-    lv_obj_add_event_cb(s_ctx.dd_expr, expr_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_ctx.dd_expr, LV_OBJ_FLAG_HIDDEN);
     s_ctx.dd_choice = devos_w_dd(s_ctx.bld, "", 200);
     lv_obj_set_pos(s_ctx.dd_choice, 380, 286);
-    lv_obj_add_event_cb(s_ctx.dd_choice, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_ctx.dd_choice, LV_OBJ_FLAG_HIDDEN);
     s_ctx.ta_val = devos_w_ta(s_ctx.bld, true, RW, 36);
     lv_obj_set_pos(s_ctx.ta_val, 0, 326);
     lv_textarea_set_max_length(s_ctx.ta_val, 240);
     lv_obj_add_event_cb(s_ctx.ta_val, val_commit_cb, LV_EVENT_DEFOCUSED, NULL);
     s_ctx.lbl_custom = devos_w_label(s_ctx.bld, NULL, DEVOS_W_TEXT_MUTED, "");
-    lv_obj_set_pos(s_ctx.lbl_custom, 0, 366);
+    lv_obj_set_pos(s_ctx.lbl_custom, 0, 286);
     lv_obj_set_width(s_ctx.lbl_custom, RW);
+    lv_obj_add_flag(s_ctx.lbl_custom, LV_OBJ_FLAG_HIDDEN);
+
+    /* P2: per-parameter form (one labelled row per action parameter) */
+    s_ctx.form = lv_obj_create(s_ctx.bld);
+    lv_obj_remove_style_all(s_ctx.form);
+    lv_obj_set_pos(s_ctx.form, 0, 286);
+    lv_obj_set_size(s_ctx.form, RW, CH - 286);
+    lv_obj_set_style_pad_all(s_ctx.form, 0, 0);
+    lv_obj_set_style_pad_row(s_ctx.form, 6, 0);
+    lv_obj_set_flex_flow(s_ctx.form, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(s_ctx.form, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_ctx.form, LV_DIR_VER);
+    s_ctx.form_hdr = devos_w_label(s_ctx.form, NULL, DEVOS_W_TEXT_ACCENT, "");
+    for (int i = 0; i < PARAM_MAX; i++) {
+        lv_obj_t *row = lv_obj_create(s_ctx.form);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_width(row, RW - 4);
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        s_ctx.form_rows[i] = row;
+        s_ctx.form_lbl[i] = devos_w_label(row, NULL, DEVOS_W_TEXT, "");
+        /* value line: field + Literal/Expr toggle (inside a row) */
+        lv_obj_t *line = lv_obj_create(row);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_width(line, RW - 8);
+        lv_obj_set_height(line, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(line, 0, 0);
+        lv_obj_set_flex_flow(line, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(line, 8, 0);
+        lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+        s_ctx.form_ta[i] = devos_w_ta(line, true, RW - 160, 34);
+        lv_textarea_set_max_length(s_ctx.form_ta[i], 240);
+        lv_obj_add_event_cb(s_ctx.form_ta[i], form_row_commit_cb, LV_EVENT_DEFOCUSED, (void *)(intptr_t)i);
+        s_ctx.form_dd[i] = devos_w_dd(line, "", RW - 160);
+        lv_obj_add_event_cb(s_ctx.form_dd[i], form_row_commit_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
+        s_ctx.form_expr[i] = devos_w_dd(line, "Literal\nExpression", 140);
+        lv_obj_add_event_cb(s_ctx.form_expr[i], form_row_commit_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
+        s_ctx.form_help[i] = devos_w_label(row, &lv_font_montserrat_12, DEVOS_W_TEXT_MUTED, "");
+        lv_obj_set_width(s_ctx.form_help[i], RW - 12);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* Save result as */
+    lv_obj_t *oline = lv_obj_create(s_ctx.form);
+    lv_obj_remove_style_all(oline);
+    lv_obj_set_width(oline, RW - 4);
+    lv_obj_set_height(oline, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(oline, 0, 0);
+    lv_obj_set_flex_flow(oline, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(oline, 8, 0);
+    lv_obj_remove_flag(oline, LV_OBJ_FLAG_SCROLLABLE);
+    s_ctx.form_out_lbl = devos_w_label(oline, NULL, DEVOS_W_TEXT, "Save result as");
+    s_ctx.form_out_ta = devos_w_ta(oline, true, RW - 200, 34);
+    lv_textarea_set_max_length(s_ctx.form_out_ta, 39);
+    lv_obj_add_event_cb(s_ctx.form_out_ta, form_row_commit_cb, LV_EVENT_DEFOCUSED, NULL);
+    lv_obj_add_flag(s_ctx.form, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_ctx.bld, LV_OBJ_FLAG_HIDDEN);
 
     /* ---- Problems strip + toolbar ---- */
@@ -1536,10 +1695,13 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_add);
-    devos_focus_add(&s_ctx.focus, s_ctx.dd_param);
-    devos_focus_add(&s_ctx.focus, s_ctx.dd_expr);
-    devos_focus_add(&s_ctx.focus, s_ctx.dd_choice);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_val);
+    for (int i = 0; i < PARAM_MAX; i++) {
+        devos_focus_add(&s_ctx.focus, s_ctx.form_ta[i]);
+        devos_focus_add(&s_ctx.focus, s_ctx.form_dd[i]);
+        devos_focus_add(&s_ctx.focus, s_ctx.form_expr[i]);
+    }
+    devos_focus_add(&s_ctx.focus, s_ctx.form_out_ta);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_src);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_validate);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_apply);
