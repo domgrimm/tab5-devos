@@ -54,6 +54,10 @@ typedef struct {
 devos_err_t devos_events_init(void);
 devos_err_t devos_events_register_topic(const devos_event_schema_t *schema);
 const devos_event_schema_t *devos_events_topic_schema(const char *topic);
+/* Enumerate the registered topic schemas (for the Builder's topic picker).
+ * Pointers stay valid for the process lifetime. */
+int devos_events_topic_count(void);
+const devos_event_schema_t *devos_events_topic_at(int index);
 
 /* Nonblocking publish; copies the payload into PSRAM. Returns DEVOS_OK when
  * queued, DEVOS_ERR_NO_MEM when the queue is full (a drop is counted). */

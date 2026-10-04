@@ -313,10 +313,37 @@ static bool load_cb(const char *id, const char *source, size_t len, bool enabled
     return true;
 }
 
+static bool jobs_topic_known(const char *topic, void *user)
+{
+    (void)user;
+    if (devos_events_topic_count() == 0) return true;   /* registry not populated (host tests) */
+    return devos_events_topic_schema(topic) != NULL;
+}
+
 bool devos_jobs_init(void)
 {
     jobs_platform_init();
+    /* main installs the offset / mqtt / secret hooks just before starting the
+     * engine, so preserve them across the reset (otherwise secret() and MQTT
+     * triggers would silently lose their bridges). */
+    devos_jobs_offset_fn off = g_jobs.offset_fn;
+    void *off_user = g_jobs.offset_user;
+    devos_jobs_mqtt_sub_fn msub = g_jobs.mqtt_sub;
+    devos_jobs_mqtt_unsub_fn munsub = g_jobs.mqtt_unsub;
+    void *muser = g_jobs.mqtt_user;
+    devos_jobs_secret_fn sres = g_jobs.secret_resolve;
+    devos_jobs_secret_wipe_fn swipe = g_jobs.secret_wipe;
+    void *suser = g_jobs.secret_user;
     memset(&g_jobs, 0, sizeof(g_jobs));
+    g_jobs.offset_fn = off;
+    g_jobs.offset_user = off_user;
+    g_jobs.mqtt_sub = msub;
+    g_jobs.mqtt_unsub = munsub;
+    g_jobs.mqtt_user = muser;
+    g_jobs.secret_resolve = sres;
+    g_jobs.secret_wipe = swipe;
+    g_jobs.secret_user = suser;
+    jobs_validate_set_topic_check(jobs_topic_known, NULL);
     g_jobs.state = DEVOS_JOBS_READY;
     g_jobs.ready = true;                 /* durable load is best-effort below */
     if (jobs_store_init(TAB5_SD_MOUNT_POINT)) {

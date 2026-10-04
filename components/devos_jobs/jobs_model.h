@@ -131,6 +131,11 @@ jobs_ast_t *jobs_parse(const char *src, size_t len, const jobs_limits_t *lim);
 jobs_node_t *jobs_parse_expr(const char *src, size_t len, jobs_ast_t *ast, const char **err);
 /* Type/schema/scope validation; adds diagnostics. true when the AST is executable. */
 bool jobs_validate(jobs_ast_t *ast);
+/* Optional event-topic check installed by the engine (so a trigger referencing
+ * an unregistered topic is flagged rather than silently never firing). NULL
+ * disables it, keeping the validator free of an events dependency in tests. */
+typedef bool (*jobs_topic_check_fn)(const char *topic, void *user);
+void jobs_validate_set_topic_check(jobs_topic_check_fn fn, void *user);
 /* Canonical source; returns the length (or the needed length if it didn't fit). */
 size_t jobs_serialize(const jobs_ast_t *ast, char *out, size_t cap);
 /* Canonical text of one expression (for the Builder's fields). */

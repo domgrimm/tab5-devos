@@ -45,7 +45,7 @@ typedef struct {
     lv_obj_t *btn_new, *btn_validate, *btn_apply, *btn_enable, *btn_run, *btn_cancel, *btn_hist, *btn_del;
     /* Builder */
     lv_obj_t *bld;
-    lv_obj_t *dd_kind, *ta_trig, *ta_where;
+    lv_obj_t *dd_kind, *ta_trig, *ta_where, *dd_topic;
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
     lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
@@ -65,10 +65,24 @@ typedef struct {
     uint32_t base_rev;
     ui_mode_t mode;
     char out[OUT_MAX];
+    bool dirty;                             /* unsaved edits vs the applied revision */
+    char cur_name[DEVOS_JOBS_NAME_MAX];
 } jobs_ctx_t;
 
 static devos_app_descriptor_t s_desc;
 static jobs_ctx_t s_ctx;
+static bool s_syncing;                      /* text set programmatically, not a user edit */
+
+/* Delete confirmation (P0: never delete a job with one key). */
+static devos_w_dialog_t s_del_dlg;
+static bool s_del_open;
+static char s_del_id[DEVOS_JOBS_ID_MAX];
+static char s_del_name[DEVOS_JOBS_NAME_MAX];
+
+/* Event-topic picker: topic ids parallel to the dropdown's options. */
+#define TOPIC_OPTS_MAX (DEVOS_EVENTS_MAX_TOPICS + 1)
+static char s_topic_ids[TOPIC_OPTS_MAX][DEVOS_EVENTS_TOPIC_MAX];
+static int s_topic_n;
 
 static void set_mode(ui_mode_t m);
 
@@ -131,25 +145,74 @@ static void refresh_list(void)
 
 static const char *cur_source(void) { return lv_textarea_get_text(s_ctx.ta_src); }
 
+/* ---- dirty state and drafts (P0-3) ---- */
+static void update_name(void)
+{
+    if (!s_ctx.lbl_name) return;
+    char b[DEVOS_JOBS_NAME_MAX + 24];
+    snprintf(b, sizeof(b), "%s%s", s_ctx.cur_name,
+             s_ctx.dirty ? "   (unsaved)" : "");
+    devos_w_set_text(s_ctx.lbl_name, b);
+}
+static void set_dirty(bool d)
+{
+    if (s_ctx.dirty == d) return;
+    s_ctx.dirty = d;
+    update_name();
+}
+static void mark_dirty(void) { set_dirty(true); }
+
+static const char *jobs_restart_check(void)
+{
+    return s_ctx.dirty ? "Jobs: an unsaved draft would be lost" : NULL;
+}
+static void draft_save(void)
+{
+    if (s_ctx.n == 0 || !s_ctx.dirty) return;
+    devos_jobs_save_draft(s_ctx.ids[s_ctx.sel], cur_source(), strlen(cur_source()));
+}
+
 static void load_selected(void)
 {
     if (s_ctx.n == 0) {
+        s_ctx.cur_name[0] = '\0';
+        s_syncing = true;
         lv_textarea_set_text(s_ctx.ta_src, "");
+        s_syncing = false;
         devos_w_set_text(s_ctx.lbl_name, "");
         devos_w_set_text(s_ctx.lbl_state, "no jobs - press Sym+N for a new one");
         s_ctx.base_rev = 0;
+        set_dirty(false);
         return;
     }
     const char *id = s_ctx.ids[s_ctx.sel];
     devos_job_summary_t sum;
+    memset(&sum, 0, sizeof(sum));
     for (int i = 0; i < devos_jobs_count(); i++)
         if (devos_jobs_summary_at(i, &sum) && strcmp(sum.id, id) == 0) break;
     static char src[SRCMAX];
     size_t len = 0;
-    if (devos_jobs_source(id, src, sizeof(src), &len) == DEVOS_OK) lv_textarea_set_text(s_ctx.ta_src, src);
-    else lv_textarea_set_text(s_ctx.ta_src, NEW_TEMPLATE);
+    const char *applied;
+    if (devos_jobs_source(id, src, sizeof(src), &len) == DEVOS_OK) applied = src;
+    else { snprintf(src, sizeof(src), "%s", NEW_TEMPLATE); applied = src; }
+    s_syncing = true;
+    lv_textarea_set_text(s_ctx.ta_src, applied);
+    s_syncing = false;
     s_ctx.base_rev = sum.revision;
-    devos_w_set_text(s_ctx.lbl_name, sum.name);
+    snprintf(s_ctx.cur_name, sizeof(s_ctx.cur_name), "%s", sum.name);
+    set_dirty(false);
+    update_name();
+    /* a saved draft (unsaved edits from a previous visit) takes precedence */
+    static char draft[SRCMAX];
+    size_t dl = 0;
+    if (devos_jobs_load_draft(id, draft, sizeof(draft), &dl) == DEVOS_OK && dl > 0 &&
+        strcmp(draft, applied) != 0) {
+        s_syncing = true;
+        lv_textarea_set_text(s_ctx.ta_src, draft);
+        s_syncing = false;
+        mark_dirty();
+        say("Draft restored - press Sym+A to apply.");
+    }
     static char st[96];
     snprintf(st, sizeof(st), "%s  |  %s  |  rev %u  |  last: %s",
              sum.state == DEVOS_JOB_ENABLED ? "Enabled" : "Disabled",
@@ -186,8 +249,58 @@ static void builder_sync(void)
 {
     char src[SRCMAX];
     jobs_build_source(&s_ctx.build, src, sizeof(src));
+    s_syncing = true;
     lv_textarea_set_text(s_ctx.ta_src, src);
+    s_syncing = false;
     s_ctx.build_ok = jobs_build_revalidate(&s_ctx.build);
+    mark_dirty();
+}
+
+/* ---- event topic picker (P0-5): only registered topics ---- */
+static void refresh_topics(void)
+{
+    s_topic_n = 0;
+    const jobs_node_t *t = jobs_build_trigger(&s_ctx.build);
+    const char *cur = t ? jobs_build_trigger_event_topic(t) : NULL;
+    char opts[TOPIC_OPTS_MAX * (DEVOS_EVENTS_TOPIC_MAX + 2)];
+    size_t o = 0;
+    opts[0] = '\0';
+    /* keep an unknown current topic selectable so it is not silently changed */
+    if (cur && cur[0] && !devos_events_topic_schema(cur)) {
+        snprintf(s_topic_ids[s_topic_n], sizeof(s_topic_ids[0]), "%s", cur);
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%.48s  (unknown)", cur);
+        s_topic_n++;
+    }
+    for (int i = 0; i < devos_events_topic_count() && s_topic_n < TOPIC_OPTS_MAX; i++) {
+        const devos_event_schema_t *sc = devos_events_topic_at(i);
+        if (!sc || !sc->topic) continue;
+        snprintf(s_topic_ids[s_topic_n], sizeof(s_topic_ids[0]), "%s", sc->topic);
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%s%s", s_topic_n ? "\n" : "", sc->topic);
+        s_topic_n++;
+    }
+    if (s_topic_n == 0) snprintf(opts, sizeof(opts), "(no topics registered)");
+    lv_dropdown_set_options(s_ctx.dd_topic, opts);
+    int sel = 0;
+    if (cur) for (int i = 0; i < s_topic_n; i++) if (strcmp(s_topic_ids[i], cur) == 0) sel = i;
+    lv_dropdown_set_selected(s_ctx.dd_topic, (uint32_t)sel);
+    if (cur && cur[0] && !devos_events_topic_schema(cur))
+        say("Warning: this event topic is not registered, so the trigger will never fire.");
+}
+
+static void topic_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    int sel = (int)lv_dropdown_get_selected(s_ctx.dd_topic);
+    if (sel < 0 || sel >= s_topic_n) return;
+    if (jobs_build_set_trigger_event(&s_ctx.build, s_topic_ids[sel])) {
+        const devos_event_schema_t *sc = devos_events_topic_schema(s_topic_ids[sel]);
+        char b[260];
+        snprintf(b, sizeof(b), "Event \"%s\"\n%s\nfields: %s", s_topic_ids[sel],
+                 sc && sc->description ? sc->description : "",
+                 sc && sc->fields ? sc->fields : "");
+        say(b);
+        builder_sync();
+    }
 }
 
 static void builder_inspector(void);
@@ -270,7 +383,11 @@ static void builder_refresh(void)
             snprintf(v, sizeof(v), "%s", jobs_build_trigger_event_topic(t) ? jobs_build_trigger_event_topic(t) : "");
         lv_textarea_set_text(s_ctx.ta_trig, v);
         lv_textarea_set_text(s_ctx.ta_where, jobs_build_trigger_where_text(t));
-        if (kind == JTRIG_EVENT) lv_obj_remove_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
+        if (s_ctx.dd_topic) refresh_topics();
+        bool ev = kind == JTRIG_EVENT;
+        set_visible(s_ctx.ta_trig, !ev);
+        if (s_ctx.dd_topic) set_visible(s_ctx.dd_topic, ev);
+        if (ev) lv_obj_remove_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
     }
     refresh_steps();
@@ -418,7 +535,8 @@ static void builder_commit_trigger(void)
     if (kind == 1) { int64_t ms = parse_dur(v); if (ms > 0) jobs_build_set_trigger_duration(&s_ctx.build, ms); }
     else if (kind == 2 || kind == 3) jobs_build_set_trigger_time(&s_ctx.build, v);
     else if (kind == 4) {
-        jobs_build_set_trigger_event(&s_ctx.build, v);
+        int sel = (int)lv_dropdown_get_selected(s_ctx.dd_topic);
+        if (sel >= 0 && sel < s_topic_n) jobs_build_set_trigger_event(&s_ctx.build, s_topic_ids[sel]);
         if (!jobs_build_set_trigger_where(&s_ctx.build, lv_textarea_get_text(s_ctx.ta_where)))
             say(s_ctx.build.diag);
     }
@@ -471,6 +589,7 @@ static void builder_commit_value(void)
         return;
     }
     builder_sync();
+    if (s_ctx.mode == MODE_BUILDER) refresh_steps();   /* the row summary changed */
 }
 
 static void builder_commit_all(void)
@@ -574,6 +693,7 @@ static void act_apply(void)
     devos_err_t rc = devos_jobs_apply_base(id, src, strlen(src), s_ctx.base_rev, true, &rev);
     if (rc == DEVOS_OK) {
         s_ctx.base_rev = rev;
+        devos_jobs_save_draft(id, "", 0);        /* the draft is applied now */
         refresh_list();
         load_selected();
         if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER);
@@ -629,6 +749,7 @@ static void act_history(void)
 
 static void act_new(void)
 {
+    draft_save();
     char id[DEVOS_JOBS_ID_MAX];
     for (int k = 1; k < 1000; k++) {
         snprintf(id, sizeof(id), "job%d", k);
@@ -644,16 +765,38 @@ static void act_new(void)
     devos_toast_show("New job (disabled)", DEVOS_TOAST_OK, 0);
 }
 
-static void act_delete(void)
+static void close_delete_dialog(void)
 {
-    if (s_ctx.n == 0) return;
-    if (devos_jobs_delete(s_ctx.ids[s_ctx.sel]) != DEVOS_OK) { say("Can't delete a running job - cancel it first."); return; }
+    s_del_open = false;
+    devos_w_dialog_show(&s_del_dlg, false);
+}
+
+static void delete_confirmed(void)
+{
+    close_delete_dialog();
+    if (devos_jobs_delete(s_del_id) != DEVOS_OK) { say("Can't delete a running job - cancel it first."); return; }
     if (s_ctx.sel > 0) s_ctx.sel--;
+    s_ctx.dirty = false;
     refresh_list();
     load_selected();
     if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER);
     devos_toast_show("Deleted", DEVOS_TOAST_WARN, 0);
 }
+
+/* P0: never delete with one key - always ask first (Enter confirms, Esc cancels). */
+static void act_delete(void)
+{
+    if (s_ctx.n == 0) { say("No job selected."); return; }
+    snprintf(s_del_id, sizeof(s_del_id), "%s", s_ctx.ids[s_ctx.sel]);
+    snprintf(s_del_name, sizeof(s_del_name), "%s", s_ctx.cur_name);
+    char t[DEVOS_JOBS_NAME_MAX + 24];
+    snprintf(t, sizeof(t), LV_SYMBOL_TRASH "  Delete \"%s\"?", s_del_name);
+    lv_label_set_text(s_del_dlg.title, t);
+    s_del_open = true;
+    devos_w_dialog_show(&s_del_dlg, true);
+}
+static void del_ok_cb(lv_event_t *e) { LV_UNUSED(e); delete_confirmed(); }
+static void del_cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_delete_dialog(); }
 
 /* ---- mode ---- */
 static void set_mode(ui_mode_t m)
@@ -681,7 +824,7 @@ static void set_mode(ui_mode_t m)
 }
 
 /* ---- callbacks ---- */
-static void job_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.sel = (int)lv_dropdown_get_selected(s_ctx.dd_job); load_selected(); if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER); }
+static void job_cb(lv_event_t *e) { LV_UNUSED(e); draft_save(); s_ctx.sel = (int)lv_dropdown_get_selected(s_ctx.dd_job); load_selected(); if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER); }
 static void validate_cb(lv_event_t *e) { LV_UNUSED(e); act_validate(); }
 static void apply_cb(lv_event_t *e) { LV_UNUSED(e); builder_commit_all(); act_apply(); }
 static void enable_cb(lv_event_t *e) { LV_UNUSED(e); act_enable(); }
@@ -702,6 +845,8 @@ static void kind_cb(lv_event_t *e)
 static void param_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.bparam = (int)lv_dropdown_get_selected(s_ctx.dd_param); builder_inspector(); }
 static void expr_cb(lv_event_t *e) { LV_UNUSED(e); s_ctx.insp_expr = lv_dropdown_get_selected(s_ctx.dd_expr) == 1; builder_inspector(); }
 static void val_cb(lv_event_t *e) { LV_UNUSED(e); builder_commit_value(); }
+static void val_commit_cb(lv_event_t *e) { LV_UNUSED(e); if (s_ctx.insp != INSP_NONE) builder_commit_value(); }
+static void src_changed_cb(lv_event_t *e) { LV_UNUSED(e); if (!s_syncing) mark_dirty(); }
 static void add_cb(lv_event_t *e) { LV_UNUSED(e); builder_add_step(); }
 static void bdel_cb(lv_event_t *e) { LV_UNUSED(e); builder_delete_step(); }
 static void up_cb(lv_event_t *e) { LV_UNUSED(e); builder_move(-1); }
@@ -779,6 +924,7 @@ static void jobs_init(void)
     s_ctx.ta_src = devos_w_ta(scr, false, 760, 356);
     lv_obj_set_pos(s_ctx.ta_src, 20, 138);
     lv_textarea_set_max_length(s_ctx.ta_src, SRCMAX);
+    lv_obj_add_event_cb(s_ctx.ta_src, src_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_flag(s_ctx.ta_src, LV_OBJ_FLAG_HIDDEN);
 
     /* Builder view */
@@ -795,6 +941,11 @@ static void jobs_init(void)
     s_ctx.ta_trig = devos_w_ta(s_ctx.bld, true, 190, 36);
     lv_obj_set_pos(s_ctx.ta_trig, 160, 18);
     lv_textarea_set_max_length(s_ctx.ta_trig, 48);
+    /* Event triggers pick from the registered topics (P0-5). */
+    s_ctx.dd_topic = devos_w_dd(s_ctx.bld, "(no topics registered)", 190);
+    lv_obj_set_pos(s_ctx.dd_topic, 160, 18);
+    lv_obj_add_flag(s_ctx.dd_topic, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_ctx.dd_topic, topic_cb, LV_EVENT_VALUE_CHANGED, NULL);
     /* Committed on Enter / Apply, never per keystroke. */
     s_ctx.ta_where = devos_w_ta(s_ctx.bld, true, 380, 36);
     lv_obj_set_pos(s_ctx.ta_where, 360, 18);
@@ -832,7 +983,7 @@ static void jobs_init(void)
     lv_obj_set_pos(s_ctx.dd_add, 0, 206);
     s_ctx.btn_add = devos_w_btn(s_ctx.bld, "Add  [Sym+U]", 110, add_cb, NULL, NULL);
     lv_obj_set_pos(s_ctx.btn_add, 270, 206);
-    s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Delete  [Sym+D]", 110, bdel_cb, NULL, NULL);
+    s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Del step", 110, bdel_cb, NULL, NULL);
     lv_obj_set_pos(s_ctx.btn_bdel, 390, 206);
     s_ctx.btn_up = devos_w_btn(s_ctx.bld, "Up  [Sym+K]", 90, up_cb, NULL, NULL);
     lv_obj_set_pos(s_ctx.btn_up, 510, 206);
@@ -852,7 +1003,7 @@ static void jobs_init(void)
     s_ctx.ta_val = devos_w_ta(s_ctx.bld, true, 740, 36);
     lv_obj_set_pos(s_ctx.ta_val, 0, 296);
     lv_textarea_set_max_length(s_ctx.ta_val, 240);
-    lv_obj_add_event_cb(s_ctx.ta_val, val_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(s_ctx.ta_val, val_commit_cb, LV_EVENT_DEFOCUSED, NULL);
     s_ctx.lbl_custom = devos_w_label(s_ctx.bld, NULL, DEVOS_W_TEXT_MUTED, "");
     lv_obj_set_pos(s_ctx.lbl_custom, 0, 336);
     lv_obj_set_width(s_ctx.lbl_custom, 740);
@@ -883,19 +1034,30 @@ static void jobs_init(void)
     devos_codeview_create(&s_ctx.cv, s_ctx.out_scroll);
     s_ctx.cv.plain = true;
 
+    /* P0: deleting a job always asks first. */
+    devos_w_dialog(&s_del_dlg, scr, 560, 170, LV_SYMBOL_TRASH "  Delete job");
+    lv_obj_t *dok = devos_w_btn_kind(s_del_dlg.box, DEVOS_W_BTN_DANGER, "Delete", 130, del_ok_cb, NULL, NULL);
+    lv_obj_set_size(dok, 130, 36);
+    lv_obj_align(dok, LV_ALIGN_BOTTOM_RIGHT, -142, 0);
+    lv_obj_t *dcl = devos_w_btn(s_del_dlg.box, "Cancel", 130, del_cancel_cb, NULL, NULL);
+    lv_obj_set_size(dcl, 130, 36);
+    lv_obj_align(dcl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    devos_w_set_text(s_del_dlg.msg, "Enter = delete      Esc = cancel");
+    devos_core_add_restart_check(jobs_restart_check);
+
     s_ctx.lbl_hint = devos_w_label(scr, NULL, DEVOS_W_TEXT_MUTED, "");
     lv_obj_set_pos(s_ctx.lbl_hint, 20, 596);
     lv_obj_set_width(s_ctx.lbl_hint, DEVOS_SCREEN_WIDTH - 40);
 
     lv_obj_t *keys = devos_w_keys(scr);
-    devos_w_set_text(keys, "Sym+B builder  Sym+M text  Sym+C validate  Sym+A apply  Sym+G enable  "
-                           "Sym+R run  Sym+X cancel  Sym+Y history  Sym+N new  Sym+D delete  |  "
-                           "Builder: Sym+U add  Sym+K/Sym+J move  drag a step to reorder  |  Esc back");
+    devos_w_set_text(keys, "Sym+B Builder  Sym+M Text  Sym+C Validate  Sym+A Apply  Sym+R Run  "
+                           "Sym+Y Runs  Sym+D Delete job  Esc back  |  Sym+S all keys");
 
     devos_focus_init(&s_ctx.focus);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_job);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_kind);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_trig);
+    devos_focus_add(&s_ctx.focus, s_ctx.dd_topic);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_add);
@@ -942,6 +1104,7 @@ static void jobs_show(void)
 
 static void jobs_hide(void)
 {
+    draft_save();                                   /* unsaved edits survive the visit */
     if (s_ctx.screen) lv_obj_add_flag(s_ctx.screen, LV_OBJ_FLAG_HIDDEN);
     jobs_build_free(&s_ctx.build);
     s_ctx.build.ast = NULL;
@@ -949,8 +1112,20 @@ static void jobs_hide(void)
 
 static bool jobs_key(uint32_t key, uint8_t mods)
 {
+    /* The delete confirmation owns the keyboard: Enter confirms, Esc cancels. */
+    if (s_del_open) {
+        if (key == '\r' || key == '\n') { delete_confirmed(); return true; }
+        if (key == LV_KEY_ESC) { close_delete_dialog(); return true; }
+        return true;
+    }
+
     /* Arrow keys over the step tree move the selection, not the focus. */
     lv_obj_t *cur = devos_focus_get(&s_ctx.focus);
+    if (s_ctx.mode == MODE_BUILDER && cur == s_ctx.step_list &&
+        (key == LV_KEY_DEL || key == LV_KEY_BACKSPACE)) {
+        builder_delete_step();                      /* step delete, not job delete */
+        return true;
+    }
     if (s_ctx.mode == MODE_BUILDER && cur == s_ctx.step_list &&
         (key == LV_KEY_UP || key == LV_KEY_DOWN)) {
         int dir = key == LV_KEY_DOWN ? 1 : -1;
@@ -985,7 +1160,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'x': act_cancel(); return true;
         case 'y': act_history(); return true;
         case 'n': act_new(); return true;
-        case 'd': if (s_ctx.mode == MODE_BUILDER) builder_delete_step(); else act_delete(); return true;
+        case 'd': act_delete(); return true;        /* always the job (P0-2) */
         case 'u': builder_add_step(); return true;
         case 'k': builder_move(-1); return true;
         case 'j': builder_move(1); return true;
@@ -1008,7 +1183,6 @@ static bool jobs_key(uint32_t key, uint8_t mods)
     case 'x': case 'X': act_cancel(); return true;
     case 'h': case 'H': act_history(); return true;
     case 'n': case 'N': act_new(); return true;
-    case 'd': case 'D': if (s_ctx.mode == MODE_BUILDER) builder_delete_step(); else act_delete(); return true;
     case 'i': case 'I': builder_add_step(); return true;
     case 'k': case 'K': builder_move(-1); return true;
     case 'j': case 'J': builder_move(1); return true;
@@ -1049,13 +1223,15 @@ static const char *jobs_shortcuts(void)
            "Sym+B / Sym+M\tBuilder / Text\n"
            "Sym+C / Sym+A\tValidate / Apply\n"
            "Sym+G / Sym+R / Sym+X\tEnable / Run now / Cancel\n"
-           "Sym+Y / Sym+N / Sym+D\tHistory / New / Delete\n"
+           "Sym+Y / Sym+N / Sym+D\tRuns / New / Delete job (asks first)\n"
+           "Tab\tCycle regions (list, header, trigger, steps, inspector, toolbar)\n"
            "Builder\n"
-           "Up / Down\tPick a step (tap to select)\n"
-           "Sym+U / Sym+D\tAdd / delete a step\n"
+           "Up / Down\tPick a step\n"
+           "Sym+U\tAdd a step\n"
+           "Del / Backspace\tDelete the selected step\n"
            "Sym+K / Sym+J\tMove the step up / down (or drag it)\n"
-           "Trigger\tManual / Every / Daily / Weekdays / Event\n"
-           "Event\ttype the topic, then a where filter (event.*)\n";
+           "Trigger\tManual / Every / Daily / Weekdays / Event (topic from a list)\n"
+           "Event\tpick the topic; then a where filter over event.*\n";
 }
 
 devos_app_descriptor_t *app_jobs_get_descriptor(void)

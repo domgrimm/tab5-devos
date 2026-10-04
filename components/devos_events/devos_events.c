@@ -101,6 +101,23 @@ const devos_event_schema_t *devos_events_topic_schema(const char *topic)
     return r;
 }
 
+int devos_events_topic_count(void)
+{
+    EV_LOCK();
+    int n = s_topic_n;
+    EV_UNLOCK();
+    return n;
+}
+
+const devos_event_schema_t *devos_events_topic_at(int index)
+{
+    const devos_event_schema_t *r = NULL;
+    EV_LOCK();
+    if (index >= 0 && index < s_topic_n) r = &s_topics[index].schema;
+    EV_UNLOCK();
+    return r;
+}
+
 /* MQTT-style topic match: exact, '+' (one non-empty level), terminal '#'.
  * A leading wildcard does not match '$'-prefixed system topics. */
 static bool match_levels(const char *p, const char *t)

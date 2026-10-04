@@ -27,6 +27,15 @@ typedef struct {
     bool failed;
 } V;
 
+static jobs_topic_check_fn s_topic_check;
+static void *s_topic_user;
+
+void jobs_validate_set_topic_check(jobs_topic_check_fn fn, void *user)
+{
+    s_topic_check = fn;
+    s_topic_user = user;
+}
+
 static void verr(V *v, const jobs_node_t *n, const char *fmt, ...)
 {
     v->failed = true;
@@ -459,6 +468,8 @@ static void check_trigger(V *v, jobs_node_t *t)
     case JTRIG_EVENT: {
         v->in_event = true;
         if (!t->u.str.s || !t->u.str.s[0]) verr(v, t, "an event trigger needs a topic");
+        else if (s_topic_check && !s_topic_check(t->u.str.s, s_topic_user))
+            verr(v, t, "unknown event topic '%s' (no app registers it)", t->u.str.s);
         for (jobs_node_t *a = t->a; a; a = a->next) {
             static const struct { const char *n; ty_t t; } ea[] = {
                 { "topic", TY_STR }, { "include_retained", TY_BOOL }, { "debounce", TY_DUR },
