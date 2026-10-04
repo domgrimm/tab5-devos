@@ -87,6 +87,10 @@ bool jobs_build_set_repeat(jobs_build_t *b, const jobs_node_t *stmt, int64_t cou
 int jobs_build_block_count(const jobs_node_t *block);
 /* Move a statement to a target index within its block. */
 bool jobs_build_move_to(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int target);
+/* Indent stmt into the preceding if/repeat sibling's body, or outdent it
+ * to just after its owning if/repeat (P2: edit bodies from the Builder). */
+bool jobs_build_indent(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt);
+bool jobs_build_outdent(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt);
 
 /* ---- conditions and advanced expressions ---- */
 const jobs_node_t *jobs_build_if_cond(const jobs_node_t *if_node);

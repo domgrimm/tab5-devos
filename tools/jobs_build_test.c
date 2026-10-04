@@ -299,6 +299,45 @@ int main(void)
         jobs_build_free(&cb);
     }
 
+    /* P2: indent a step into the preceding if/repeat, outdent it back */
+    {
+        const char *CB =
+            "version 1;\njob \"IO\" {\n trigger manual;\n"
+            " system.log(message: \"a\");\n"
+            " if true {\n  system.log(message: \"in\");\n }\n"
+            " system.log(message: \"b\");\n}\n";
+        jobs_build_t ib;
+        memset(&ib, 0, sizeof(ib));
+        CHECK(jobs_build_load(&ib, CB, strlen(CB)));
+        jobs_node_t *body = ib.ast->root->c;
+        /* indent the trailing log into the if above it */
+        jobs_node_t *trail = NULL;
+        for (jobs_node_t *st = body->a; st; st = st->next) trail = st;
+        CHECK(trail && jobs_build_indent(&ib, body, trail));
+        CHECK(jobs_build_revalidate(&ib));
+        char io[1024];
+        jobs_build_source(&ib, io, sizeof(io));
+        CHECK(strstr(io, "if true {") != NULL);
+        /* the trailing log now lives inside the if body (depth 1) */
+        jobs_build_row_t ir[JOBS_BUILD_ROWS];
+        int in = jobs_build_rows(&ib, ir, JOBS_BUILD_ROWS);
+        bool deep = false;
+        for (int k = 0; k < in; k++)
+            if (ir[k].depth == 1 && ir[k].node->kind == JN_ACTION) deep = true;
+        CHECK(deep);
+        /* outdent it back to the top level */
+        jobs_node_t *moved = NULL, *mvblock = NULL;
+        for (int k = 0; k < in; k++)
+            if (ir[k].depth == 1 && ir[k].node->kind == JN_ACTION &&
+                ir[k].block != body) { moved = (jobs_node_t *)ir[k].node; mvblock = (jobs_node_t *)ir[k].block; }
+        CHECK(moved && mvblock && jobs_build_outdent(&ib, mvblock, moved));
+        CHECK(jobs_build_revalidate(&ib));
+        /* indenting the first statement, or outdenting top level, refuses */
+        CHECK(!jobs_build_indent(&ib, body, body->a));
+        CHECK(!jobs_build_outdent(&ib, body, body->a));
+        jobs_build_free(&ib);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

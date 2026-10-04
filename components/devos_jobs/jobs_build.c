@@ -494,6 +494,88 @@ bool jobs_build_move_to(jobs_build_t *b, const jobs_node_t *block, const jobs_no
     return true;
 }
 
+/* ---- indent / outdent across blocks (P2: edit if/repeat bodies) ---- */
+/* Detach stmt from block; returns its old predecessor (may be NULL). */
+static jobs_node_t *block_detach(jobs_node_t *block, const jobs_node_t *stmt)
+{
+    jobs_node_t *prev = NULL;
+    for (jobs_node_t *s = block->a; s; prev = s, s = s->next) {
+        if (s == stmt) {
+            if (prev) prev->next = s->next;
+            else block->a = s->next;
+            s->next = NULL;
+            return prev;
+        }
+    }
+    return (jobs_node_t *)-1;              /* not a member */
+}
+
+/* Find the statement owning `block` as a then/else/body block, plus the
+ * owner's own block. Searches from the job root. */
+static bool find_owner(jobs_ast_t *ast, const jobs_node_t *block,
+                       jobs_node_t **owner_out, jobs_node_t **oblock_out)
+{
+    if (!ast || !ast->root || !block) return false;
+    jobs_node_t *stack[64];
+    int n = 0;
+    if (ast->root->c) stack[n++] = ast->root->c;
+    while (n > 0) {
+        jobs_node_t *blk = stack[--n];
+        for (jobs_node_t *s = blk->a; s; s = s->next) {
+            if (s->kind == JN_IF) {
+                if (s->b == block || s->c == block) {
+                    if (owner_out) *owner_out = s;
+                    if (oblock_out) *oblock_out = blk;
+                    return true;
+                }
+                if (s->b && n + 2 <= 64) stack[n++] = s->b;
+                if (s->c && n + 2 <= 64) stack[n++] = s->c;
+            } else if (s->kind == JN_REPEAT) {
+                if (s->a == block) {
+                    if (owner_out) *owner_out = s;
+                    if (oblock_out) *oblock_out = blk;
+                    return true;
+                }
+                if (s->a && n + 1 <= 64) stack[n++] = s->a;
+            }
+        }
+    }
+    return false;
+}
+
+/* Move stmt into the then/body block of the nearest preceding if/repeat
+ * sibling. Creates the body block when the if has none yet. */
+bool jobs_build_indent(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt)
+{
+    if (!b || !b->ast || !block || !stmt || block->kind != JN_BLOCK) return false;
+    if (block->a == stmt) return false;              /* first: nothing above it */
+    jobs_node_t *prev = NULL;
+    for (jobs_node_t *s = block->a; s && s != stmt; s = s->next) prev = s;
+    if (!prev || (prev->kind != JN_IF && prev->kind != JN_REPEAT)) return false;
+    jobs_node_t *target = (prev->kind == JN_IF) ? prev->b : prev->a;
+    if (!target) {
+        target = jobs_node_new(b->ast, JN_BLOCK, 0, 0, 0, 0);
+        if (!target) return false;
+        if (prev->kind == JN_IF) prev->b = target;
+        else prev->a = target;
+    }
+    if (block_detach((jobs_node_t *)block, stmt) == (jobs_node_t *)-1) return false;
+    return block_append(b->ast, target, (jobs_node_t *)stmt);
+}
+
+/* Move stmt out of its block to just after the owning if/repeat statement. */
+bool jobs_build_outdent(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt)
+{
+    if (!b || !b->ast || !block || !stmt || block->kind != JN_BLOCK) return false;
+    jobs_node_t *owner = NULL, *oblock = NULL;
+    if (!find_owner(b->ast, block, &owner, &oblock)) return false;   /* top level */
+    if (block_detach((jobs_node_t *)block, stmt) == (jobs_node_t *)-1) return false;
+    jobs_node_t *s = (jobs_node_t *)stmt;
+    s->next = owner->next;
+    owner->next = s;
+    return true;
+}
+
 /* ---- conditions and advanced expressions ---- */
 const jobs_node_t *jobs_build_if_cond(const jobs_node_t *if_node) { return if_node ? if_node->a : NULL; }
 const jobs_node_t *jobs_build_set_value(const jobs_node_t *set_node) { return set_node ? set_node->a : NULL; }

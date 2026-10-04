@@ -983,6 +983,24 @@ static void builder_move(int dir)
     }
 }
 
+/* P2: move the selected step into the preceding if/repeat (indent) or out of
+ * its block to just after the owner (outdent). Keeps the moved node selected. */
+static void builder_reblock(int dir)
+{
+    if (s_ctx.tab != TAB_BUILDER || s_ctx.bstep < 0 || s_ctx.bstep >= s_ctx.rows_n) return;
+    const jobs_node_t *node = s_ctx.rows[s_ctx.bstep].node;
+    const jobs_node_t *block = s_ctx.rows[s_ctx.bstep].block;
+    bool ok = dir > 0 ? jobs_build_indent(&s_ctx.build, block, node)
+                      : jobs_build_outdent(&s_ctx.build, block, node);
+    if (!ok) { say(dir > 0 ? "Nothing to indent into (needs an if/repeat above)." : "Already at the top level."); return; }
+    builder_sync();
+    builder_refresh();
+    for (int i = 0; i < s_ctx.rows_n; i++)
+        if (s_ctx.rows[i].node == node) { s_ctx.bstep = i; break; }
+    refresh_steps();
+    builder_inspector();
+}
+
 /* ---- touch drag reordering ---- */
 static int s_drag_from = -1;
 static lv_point_t s_drag_p0;
@@ -2398,6 +2416,12 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         }
         return true;
     }
+    /* Tab / Shift+Tab in the step list indents/outdents (P2: edit bodies);
+     * anywhere else Tab keeps moving focus. */
+    if (s_ctx.tab == TAB_BUILDER && cur == s_ctx.step_list && key == '\t') {
+        builder_reblock((mods & DEVOS_MOD_SHIFT) ? -1 : 1);
+        return true;
+    }
 
     /* Sym+<key> commands work anywhere, including inside a text field. */
     if (mods & DEVOS_MOD_FN) {
@@ -2526,6 +2550,7 @@ static const char *jobs_shortcuts(void)
            "Up / Down\tPick a step\n"
            "Sym+U / Del\tAdd a step / delete the selected step\n"
            "Sym+K / Sym+J\tMove the step up / down (or drag it)\n"
+           "Tab / Shift+Tab\tIndent / outdent (into if/repeat bodies)\n"
            "Trigger\tManual / Every / Daily / Weekdays / Event (topic from a list)\n"
            "Event\tpick the topic; then a where filter over event.*\n";
 }
