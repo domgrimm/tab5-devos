@@ -38,6 +38,8 @@
 #include "devos_net.h"
 #include "devos_storage.h"
 #include "devos_sysmon.h"
+#include "devos_secrets.h"
+#include "devos_toast.h"
 #include "bsp_tab5.h"
 #include "tab5_keyboard.h"
 #include <stdio.h>
@@ -50,12 +52,12 @@
 #include "sdkconfig.h"
 #endif
 
-enum { SEC_WIFI = 0, SEC_SHARE, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SYSTEM, SEC_COUNT };
+enum { SEC_WIFI = 0, SEC_SHARE, SEC_DISPLAY, SEC_KEYBOARD, SEC_POWER, SEC_TIME, SEC_APPS, SEC_SECRETS, SEC_SYSTEM, SEC_COUNT };
 
 /* Section names for the "section" intent: devos_core_open_with("settings",
  * "section", "power") opens Settings at Power (the top bar, the palette). */
 static const char *const s_sec_names[SEC_COUNT] = {
-    "wifi", "share", "display", "keyboard", "power", "time", "apps", "system",
+    "wifi", "share", "display", "keyboard", "power", "time", "apps", "secrets", "system",
 };
 
 static const char *const s_sec_labels[SEC_COUNT] = {
@@ -66,6 +68,7 @@ static const char *const s_sec_labels[SEC_COUNT] = {
     LV_SYMBOL_BATTERY_FULL "   Power",
     LV_SYMBOL_BELL "   Date & Time",
     LV_SYMBOL_LIST "   Apps",
+    LV_SYMBOL_EYE_CLOSE "   Jobs Secrets",
     LV_SYMBOL_SETTINGS "   System",
 };
 
@@ -136,6 +139,14 @@ static lv_obj_t *sw_share, *lbl_share_state, *lbl_share_url, *lbl_share_pw, *lbl
                 *lbl_share_last, *lbl_share_sd;
 static lv_style_t *s_share_state_style;
 static lv_obj_t *lbl_sys_device, *lbl_sys_mem, *lbl_fw, *lbl_ota, *lbl_ota_btn, *btn_ota, *bar_ota, *lbl_feed;
+
+/* ---- Jobs secrets panel ---- */
+static lv_obj_t *ta_sec_name, *ta_sec_value, *lbl_sec_note, *lbl_sec_security;
+static lv_obj_t *sec_rows[DEVOS_SECRETS_MAX];
+static lv_obj_t *sec_row_lbl[DEVOS_SECRETS_MAX];
+static int s_sec_rows_n;
+static int s_sec_sel;
+static char s_sec_confirm[DEVOS_SECRET_NAME_MAX];   /* pending delete (double-press) */
 
 /* ---- Apps panel: one row per app, built on first view (the list is
  * complete only after every app has registered) ---- */
@@ -2055,6 +2066,192 @@ static void refresh_share(void)
 }
 
 /* ======================================================================== */
+/* Jobs secrets                                                             */
+/* ======================================================================== */
+static void leave_panel(void);   /* defined with the section navigation */
+
+static void secs_highlight(void)
+{
+    for (int i = 0; i < s_sec_rows_n; i++) {
+        if (i == s_sec_sel) lv_obj_add_state(sec_rows[i], LV_STATE_CHECKED);
+        else lv_obj_remove_state(sec_rows[i], LV_STATE_CHECKED);
+    }
+}
+
+static void refresh_secrets(void)
+{
+    devos_secrets_init();
+    int n = devos_secrets_count();
+    if (n > DEVOS_SECRETS_MAX) n = DEVOS_SECRETS_MAX;
+    s_sec_rows_n = n;
+    for (int i = 0; i < DEVOS_SECRETS_MAX; i++) {
+        if (i < n) {
+            const devos_secret_info_t *in = devos_secrets_at(i);
+            char buf[160];
+            snprintf(buf, sizeof(buf), "%s      %s      v%u",
+                     in && in->name[0] ? in->name : "?",
+                     in && in->label[0] ? in->label : "", (unsigned)(in ? in->version : 0));
+            set_text(sec_row_lbl[i], buf);
+            lv_obj_remove_flag(sec_rows[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(sec_rows[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_sec_sel >= n) s_sec_sel = n ? n - 1 : 0;
+    secs_highlight();
+    char b[96];
+    snprintf(b, sizeof(b), "%d stored (max %d)", n, DEVOS_SECRETS_MAX);
+    set_text(lbl_sec_note, b);
+    set_text(lbl_sec_security, devos_secrets_security_note());
+}
+
+static void secs_save(void)
+{
+    const char *name = lv_textarea_get_text(ta_sec_name);
+    const char *val = lv_textarea_get_text(ta_sec_value);
+    if (!name[0]) { devos_toast_show("Enter a reference name first", DEVOS_TOAST_WARN, 0); return; }
+    if (!val[0]) { devos_toast_show("Enter a value (the current one is never shown)", DEVOS_TOAST_WARN, 0); return; }
+    if (devos_secrets_set(name, val, name) != DEVOS_OK) {
+        devos_toast_show("Couldn't save the secret", DEVOS_TOAST_ERROR, 0);
+        return;
+    }
+    lv_textarea_set_text(ta_sec_value, "");
+    lv_textarea_set_text(ta_sec_name, "");
+    devos_toast_show("Secret saved", DEVOS_TOAST_OK, 0);
+    refresh_secrets();
+}
+
+static void secs_delete(void)
+{
+    if (s_sec_rows_n == 0) { devos_toast_show("No secret selected", DEVOS_TOAST_WARN, 0); return; }
+    const devos_secret_info_t *in = devos_secrets_at(s_sec_sel);
+    if (!in) return;
+    if (strcmp(s_sec_confirm, in->name) != 0) {       /* ask first: press Delete again */
+        snprintf(s_sec_confirm, sizeof(s_sec_confirm), "%s", in->name);
+        char m[96];
+        snprintf(m, sizeof(m), "Press Delete again to remove %s", in->name);
+        devos_toast_show(m, DEVOS_TOAST_WARN, 3000);
+        return;
+    }
+    s_sec_confirm[0] = '\0';
+    if (devos_secrets_delete(in->name) != DEVOS_OK) {
+        devos_toast_show("Couldn't delete it", DEVOS_TOAST_ERROR, 0);
+        return;
+    }
+    devos_toast_show("Secret deleted", DEVOS_TOAST_WARN, 0);
+    refresh_secrets();
+}
+
+static void secs_save_cb(lv_event_t *e) { LV_UNUSED(e); secs_save(); }
+static void secs_del_cb(lv_event_t *e) { LV_UNUSED(e); secs_delete(); }
+
+static void build_secrets_panel(lv_obj_t *pn)
+{
+    lv_obj_t *c = mk_card(pn, 0, 0, PANEL_W, 322, "JOBS SECRETS");
+    lv_obj_t *d = mk_label(c, &st_muted,
+        "Named credentials for Jobs. A job writes secret(\"name\") in a credential field; the value "
+        "is never shown here and is never part of the job source.");
+    lv_obj_set_width(d, PANEL_W - 40);
+    lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(d, 0, 26);
+
+    lbl_sec_security = mk_label(c, &st_muted, "");
+    lv_obj_set_width(lbl_sec_security, PANEL_W - 40);
+    lv_label_set_long_mode(lbl_sec_security, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_line_space(lbl_sec_security, 3, 0);
+    lv_obj_set_pos(lbl_sec_security, 0, 78);
+
+    ta_sec_name = lv_textarea_create(c);
+    lv_obj_add_style(ta_sec_name, &st_ta, 0);
+    lv_obj_add_style(ta_sec_name, &st_ta_focus, LV_STATE_FOCUSED);
+    lv_textarea_set_one_line(ta_sec_name, true);
+    lv_textarea_set_max_length(ta_sec_name, DEVOS_SECRET_NAME_MAX - 1);
+    lv_textarea_set_placeholder_text(ta_sec_name, "Reference name, e.g. health-token");
+    lv_obj_set_size(ta_sec_name, PANEL_W - 40, 44);
+    lv_obj_set_pos(ta_sec_name, 0, 150);
+    focus_add(SEC_SECRETS, &s_pf[SEC_SECRETS], ta_sec_name);
+
+    ta_sec_value = lv_textarea_create(c);
+    lv_obj_add_style(ta_sec_value, &st_ta, 0);
+    lv_obj_add_style(ta_sec_value, &st_ta_focus, LV_STATE_FOCUSED);
+    lv_textarea_set_one_line(ta_sec_value, true);
+    lv_textarea_set_password_mode(ta_sec_value, true);
+    lv_textarea_set_max_length(ta_sec_value, DEVOS_SECRET_VALUE_MAX - 1);
+    lv_textarea_set_placeholder_text(ta_sec_value, "Value (hidden)");
+    lv_obj_set_size(ta_sec_value, PANEL_W - 40, 44);
+    lv_obj_set_pos(ta_sec_value, 0, 202);
+    focus_add(SEC_SECRETS, &s_pf[SEC_SECRETS], ta_sec_value);
+
+    lv_obj_t *row = lv_obj_create(c);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, PANEL_W - 40, LV_SIZE_CONTENT);
+    lv_obj_set_pos(row, 0, 256);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 10, 0);
+    lv_obj_set_style_pad_all(row, 6, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    focus_add(SEC_SECRETS, &s_pf[SEC_SECRETS],
+              mk_btn(row, LV_SYMBOL_SAVE "  Save", &st_btn_primary, secs_save_cb, NULL, NULL));
+    focus_add(SEC_SECRETS, &s_pf[SEC_SECRETS],
+              mk_btn(row, LV_SYMBOL_TRASH "  Delete", &st_btn_danger, secs_del_cb, NULL, NULL));
+
+    c = mk_card(pn, 0, 334, PANEL_W, 300, "STORED REFERENCES");
+    lbl_sec_note = mk_label(c, &st_muted, "");
+    lv_obj_set_pos(lbl_sec_note, 0, 26);
+    lv_obj_t *list = lv_obj_create(c);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_pos(list, 0, 50);
+    lv_obj_set_size(list, PANEL_W - 40, 232);
+    lv_obj_set_style_pad_all(list, 2, 0);
+    lv_obj_set_style_pad_row(list, 2, 0);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    for (int i = 0; i < DEVOS_SECRETS_MAX; i++) {
+        lv_obj_t *r = lv_obj_create(list);
+        lv_obj_remove_style_all(r);
+        lv_obj_add_style(r, &st_row, 0);
+        lv_obj_add_style(r, &st_row_sel, LV_STATE_CHECKED);
+        lv_obj_set_size(r, PANEL_W - 52, 30);
+        lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
+        sec_row_lbl[i] = mk_label(r, &st_text, "");
+        lv_obj_set_pos(sec_row_lbl[i], 10, 6);
+        lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
+        sec_rows[i] = r;
+    }
+    s_sec_rows_n = 0;
+    s_sec_sel = 0;
+    s_sec_confirm[0] = '\0';
+}
+
+static bool secrets_handle_key(uint32_t key, uint8_t mods)
+{
+    devos_focus_t *f = &s_pf[SEC_SECRETS];
+    lv_obj_t *o = devos_focus_get(f);
+    if (o && lv_obj_check_type(o, &lv_textarea_class)) {   /* typing in a field */
+        if (devos_focus_key(f, key, mods)) return true;
+        if (key == LV_KEY_ESC) { leave_panel(); return true; }
+        return false;
+    }
+    if (key == LV_KEY_UP || key == LV_KEY_DOWN) {
+        if (s_sec_rows_n > 0) {
+            s_sec_sel = LV_CLAMP(0, s_sec_sel + (key == LV_KEY_DOWN ? 1 : -1), s_sec_rows_n - 1);
+            secs_highlight();
+        }
+        return true;
+    }
+    if (key == 'd' || key == 'D' || key == LV_KEY_DEL) { secs_delete(); return true; }
+    if (key == 'a' || key == 'A') {
+        lv_textarea_set_text(ta_sec_name, "");
+        lv_textarea_set_text(ta_sec_value, "");
+        devos_focus_set(f, ta_sec_name);
+        return true;
+    }
+    if (devos_focus_key(f, key, mods)) return true;
+    if (key == LV_KEY_ESC) { leave_panel(); return true; }
+    return false;
+}
+
+/* ======================================================================== */
 static void refresh_visible(void)
 {
     if (!screen || lv_obj_has_flag(screen, LV_OBJ_FLAG_HIDDEN)) return;
@@ -2066,6 +2263,7 @@ static void refresh_visible(void)
     case SEC_POWER:   refresh_power(); break;
     case SEC_TIME:    refresh_time(); break;
     case SEC_APPS:    refresh_apps(); break;
+    case SEC_SECRETS: refresh_secrets(); break;
     case SEC_SYSTEM:  refresh_system(); break;
     default: break;
     }
@@ -2132,6 +2330,8 @@ static const devos_command_t s_palette_cmds[] = {
       .hint = "Settings", .icon = LV_SYMBOL_BELL, .run = open_section_cmd, .ud = (void *)"time" },
     { .title = "Switch apps on or off", .keywords = "apps enable disable memory boot mask",
       .hint = "Settings", .icon = LV_SYMBOL_LIST, .run = open_section_cmd, .ud = (void *)"apps" },
+    { .title = "Jobs credentials and secrets", .keywords = "jobs secrets credentials tokens passwords bearer api key",
+      .hint = "Settings", .icon = LV_SYMBOL_EYE_CLOSE, .run = open_section_cmd, .ud = (void *)"secrets" },
     { .title = "System and firmware", .keywords = "system about version build firmware device",
       .hint = "Settings", .icon = LV_SYMBOL_SETTINGS, .run = open_section_cmd, .ud = (void *)"system" },
     { .title = "Check for updates", .keywords = "update upgrade ota firmware install",
@@ -2207,6 +2407,7 @@ static void settings_init(void)
     build_power_panel(panels[SEC_POWER]);
     build_time_panel(panels[SEC_TIME]);
     build_apps_panel(panels[SEC_APPS]);
+    build_secrets_panel(panels[SEC_SECRETS]);
     build_system_panel(panels[SEC_SYSTEM]);
     for (int i = 0; i < SEC_COUNT; i++) {
         lbl_hint[i] = mk_label(panels[i], &st_muted, "");
@@ -2293,6 +2494,9 @@ static void update_hint(void)
         case SEC_APPS:
             h = "Up / Down  move   Space  switch on / off   Enter  restart now   "
                 "Esc  sections (changes still apply next start)";
+            break;
+        case SEC_SECRETS:
+            h = "Tab  name / value / buttons   Enter  save   Up / Down  pick   A  new   D  delete   Esc  sections";
             break;
         default:
             h = "Up / Down / Left / Right  move   Enter  press   Esc  sections";
@@ -2484,7 +2688,9 @@ static bool panel_handle_key(uint32_t key, uint8_t mods)
         share_toggle(!lv_obj_has_state(sw_share, LV_STATE_CHECKED));
         return true;
     }
-    if (s_section == SEC_WIFI) {
+    if (s_section == SEC_SECRETS) {
+        if (secrets_handle_key(key, mods)) return true;
+    } else if (s_section == SEC_WIFI) {
         if (wifi_handle_key(key, mods)) return true;
     } else {
         devos_focus_t *f = &s_pf[s_section];
@@ -2583,6 +2789,15 @@ static const char *settings_shortcuts(void)
         "Left / Right\tChange the focused setting\n"
         "Space\tFlip a switch\n"
         "Enter\tOpen a list, press a button (Apps: restart now)\n"
+        "Apps\n"
+        "Space\tSwitch an app on or off\n"
+        "Enter\tRestart to apply\n"
+        "Jobs Secrets\n"
+        "Tab\tName / value fields, Save, Delete\n"
+        "Enter\tSave the named secret\n"
+        "Up / Down\tPick a stored reference\n"
+        "A\tNew reference (clears the fields)\n"
+        "D\tDelete the picked reference (asks again)\n"
         "Power\n"
         "Sleep / Restart / Shutdown\tButtons there; ask first (Enter confirms, Esc cancels)\n";
 }

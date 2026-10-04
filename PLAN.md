@@ -565,8 +565,10 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     simulator). The device key is generated on first use, never hardcoded. The engine resolves a
     credential immediately before a provider field uses it into a per-run scratch copy and wipes
     that copy right after the action starts (and at run end); a missing reference fails the run
-    with the reference name. Provisioning is by `devos_secrets_set()` or a
-    `/.devos/secrets.import` file (`name=value` lines, read once, sealed, then wiped and removed).
+    with the reference name. Provisioning is by **Settings > Jobs Secrets** (a reference name and
+    a hidden value; the stored list shows names and versions; Delete asks twice), by
+    `devos_secrets_set()`, or by a `/.devos/secrets.import` file (`name=value` lines, read once,
+    sealed, then wiped and removed).
     **Security statement, not a claim:** the blob is genuinely AEAD-encrypted, so a copy of the SD
     card alone is ciphertext; the device key in plain NVS is the weak link, so full at-rest
     protection needs NVS encryption. An `nvs_keys` partition is present (offset 0x12000) and
@@ -977,8 +979,10 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       explicitly **not** claimed.
       *Done:* the encrypted credential store (`devos_secrets`, ChaCha20-Poly1305 over a device key,
       `/.devos/secrets.enc` + NVS key, provisioning import, resolve/wipe) with `tools/secrets_test.c`
-      (73 checks); `secret("name")` resolved through a boot hook with a per-run scratch wiped after
-      each action (`tools/jobs_runtime_test.c`); an SD crash/power-loss recovery fixture
+      (73 checks) and a **Settings > Jobs Secrets** provisioning screen (add with a hidden value,
+      list names/versions, delete with a second-press confirm); `secret("name")` resolved through a
+      boot hook with a per-run scratch wiped after each action (`tools/jobs_runtime_test.c`); an SD
+      crash/power-loss recovery fixture
       (`tools/jobs_crash_test.c`, 56 checks) which also exposed and fixed a real gap - a torn but
       readable `catalog.json` did not fall back to `catalog.json.prev`; a mixed-workload soak
       (`tools/jobs_soak_test.c`, 12000 iterations, no leaked job/action slots); engine memory/stack
