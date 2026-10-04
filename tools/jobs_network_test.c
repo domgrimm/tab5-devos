@@ -41,6 +41,7 @@ void devos_probe_cancel(int handle) { (void)handle; }
 void devos_probe_release(int handle) { (void)handle; }
 
 void nd_dns_init(void);      /* internal init; avoids the whole netdiag stack */
+void nd_wol_init(void);
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
@@ -78,6 +79,7 @@ static void *dns_server(void *arg)
         }
         if (w == 0 || o >= n) continue;
         name[w] = '\0';
+        if (strcmp(name, "slow.test") == 0) usleep(400 * 1000);
         o++;                                            /* the root label */
         int qend = o + 4;
         if (qend > n) continue;
@@ -126,6 +128,7 @@ int main(void)
     while (!s_dns_port) usleep(5 * 1000);
 
     nd_dns_init();
+    nd_wol_init();
     jobs_network_register();
     CHECK(devos_actions_find("network.wol") != NULL);
     CHECK(devos_actions_find("network.dns") != NULL);
@@ -144,14 +147,17 @@ int main(void)
     CHECK(strcmp(res.outs[1].v.str.s, "127.0.0.1:9") == 0 && res.outs[2].v.str.len == 0);
     devos_action_release(h);
 
-    /* a malformed MAC and a hostname target are refused (no scheduler-blocking
-     * DNS resolution) */
+    /* a malformed MAC is refused; a hostname target is accepted and resolved
+     * on a worker (never the scheduler) */
     devos_value_t bad[2] = { vstr("not-a-mac"), vstr("127.0.0.1") };
     args.args = bad;
     CHECK(devos_action_start("network.wol", &args, NULL, &h) == DEVOS_ERR_INVALID_ARG);
-    devos_value_t host[2] = { vstr("aa:bb:cc:dd:ee:ff"), vstr("nas.local") };
+    devos_value_t host[2] = { vstr("aa:bb:cc:dd:ee:ff"), vstr("localhost") };
     args.args = host;
-    CHECK(devos_action_start("network.wol", &args, NULL, &h) == DEVOS_ERR_INVALID_ARG);
+    CHECK(devos_action_start("network.wol", &args, NULL, &h) == DEVOS_OK);
+    memset(&res, 0, sizeof(res));
+    CHECK(run(h, &res) == DEVOS_ACT_DONE);        /* sent depends on the resolver */
+    devos_action_release(h);
 
     /* DNS A query against the fake server */
     char srvip[48];
@@ -174,6 +180,19 @@ int main(void)
     memset(&res, 0, sizeof(res));
     CHECK(run(h, &res) == DEVOS_ACT_DONE);
     CHECK(res.outs[0].v.b == false && strcmp(res.outs[1].v.str.s, "NXDOMAIN") == 0 && res.outs[2].v.i == 0);
+    devos_action_release(h);
+
+    /* Jobs DNS admission: one lookup at a time (the engine pool is separate
+     * from the UI's singleton) */
+    devos_value_t sl[3] = { vstr("slow.test"), vstr(srvip), vstr("A") };
+    args.args = sl;
+    CHECK(devos_action_start("network.dns", &args, NULL, &h) == DEVOS_OK);
+    devos_action_handle_t h2;
+    devos_value_t ex[3] = { vstr("example.test"), vstr(srvip), vstr("A") };
+    args.args = ex;
+    CHECK(devos_action_start("network.dns", &args, NULL, &h2) == DEVOS_ERR_INVALID_STATE);
+    memset(&res, 0, sizeof(res));
+    CHECK(run(h, &res) == DEVOS_ACT_DONE && res.outs[0].v.b == true);
     devos_action_release(h);
 
     /* The UI singleton and a Jobs context run at the same time without either

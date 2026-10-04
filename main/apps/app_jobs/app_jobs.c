@@ -24,6 +24,7 @@
 #include "devos_icons.h"
 #include "devos_theme.h"
 #include "devos_toast.h"
+#include "devos_cmdpal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,7 @@
 #define STEP_H 30
 
 typedef enum { MODE_TEXT = 0, MODE_BUILDER } ui_mode_t;
-typedef enum { INSP_NONE = 0, INSP_ACTION, INSP_IF, INSP_SET, INSP_WAIT, INSP_CUSTOM } insp_t;
+typedef enum { INSP_NONE = 0, INSP_ACTION, INSP_IF, INSP_SET, INSP_WAIT, INSP_REPEAT, INSP_CUSTOM } insp_t;
 
 typedef struct {
     lv_obj_t *screen;
@@ -171,6 +172,8 @@ static void step_summary(const jobs_node_t *n, char *out, size_t cap)
         break;
     }
     case JN_IF: snprintf(out, cap, "if %s", jobs_build_expr_text(n->a)); break;
+    case JN_RUN: snprintf(out, cap, "run %s", n->u.str.s ? n->u.str.s : "?"); break;
+    case JN_RETURN: snprintf(out, cap, "return %s", jobs_build_expr_text(n->a)); break;
     case JN_REPEAT: snprintf(out, cap, "repeat %lld as %s { ... }", (long long)n->count,
                              n->u.str.s ? n->u.str.s : "i"); break;
     case JN_WAIT: { char d[24]; fmt_dur(n->u.i, d, sizeof(d)); snprintf(out, cap, "wait %s", d); break; }
@@ -321,9 +324,13 @@ static void builder_inspector(void)
         return;
     }
     if (node->kind == JN_REPEAT) {
-        s_ctx.insp = INSP_CUSTOM;
-        devos_w_set_text(s_ctx.lbl_custom, "Repeat block (read-only here) - edit it in Text (Sym+M).");
+        s_ctx.insp = INSP_REPEAT;
+        devos_w_set_text(s_ctx.lbl_custom, "Repeat: count (1-32) as index - body is edited in Text");
         set_visible(s_ctx.lbl_custom, true);
+        set_visible(s_ctx.ta_val, true);
+        char v[48];
+        snprintf(v, sizeof(v), "%lld as %s", (long long)node->count, node->u.str.s ? node->u.str.s : "i");
+        lv_textarea_set_text(s_ctx.ta_val, v);
         return;
     }
     if (!d || d->param_count == 0) {
@@ -431,6 +438,11 @@ static void builder_commit_value(void)
     } else if (s_ctx.insp == INSP_WAIT) {
         int64_t ms = parse_dur(val);
         if (ms > 0) jobs_build_set_wait(&s_ctx.build, node, ms);
+    } else if (s_ctx.insp == INSP_REPEAT) {
+        long long count = 0;
+        char idx[40] = "";
+        if (sscanf(val, "%lld as %39s", &count, idx) != 2 || !jobs_build_set_repeat(&s_ctx.build, node, (int64_t)count, idx))
+            { say("Repeat: write it as \"3 as i\" (count 1-32)"); return; }
     } else if (s_ctx.insp == INSP_ACTION) {
         const devos_action_descriptor_t *d = cur_action();
         if (!d || s_ctx.bparam >= d->param_count) return;
@@ -714,6 +726,35 @@ static lv_obj_t *mk_label(lv_obj_t *parent, const char *text, devos_w_kind_t kin
     return l;
 }
 
+/* ---- command palette ---- */
+static void cmd_new_job(void *ud)
+{
+    (void)ud;
+    devos_core_open_with("jobs", "new", NULL);
+}
+static const devos_command_t CMD_NEW = {
+    .title = "Jobs: New job", .keywords = "automation job new create add",
+    .hint = "Jobs", .icon = LV_SYMBOL_PLUS, .run = cmd_new_job,
+};
+
+static void cmd_pause_jobs(void *ud)
+{
+    (void)ud;
+    devos_jobs_set_paused(!devos_jobs_paused());
+    devos_toast_show(devos_jobs_paused() ? "Automatic jobs paused" : "Automatic jobs resumed",
+                     DEVOS_TOAST_OK, 0);
+}
+static const char *cmd_pause_label(void *ud)
+{
+    (void)ud;
+    return devos_jobs_paused() ? "Jobs: Resume automatic" : "Jobs: Pause automatic";
+}
+static const devos_command_t CMD_PAUSE = {
+    .title = "Jobs: Pause automatic", .label = cmd_pause_label,
+    .keywords = "automation jobs pause resume hold stop", .hint = "Jobs",
+    .icon = LV_SYMBOL_PAUSE, .run = cmd_pause_jobs,
+};
+
 static void jobs_init(void)
 {
     lv_obj_t *scr = s_ctx.screen = devos_w_screen(&s_desc);
@@ -876,6 +917,8 @@ static void jobs_init(void)
     load_selected();
     set_mode(MODE_BUILDER);                 /* Builder is the default */
     devos_theme_add_listener(steps_theme_cb, NULL);
+    devos_cmdpal_add(&CMD_NEW);
+    devos_cmdpal_add(&CMD_PAUSE);
     say("Builder: pick a step, edit its settings, Sym+U adds a step. Sym+M for Text.");
     lv_timer_create(tick_cb, 250, NULL);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_HIDDEN);
@@ -885,6 +928,12 @@ static void jobs_show(void)
 {
     if (!s_ctx.screen) return;
     lv_obj_remove_flag(s_ctx.screen, LV_OBJ_FLAG_HIDDEN);
+    /* An intent may ask for a new job (the command palette does). */
+    char action[24] = "", arg[64] = "";
+    if (devos_core_take_intent("jobs", action, sizeof(action), arg, sizeof(arg)) &&
+        strcmp(action, "new") == 0) {
+        act_new();
+    }
     refresh_list();
     load_selected();
     if (s_ctx.mode == MODE_BUILDER) set_mode(MODE_BUILDER);

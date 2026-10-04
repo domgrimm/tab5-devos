@@ -38,6 +38,7 @@ bool devos_json_member_num(const char *obj, const char *end, const char *key, do
  * escaped); decode it with devos_json_parse_str. */
 typedef enum {
     DEVOS_JSON_NULL = 0, DEVOS_JSON_BOOL, DEVOS_JSON_INT, DEVOS_JSON_NUM, DEVOS_JSON_STR,
+    DEVOS_JSON_RAW,         /* an object/array; `s` spans the raw JSON text */
 } devos_json_kind_t;
 
 typedef struct {
@@ -45,12 +46,13 @@ typedef struct {
     bool b;
     int64_t i;
     double n;
-    const char *s;          /* STR: opening quote into the source */
-    uint32_t len;           /* STR: bytes including both quotes */
+    const char *s;          /* STR/RAW: into the source */
+    uint32_t len;           /* STR: bytes including both quotes; RAW: the span */
 } devos_json_val_t;
 
 /* Resolve a dot-separated path with optional array indexes ("a.b[0].c",
- * "[2].name"). Objects and arrays resolve to null; a missing member or a
+ * "[2].name"). An object or array resolves as DEVOS_JSON_RAW (its own JSON
+ * text, so it can be logged or fed to another json_get); a missing member or a
  * malformed/over-long path returns false. Bounded path, index and document
  * walk; not full JSONPath. */
 bool devos_json_path(const char *js, size_t len, const char *path, devos_json_val_t *out);

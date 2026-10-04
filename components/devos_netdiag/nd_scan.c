@@ -542,6 +542,7 @@ void nd_scan_init(void) { nd_mutex_create(&S.mx); }
 void nd_ping_init(void);
 void nd_dns_init(void);
 void nd_probe_init(void);
+void nd_wol_init(void);
 
 void devos_netdiag_init(void)
 {
@@ -552,4 +553,5 @@ void devos_netdiag_init(void)
     nd_dns_init();
     nd_scan_init();
     nd_probe_init();
+    nd_wol_init();
 }

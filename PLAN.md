@@ -499,14 +499,18 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     <dur>`, `daily`/`weekdays` `"HH:MM"`, `event "topic"(...)`), an optional `policy(timeout,
     overlap, cooldown)`, then typed action calls with named arguments and an optional `as name`
     output, `set`, `if`/`else`, `wait`, and a bounded `repeat <1..32> as <index> { ... }` (the
-    index is a read-only integer; loops are cap by the 256-step budget and the run deadline).
+    index is a read-only integer; loops are capped by the 256-step budget and the run deadline).
     Values are null / bool / int / number / string / duration; expressions use
     `! && || == != < <= > >=`; builtins `contains`, `json_get` and `secret`. `json_get(body, path)`
     is a narrow reader: dot-separated object members with optional `[index]` array access
-    (`nested.ok`, `list[1]`), returning a typed scalar or null when the path is missing; it is not
-    full JSONPath. Strings may interpolate `${reference}`. Job calls (`run`/`call`) are rejected
-    until a cycle/depth/cancel design exists. `tools/jobs_parse_test.c` covers the grammar,
-    diagnostics, limits, the opaque repeat and the canonical round trip.
+    (`nested.ok`, `list[1]`), returning a typed scalar or an object/array's raw JSON text (so it
+    can be logged or fed to another `json_get`), or null when the path is missing; it is not full
+    JSONPath. Strings may interpolate `${reference}`. A job may declare typed inputs
+    (`job "name"(host: string, n: int) { ... }`) and yield a value with `return expr;`; another job
+    calls it with `run "name"(host: "nas", n: 3) as ok;`. Calls are bounded (depth 4, indirect
+    cycles refused), run inline on the caller's frame stack with the caller's time/step budget and
+    cancellation, and input types are checked at the call. `tools/jobs_parse_test.c` covers the
+    grammar, diagnostics, limits, repeat, calls and the canonical round trip.
 *   **Action contract (`devos_actions`).** Static immutable schemas (id, version, provider,
     typed parameters with required/default/bounds/enum/credential capability, typed outputs,
     effect class, retry safety) registered from a boot provider hook, not from an app's LVGL
@@ -545,14 +549,15 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     re-enables an app). A `docker.container_state_changed` event stays deferred until its
     polling/freshness semantics are defined; jobs poll `docker.inspect` in the meantime.
 *   **Secondary network actions (`network.wol`, `network.dns`).** `network.wol` sends a magic
-    packet with a per-call result (`sent`, `target`, `error`); the target must be empty
-    (broadcast) or an IPv4 literal, so no hostname resolve ever blocks the scheduler. `network.dns`
-    runs a request-specific DNS lookup through a small ticket pool in `devos_netdiag`
-    (`devos_dns_ctx_start/poll/cancel/release`): each lookup owns its task, socket and result, so
-    a job never disturbs an in-progress Network UI lookup. The `server` field accepts `ip` or
-    `ip:port`; outputs are `ok`, `rcode`, `count`, `first`, `error`. Both reuse the shared socket
-    routing (so VPN routing applies). `tools/jobs_network_test.c` drives a fake DNS server and a
-    concurrent UI lookup.
+    packet with a per-call result (`sent`, `target`, `error`); the target may be empty (broadcast),
+    a host name, an IPv4 address or a directed broadcast, and the resolution runs on a worker so
+    the scheduler task is never blocked. `network.dns` runs a request-specific DNS lookup through a
+    small ticket pool in `devos_netdiag` (`devos_dns_ctx_start/poll/cancel/release`): each lookup
+    owns its task, socket and result, so a job never disturbs an in-progress Network UI lookup.
+    The `server` field accepts `ip` or `ip:port`; outputs are `ok`, `rcode`, `count`, `first`,
+    `error`. Jobs admits one DNS lookup at a time (the engine pool holds two). Both reuse the
+    shared socket routing (so VPN routing applies). `tools/jobs_network_test.c` drives a fake DNS
+    server, an async WoL (including a hostname target) and a concurrent UI lookup.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -567,19 +572,27 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     catalog with previous fallback; an invalid external edit stays an inactive candidate and the
     last-good revision keeps running. A Core 1 storage worker owns source/history I/O.
 *   **Limits (initial, to be measured).** 32 jobs, 16 KiB source, 128 nodes, depth 8, 32
-    variables, 4 active runs (1/job), 2 Jobs HTTP tickets, 1 probe, 60 s default run (5 min max),
-    256 steps, 128 trace entries/run, 50 history summaries/job. Large buffers live in PSRAM;
+    variables, 4 active runs (1/job), 2 Jobs HTTP tickets, 1 probe, 1 Jobs DNS lookup (engine
+    pool 2), repeat count 1-32, job call depth 4, 8 input parameters/job, 60 s default run (5 min
+    max), 256 steps, 128 trace entries/run, 50 history summaries/job. Large buffers live in PSRAM;
     engine headers carry no LVGL so the parser is host-tested.
+    **Static target footprint** (`idf.py size`, `esp32p4`, this revision): app image 2,606,436 B
+    (35% of the 4 MB partition free); DIRAM 322,781 / 576,464 B used (56.0%, 253,683 B free at
+    link time, above the 120 KB runtime reserve), External RAM (PSRAM) BSS 1,829,616 B (2.7%). The
+    Jobs engine (`libdevos_jobs.a`) is ~229 KB flash / 5 KB DRAM; `libdevos_netdiag.a` ~91 KB flash
+    / 2.5 KB DRAM. On-device heap/stack high-water marks and a soak remain Phase 10.
 *   **Lifecycle.** The engine starts only when the Jobs app is enabled (`START_ENGINE`), stays off
     with Settings > Apps, keeps running while the app is hidden or the screen is off, and getters
     are safe before init. `README.md`, `AGENTS.md` and `main/apps/app_template/` document the
     required provider/event hooks for future apps.
 
-**Status:** Phases 0-9 are implemented and host-tested: the language (model / parser / validator /
-serializer), the action and event primitives, the scheduler and interpreter, durable storage and
-recovery, the Builder + Text GUI, calendar and system-event triggers, reliable MQTT, Docker
-background operations, and the advanced language (`repeat`, `json_get`) plus the `network.wol` /
-`network.dns` actions. Phase 10 (target hardening) follows the roadmap below.
+**Status:** Phases 0-9 are implemented and host-tested, including the Phase 9 follow-up that closed
+its deferrals: the language (model / parser / validator / serializer), the action and event
+primitives, the scheduler and interpreter, durable storage and recovery, the Builder + Text GUI,
+calendar and system-event triggers, reliable MQTT, Docker background operations, the advanced
+language (`repeat`, `json_get`, reusable typed job calls) and the `network.wol` / `network.dns`
+actions. Phase 10 covers the remaining on-device validation (heap/stack high-water marks, a soak,
+SD recovery, verified encrypted credentials); a static size measurement is recorded in section 10.
 
 ---
 
@@ -919,25 +932,36 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       example round-trip, inspect success / not-found / transport error, accepted-vs-unknown, two
       commands never overwriting, the config snapshot, queue saturation, the app gate, the UI
       note, cancellation and exact release.
-- [x] **Phase 9** - advanced language and secondary actions. The interpreter runs a bounded
-      `repeat <1..32> as <index> { ... }` on an explicit frame (`FRAME_REPEAT`), binding the
-      read-only integer index each pass; the 256-step budget and run deadline cap loops, and the
-      validator rejects a bad count, a reassigned index and a duplicate loop variable. The repeat
-      node carries its own `count` field (it needs a count and a name, which the shared union could
-      not hold). `json_get(body, "a.b[1].c")` is a narrow dot-path reader added to `devos_json`
-      (dot members + optional array indexes, bounded path/index/walk, missing -> null, strings
-      unescaped into the run pool) - not full JSONPath. The Builder shows a repeat as one opaque,
-      read-only row (it does not flatten the body) and preserves its source while surrounding steps
-      are added, edited, moved or deleted. `network.wol` (per-call `sent`/`target`/`error`, IPv4 or
-      broadcast only so no DNS blocks the scheduler) and `network.dns` (a ticket-pool context API
-      in `devos_netdiag`, independent of the UI's singleton) register as actions; the `server`
-      field takes `ip[:port]`. Job calls (`run`/`call`) are still rejected with a clear diagnostic
-      until a cycle/depth/cancel design exists. Tests: `tools/jobs_parse_test.c` (46),
-      `tools/jobs_runtime_test.c` (54: repeat, read-only index, step budget, json_get),
-      `tools/jobs_build_test.c` (81: opaque repeat), `tools/jobs_network_test.c` (22: WoL, DNS,
-      concurrent UI + Jobs lookups).
-- [ ] **Phase 10** - target hardening: SRAM/PSRAM/stack/size measurements, mixed-workload soak, SD
-      crash/recovery, verified encrypted credential persistence.
+- [x] **Phase 9** - advanced language and secondary actions (and the follow-up that closed its
+      deferrals). The interpreter runs a bounded `repeat <1..32> as <index> { ... }` on an explicit
+      frame (`FRAME_REPEAT`), binding the read-only integer index each pass; the 256-step budget and
+      run deadline cap loops, and the validator rejects a bad count, a reassigned index and a
+      duplicate loop variable. The repeat node carries its own `count` field (it needs a count and
+      a name, which the shared union could not hold). `json_get(body, "a.b[1].c")` is a narrow
+      dot-path reader added to `devos_json` (dot members + optional array indexes, bounded
+      path/index/walk, missing -> null, strings unescaped into the run pool, objects/arrays as
+      their raw JSON text so they can be logged or fed to another `json_get`) - not full JSONPath.
+      The Builder shows a repeat as one row: count and index are editable (`count as index`, body
+      read-only, edited in Text), the body is not flattened, and its source is preserved while
+      surrounding steps change. **Reusable job calls:** a job declares typed inputs
+      (`job "name"(host: string, n: int)`) and returns a value (`return expr;`); another job calls
+      it with `run "name"(host: "nas", n: 3) as ok;`. Calls run inline on the caller's frame stack
+      (`FRAME_CALL`) with a saved/restored variable scope, the caller's time and step budget and
+      cancellation, name/id resolution that refuses ambiguity, input type checks, a depth cap
+      (`JOBS_MAX_CALL_DEPTH`) and indirect-cycle detection; the callee AST is retained for the
+      call's lifetime. `network.wol` (per-call `sent`/`target`/`error`) and `network.dns` (a
+      ticket-pool context API in `devos_netdiag`, independent of the UI's singleton) register as
+      actions; both resolve on their own worker (hostnames are fine, the scheduler is never
+      blocked), the DNS `server` takes `ip[:port]`, and Jobs admits one DNS lookup at a time. The
+      Jobs command palette gains "New job" and a stateful "Pause/Resume automatic" command.
+      Tests: `tools/jobs_parse_test.c` (60: repeat, json_get, calls, round trips),
+      `tools/jobs_runtime_test.c` (83: repeat, read-only index, step budget, json_get raw/array,
+      calls + child return, missing input, cycle, depth cap), `tools/jobs_build_test.c` (90:
+      editable repeat, opaque body, call preservation), `tools/jobs_network_test.c` (26: async
+      WoL incl. a hostname target, DNS success/NXDOMAIN/admission, concurrent UI + Jobs lookups).
+- [ ] **Phase 10** - target hardening: on-device heap/stack high-water marks and a mixed-workload
+      soak (a static `idf.py size` pass is recorded in section 10), SD crash/recovery, verified
+      encrypted credential persistence.
 
 ---
 

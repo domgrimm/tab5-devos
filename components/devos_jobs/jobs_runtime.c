@@ -209,6 +209,20 @@ static bool eval_call(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, c
             out->v.str.len = (uint32_t)dl;
             return true;
         }
+        case DEVOS_JSON_RAW: {
+            /* an object/array: its own JSON text, so it can be logged or fed to
+             * another json_get without a second parser */
+            size_t room = sizeof(r->strpool) - r->strpool_used;
+            if ((size_t)jv.len + 1 > room) { snprintf(err, errcap, "json_get value too long"); return false; }
+            char *dst = r->strpool + r->strpool_used;
+            if (jv.len) memcpy(dst, jv.s, jv.len);
+            dst[jv.len] = '\0';
+            r->strpool_used += jv.len + 1;
+            out->type = DEVOS_VAL_STR;
+            out->v.str.s = dst;
+            out->v.str.len = jv.len;
+            return true;
+        }
         default: out->type = DEVOS_VAL_NULL; return true;
         }
     }
@@ -398,6 +412,12 @@ void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t 
     r->frames[0].block = body;
     r->frames[0].cursor = body ? body->a : NULL;
     r->nframes = 1;
+    /* Seed the call chain with this job so a direct/indirect self-call is a
+     * cycle even before any child runs (PLAN.md 9.3). */
+    if (j->name[0]) {
+        snprintf(r->call_chain[0], sizeof(r->call_chain[0]), "%s", j->name);
+        r->call_depth = 1;
+    }
     /* Event-triggered run: keep the triggering event so the body can read
      * event.topic/payload/seq/truncated (the trigger `where` already ran). A
      * manual run of an event job gets a synthetic event with just the topic. */
@@ -412,9 +432,47 @@ void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t 
     }
 }
 
+/* Release any callee ASTs a run still holds (job calls). Safe to call twice;
+ * finish_run runs it before releasing the parent AST. */
+static void release_calls(jobs_run_t *r)
+{
+    for (int i = 0; i < r->nframes; i++)
+        if (r->frames[i].kind == FRAME_CALL && r->frames[i].call_ast) {
+            jobs_ast_release((jobs_ast_t *)r->frames[i].call_ast);
+            r->frames[i].call_ast = NULL;
+        }
+}
+
+/* Resolve a run-target by display name (preferred) or id. Returns NULL with
+ * two or more matches, so an ambiguous name never silently calls the wrong job. */
+static jobs_job_t *find_callable(const char *name)
+{
+    if (!name || !name[0]) return NULL;
+    int names = 0, ids = 0;
+    jobs_job_t *by_name = NULL, *by_id = NULL;
+    for (int i = 0; i < g_jobs.count; i++) {
+        jobs_job_t *j = &g_jobs.jobs[i];
+        if (!j->ast || !j->ast->root) continue;
+        if (j->name[0] && strcmp(j->name, name) == 0) { by_name = j; names++; }
+        if (strcmp(j->id, name) == 0) { by_id = j; ids++; }
+    }
+    if (names == 1) return by_name;
+    if (names > 1) return NULL;
+    return ids == 1 ? by_id : NULL;
+}
+
+static bool val_type_ok(devos_val_type_t got, uint8_t want)
+{
+    if (got == want) return true;
+    if ((want == DEVOS_VAL_INT || want == DEVOS_VAL_NUM) &&
+        (got == DEVOS_VAL_INT || got == DEVOS_VAL_NUM)) return true;
+    return false;
+}
+
 static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
 {
     jobs_run_t *r = &j->run;
+    release_calls(r);
     r->active = false;
     r->finished = true;
     r->ok = ok;
@@ -486,6 +544,23 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
             nf->kind = FRAME_BLOCK;
             nf->block = rep->a;
             nf->cursor = rep->a ? rep->a->a : NULL;
+            continue;
+        }
+        if (f->kind == FRAME_CALL) {
+            /* The callee body ended (a `return` left its value, or it fell off
+             * the end -> null). Restore the caller's scope, bind the output, and
+             * drop the callee AST reference. */
+            devos_value_t v;
+            if (r->call_value_valid) { v = r->call_value; r->call_value_valid = false; }
+            else v.type = DEVOS_VAL_NULL;
+            r->nvars = f->var_mark;
+            if (f->out_name && f->out_name[0]) {
+                char cerr[64];
+                if (!var_set(r, f->out_name, &v, cerr, sizeof(cerr))) { finish_run(j, false, cerr, now_ms); return; }
+            }
+            if (f->call_ast) jobs_ast_release((jobs_ast_t *)f->call_ast);
+            if (r->call_depth > 0) r->call_depth--;
+            r->nframes--;
             continue;
         }
         if (f->kind == FRAME_ACTION) {
@@ -583,6 +658,69 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
                 nf->iter = 0;
             }
             break;
+        case JN_RUN: {
+            jobs_job_t *callee = find_callable(s->u.str.s);
+            if (!callee) { finish_run(j, false, "run: no unique job by that name", now_ms); return; }
+            if (r->call_depth >= JOBS_MAX_CALL_DEPTH) { finish_run(j, false, "run: too deep", now_ms); return; }
+            const char *cname = callee->name[0] ? callee->name : callee->id;
+            for (int i = 0; i < r->call_depth; i++)
+                if (strcmp(r->call_chain[i], cname) == 0) { finish_run(j, false, "run: cycle", now_ms); return; }
+            const jobs_node_t *params = callee->ast->root->d;
+            int mark = r->nvars;
+            devos_value_t vals[JOBS_MAX_PARAMS];
+            const jobs_node_t *plist[JOBS_MAX_PARAMS];
+            int np = 0;
+            for (const jobs_node_t *p = params; p; p = p->next) {
+                if (np >= JOBS_MAX_PARAMS) { finish_run(j, false, "run: too many parameters", now_ms); return; }
+                const jobs_node_t *arg = NULL;
+                for (const jobs_node_t *a = s->a; a; a = a->next)
+                    if (a->kind == JN_ARG && a->u.str.s && strcmp(a->u.str.s, p->u.str.s) == 0) { arg = a; break; }
+                if (!arg) { finish_run(j, false, "run: missing input", now_ms); return; }
+                if (!eval(r, arg->a, &vals[np], err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+                if (!val_type_ok(vals[np].type, p->sub)) { finish_run(j, false, "run: input type mismatch", now_ms); return; }
+                plist[np++] = p;
+            }
+            for (const jobs_node_t *a = s->a; a; a = a->next) {
+                if (a->kind != JN_ARG) continue;
+                bool known = false;
+                for (const jobs_node_t *p = params; p; p = p->next)
+                    if (p->u.str.s && a->u.str.s && strcmp(p->u.str.s, a->u.str.s) == 0) known = true;
+                if (!known) { finish_run(j, false, "run: unknown input", now_ms); return; }
+            }
+            if (r->nframes + 2 > JOBS_MAX_FRAMES) { finish_run(j, false, "run: too deep", now_ms); return; }
+            const jobs_ast_t *cast = callee->ast;
+            jobs_ast_retain((jobs_ast_t *)cast);
+            jobs_frame_t *cf = &r->frames[r->nframes++];
+            cf->kind = FRAME_CALL;
+            cf->call_ast = cast;
+            cf->var_mark = mark;
+            cf->out_name = s->u.str.s2;
+            snprintf(r->call_chain[r->call_depth], sizeof(r->call_chain[0]), "%s", cname);
+            r->call_depth++;
+            for (int i = 0; i < np; i++) {
+                if (!var_set(r, plist[i]->u.str.s, &vals[i], err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+            }
+            const jobs_node_t *cbody = cast->root->c;
+            jobs_frame_t *bf = &r->frames[r->nframes++];
+            bf->kind = FRAME_BLOCK;
+            bf->block = cbody;
+            bf->cursor = cbody ? cbody->a : NULL;
+            break;
+        }
+        case JN_RETURN: {
+            devos_value_t v;
+            if (!eval(r, s->a, &v, err, sizeof(err))) { finish_run(j, false, err, now_ms); return; }
+            /* Unwind the child frames; a `return` at the top level ends the run. */
+            while (r->nframes > 1 && r->frames[r->nframes - 1].kind != FRAME_CALL) {
+                jobs_frame_t *top = &r->frames[r->nframes - 1];
+                if (top->kind == FRAME_ACTION) { devos_action_cancel(top->op); devos_action_release(top->op); }
+                r->nframes--;
+            }
+            if (r->nframes <= 1) { finish_run(j, true, "ok", now_ms); return; }
+            r->call_value = v;
+            r->call_value_valid = true;
+            break;                                  /* the FRAME_CALL is handled next */
+        }
         case JN_BLOCK:
             if (r->nframes >= JOBS_MAX_FRAMES) { finish_run(j, false, "too deeply nested", now_ms); return; }
             {

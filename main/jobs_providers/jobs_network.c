@@ -14,12 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef ESP_PLATFORM
-#include <lwip/inet.h>
-#else
-#include <arpa/inet.h>
-#endif
-
 typedef struct {
     int handle;
     devos_value_t outs[4];
@@ -106,55 +100,71 @@ static const devos_action_descriptor_t PING_D = {
 
 /* ---- network.wol ---- */
 typedef struct {
+    int ticket;
+    bool done;
+    bool ok;
     devos_value_t outs[3];
     char target[64];
     char error[96];
 } wol_op_t;
-
-static bool ip_or_empty(const char *s)
-{
-    if (!s || !s[0]) return true;
-    struct in_addr a;
-    return inet_aton(s, &a) != 0;
-}
 
 static devos_err_t wol_start(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op)
 {
     (void)ctx;
     const char *m = arg_str(args, 0);
     const char *tgt = arg_str(args, 1);
-    if (!ip_or_empty(tgt)) return DEVOS_ERR_INVALID_ARG;   /* no scheduler-blocking DNS */
     uint8_t mac[6];
     char perr[96] = "";
     if (devos_wol_parse_mac(m, mac, perr, sizeof(perr)) != 0) return DEVOS_ERR_INVALID_ARG;
+    int t = devos_wol_submit(mac, tgt);
+    if (t <= 0) return DEVOS_ERR_INVALID_STATE;           /* no free slot */
     wol_op_t *o = calloc(1, sizeof(*o));
-    if (!o) return DEVOS_ERR_NO_MEM;
-    char terr[96] = "";
-    int rc = devos_wol_send_ex(mac, tgt, o->target, sizeof(o->target), terr, sizeof(terr));
-    if (rc != 0) snprintf(o->error, sizeof(o->error), "%s", terr[0] ? terr : "send failed");
-    o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = rc == 0;
-    o->outs[1].type = DEVOS_VAL_STR;  o->outs[1].v.str.s = o->target; o->outs[1].v.str.len = (uint32_t)strlen(o->target);
-    o->outs[2].type = DEVOS_VAL_STR;  o->outs[2].v.str.s = o->error;  o->outs[2].v.str.len = (uint32_t)strlen(o->error);
+    if (!o) { devos_wol_release(t); return DEVOS_ERR_NO_MEM; }
+    o->ticket = t;
     *op = o;
     return DEVOS_OK;
 }
 static devos_err_t wol_poll(void *op, devos_action_state_t *state, devos_action_result_t *result)
 {
     wol_op_t *o = op;
+    if (!o->done) {
+        bool ok = false;
+        char target[64], err[96];
+        int rc = devos_wol_poll(o->ticket, &ok, target, sizeof(target), err, sizeof(err));
+        if (rc < 0) { *state = DEVOS_ACT_FAILED; return DEVOS_OK; }
+        if (rc == 0) { *state = DEVOS_ACT_PENDING; return DEVOS_OK; }
+        o->ok = ok;
+        snprintf(o->target, sizeof(o->target), "%s", target);
+        snprintf(o->error, sizeof(o->error), "%s", err);
+        o->done = true;
+    }
+    o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = o->ok;
+    o->outs[1].type = DEVOS_VAL_STR;  o->outs[1].v.str.s = o->target; o->outs[1].v.str.len = (uint32_t)strlen(o->target);
+    o->outs[2].type = DEVOS_VAL_STR;  o->outs[2].v.str.s = o->error;  o->outs[2].v.str.len = (uint32_t)strlen(o->error);
     result->outs = o->outs;
     result->out_count = 3;
     *state = DEVOS_ACT_DONE;
     return DEVOS_OK;
 }
-static devos_err_t wol_cancel(void *op) { (void)op; return DEVOS_OK; }
-static void wol_release(void *op) { free(op); }
+static devos_err_t wol_cancel(void *op)
+{
+    wol_op_t *o = op;
+    devos_wol_cancel(o->ticket);
+    return DEVOS_OK;
+}
+static void wol_release(void *op)
+{
+    wol_op_t *o = op;
+    devos_wol_release(o->ticket);
+    free(o);
+}
 static const devos_action_ops_t WOL_OPS = { wol_start, wol_poll, wol_cancel, wol_release, NULL };
 
 static const devos_action_param_t WOL_P[] = {
     { .name = "mac", .type = DEVOS_VAL_STR, .required = true, .expression = true, .max_len = 32,
       .help = "aa:bb:cc:dd:ee:ff (or a plain hex run)" },
     { .name = "target", .type = DEVOS_VAL_STR, .expression = true, .max_len = 64,
-      .help = "empty = broadcast; else an IPv4 address or directed broadcast" },
+      .help = "empty = broadcast; else a host, IPv4 address or directed broadcast" },
 };
 static const devos_action_out_t WOL_O[] = {
     { .name = "sent", .type = DEVOS_VAL_BOOL },
@@ -170,6 +180,9 @@ static const devos_action_descriptor_t WOL_D = {
 };
 
 /* ---- network.dns ---- */
+#define JOBS_DNS_MAX_ACTIVE 1   /* one Jobs lookup at a time; the engine pool is 2 */
+static int s_dns_active;
+
 typedef struct {
     int ticket;
     bool done;
@@ -198,6 +211,7 @@ static uint16_t dns_type_of(const char *s)
 static devos_err_t dns_start(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op)
 {
     (void)ctx;
+    if (s_dns_active >= JOBS_DNS_MAX_ACTIVE) return DEVOS_ERR_INVALID_STATE;
     const char *name = arg_str(args, 0);
     if (!name || !name[0]) return DEVOS_ERR_INVALID_ARG;
     const char *server = arg_str(args, 1);
@@ -207,6 +221,7 @@ static devos_err_t dns_start(const devos_action_args_t *args, const devos_action
     dns_op_t *o = calloc(1, sizeof(*o));
     if (!o) { devos_dns_ctx_release(ticket); return DEVOS_ERR_NO_MEM; }
     o->ticket = ticket;
+    s_dns_active++;
     *op = o;
     return DEVOS_OK;
 }
@@ -246,6 +261,7 @@ static void dns_release(void *op)
 {
     dns_op_t *o = op;
     devos_dns_ctx_release(o->ticket);
+    if (s_dns_active > 0) s_dns_active--;
     free(o);
 }
 static const devos_action_ops_t DNS_OPS = { dns_start, dns_poll, dns_cancel, dns_release, NULL };

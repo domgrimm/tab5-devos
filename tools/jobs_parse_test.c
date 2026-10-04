@@ -203,6 +203,8 @@ static void test_parse_errors(void)
         { "version 1;\njob \"x\" { trigger manual; }\n}\n", "unexpected text" },
         { "job \"x\" { trigger manual; }\n", "version" },
         { "version 1;\njob \"x\" { system.log(message: \"a\"); }\n", "trigger" },
+        { "version 1;\njob \"x\" { trigger manual; run (); }\n", "expected a job name" },
+        { "version 1;\njob \"x\"(a: integer) { trigger manual; }\n", "unknown parameter type" },
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         jobs_ast_t *ast = jobs_parse(bad[i].src, strlen(bad[i].src), NULL);
@@ -232,8 +234,13 @@ static void test_validate_errors(void)
         { "version 1;\njob \"x\" { trigger manual; repeat 99 as i { system.log(message: \"x\"); } }\n", "between 1 and 32" },
         { "version 1;\njob \"x\" { trigger manual; repeat 3 as i { set i = 5; } }\n", "read-only" },
         { "version 1;\njob \"x\" { trigger manual; repeat 3 as i { repeat 2 as i { system.log(message: \"x\"); } } }\n", "already defined" },
-        { "version 1;\njob \"x\" { trigger manual; run(job: \"other\"); }\n", "job calls" },
         { "version 1;\njob \"x\" { trigger manual; set v = json_get(\"a\", i); }\n", "literal string" },
+        { "version 1;\njob \"x\"(a: int, a: string) { trigger manual; }\n", "duplicate parameter" },
+        { "version 1;\njob \"x\"(a: int) { trigger manual; set a = 2; }\n", "read-only" },
+        { "version 1;\njob \"x\" { trigger manual; run \"S\"(a: 1, a: 2) as v; }\n", "duplicate input" },
+        { "version 1;\njob \"x\" { trigger manual; run \"S\"() as v; run \"T\"() as v; }\n", "already defined" },
+        { "version 1;\njob \"x\" { trigger manual; network.ping(host: \"a\") as p; return p; }\n", "is an output" },
+        { "version 1;\njob \"x\" { trigger manual; return secret(\"t\"); }\n", "cannot return a secret" },
         { "version 1;\njob \"x\" { trigger daily \"25:00\"; }\n", "HH:MM" },
         { "version 1;\njob \"x\" { trigger manual; system.log(message: \"a\", message: \"b\"); }\n", "duplicate argument" },
     };
@@ -294,6 +301,49 @@ static void test_repeat_json(void)
     }
 }
 
+static void test_calls(void)
+{
+    const char *SUB =
+        "version 1;\n"
+        "job \"Sub\"(host: string, n: int, d: duration, b: boolean) {\n"
+        "    trigger manual;\n"
+        "    network.ping(host: host, timeout: d) as p;\n"
+        "    return p.ok;\n"
+        "}\n";
+    jobs_ast_t *ast = pv(SUB);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  sub: %s\n", ast->diag[i].msg);
+    if (ast) {
+        char out1[1024], out2[1024];
+        size_t n1 = jobs_serialize(ast, out1, sizeof(out1));
+        CHECK(n1 > 0 && strstr(out1, "job \"Sub\"(host: string, n: int, d: duration, b: boolean)") != NULL);
+        jobs_ast_t *b = pv(out1);
+        CHECK(b && b->diag_count == 0);
+        if (b) {
+            size_t n2 = jobs_serialize(b, out2, sizeof(out2));
+            CHECK(n2 == n1 && strcmp(out1, out2) == 0);
+            jobs_ast_free(b);
+        }
+        jobs_ast_free(ast);
+    }
+    const char *CALLER =
+        "version 1;\n"
+        "job \"Main\" {\n"
+        "    trigger manual;\n"
+        "    run \"Sub\"(host: \"nas.local\", n: 3, d: 2s, b: true) as ok;\n"
+        "    if ok { system.log(message: \"up\"); } else { system.log(message: \"down\"); }\n"
+        "}\n";
+    ast = pv(CALLER);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  caller: %s\n", ast->diag[i].msg);
+    if (ast) {
+        char o[1024];
+        size_t n = jobs_serialize(ast, o, sizeof(o));
+        CHECK(n > 0 && strstr(o, "run \"Sub\"(host: \"nas.local\", n: 3, d: 2s, b: true) as ok;") != NULL);
+        jobs_ast_free(ast);
+    }
+}
+
 static void test_limits(void)
 {
     /* source over the cap */
@@ -326,6 +376,7 @@ int main(void)
     test_parse_errors();
     test_validate_errors();
     test_repeat_json();
+    test_calls();
     test_limits();
     test_var_limit();
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);

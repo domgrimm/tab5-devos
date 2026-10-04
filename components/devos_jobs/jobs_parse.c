@@ -213,6 +213,25 @@ static bool expect_ident(P *p, const char *kw)
     return false;
 }
 
+/* A job input parameter type keyword -> devos_val_type_t. */
+static bool param_type(P *p, uint8_t *out)
+{
+    static const struct { const char *name; uint8_t ty; } T[] = {
+        { "int", DEVOS_VAL_INT }, { "number", DEVOS_VAL_NUM }, { "string", DEVOS_VAL_STR },
+        { "boolean", DEVOS_VAL_BOOL }, { "duration", DEVOS_VAL_DURATION },
+    };
+    if (p->cur.kind != T_IDENT) { perr(p, &p->cur, "expected a parameter type"); return false; }
+    for (size_t i = 0; i < sizeof(T) / sizeof(T[0]); i++) {
+        if (p->cur.slen == strlen(T[i].name) && strncmp(p->cur.s, T[i].name, p->cur.slen) == 0) {
+            *out = T[i].ty;
+            next(p);
+            return true;
+        }
+    }
+    perr(p, &p->cur, "unknown parameter type '%.20s' (int / number / string / boolean / duration)", p->cur.s);
+    return false;
+}
+
 static bool is_keyword(const tok_t *t, const char *kw)
 {
     size_t n = strlen(kw);
@@ -610,6 +629,42 @@ static jobs_node_t *parse_stmt(P *p)
         n->a = parse_block(p);
         return p->err ? NULL : n;
     }
+    if (ident_is(p, "return")) {
+        tok_t t = p->cur;
+        next(p);
+        jobs_node_t *n = jobs_node_new(p->ast, JN_RETURN, t.off, t.len, t.line, t.col);
+        if (!n) return NULL;
+        n->a = parse_expr(p);
+        if (p->err) return NULL;
+        if (!expect(p, T_SEMI, "';'")) return NULL;
+        return n;
+    }
+    if (ident_is(p, "run")) {
+        tok_t t = p->cur;
+        next(p);
+        if (!at(p, T_STRING)) { perr(p, &p->cur, "expected a job name in quotes"); return NULL; }
+        tok_t nt = p->cur;
+        next(p);
+        jobs_node_t *nm = parse_string(p, &nt);
+        if (!nm) return NULL;
+        if (nm->a && nm->a->next) { perr(p, &nt, "a job name cannot contain ${...}"); return NULL; }
+        jobs_node_t *n = jobs_node_new(p->ast, JN_RUN, t.off, t.len, t.line, t.col);
+        if (!n) return NULL;
+        n->u.str.s = nm->a ? nm->a->u.str.s : "";
+        if (at(p, T_LPAREN)) {
+            n->a = parse_args(p, true);
+            if (p->err) return NULL;
+        }
+        if (ident_is(p, "as")) {
+            next(p);
+            if (!at(p, T_IDENT)) { perr(p, &p->cur, "expected an output name"); return NULL; }
+            n->u.str.s2 = jobs_pool_str(p->ast, p->cur.s, p->cur.slen);
+            if (!n->u.str.s2) return NULL;
+            next(p);
+        }
+        if (!expect(p, T_SEMI, "';'")) return NULL;
+        return n;
+    }
     return parse_action(p);
 }
 
@@ -679,6 +734,28 @@ jobs_ast_t *jobs_parse(const char *src, size_t len, const jobs_limits_t *lim)
     if (!name) return ast;
     if (name->a && name->a->next) { perr(&p, &name_tok, "a job name cannot contain ${...}"); return ast; }
     root->u.str.s = name->a ? name->a->u.str.s : "";
+    if (at(&p, T_LPAREN)) {
+        next(&p);
+        if (!at(&p, T_RPAREN)) {
+            for (;;) {
+                if (!at(&p, T_IDENT)) { perr(&p, &p.cur, "expected a parameter name"); return ast; }
+                tok_t pn = p.cur;
+                next(&p);
+                if (!expect(&p, T_COLON, "':'")) return ast;
+                uint8_t ty;
+                if (!param_type(&p, &ty)) return ast;
+                jobs_node_t *par = jobs_node_new(ast, JN_PARAM, pn.off, pn.len, pn.line, pn.col);
+                if (!par) return ast;
+                par->sub = ty;
+                par->u.str.s = jobs_pool_str(ast, pn.s, pn.slen);
+                if (!par->u.str.s) return ast;
+                if (!root->d) root->d = par;
+                else { jobs_node_t *t = root->d; while (t->next) t = t->next; t->next = par; }
+                if (!accept(&p, T_COMMA)) break;
+            }
+        }
+        if (!expect(&p, T_RPAREN, "')'")) return ast;
+    }
     if (!expect(&p, T_LBRACE, "'{'")) return ast;
 
     root->a = parse_trigger(&p);

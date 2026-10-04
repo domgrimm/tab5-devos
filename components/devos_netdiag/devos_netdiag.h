@@ -202,6 +202,16 @@ int devos_wol_send_ex(const uint8_t mac[6], const char *addr,
                       char *target_out, size_t target_cap,
                       char *err_out, size_t err_cap);
 
+/* Async WoL for Jobs network.wol: the target is resolved on a worker, so a
+ * hostname never blocks the scheduler task. Returns a ticket > 0, or 0 (no
+ * free slot). */
+int devos_wol_submit(const uint8_t mac[6], const char *addr);
+/* 0 running, 1 done (out filled), -1 unknown ticket. */
+int devos_wol_poll(int ticket, bool *ok, char *target, size_t target_cap,
+                   char *error, size_t error_cap);
+void devos_wol_cancel(int ticket);
+void devos_wol_release(int ticket);
+
 #ifdef __cplusplus
 }
 #endif

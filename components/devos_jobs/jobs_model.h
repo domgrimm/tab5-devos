@@ -30,6 +30,8 @@ extern "C" {
 #define JOBS_MAX_WAIT_MS  (5 * 60 * 1000)
 #define JOBS_MAX_REPEAT   32     /* bounded literal repeat count (PLAN.md section 10) */
 #define JOBS_MAX_JSONPATH 96     /* json_get() path length */
+#define JOBS_MAX_CALL_DEPTH 4    /* nested reusable job calls (PLAN.md 9.3) */
+#define JOBS_MAX_PARAMS   8      /* job input parameters */
 
 typedef struct {
     uint32_t max_source, max_nodes, max_depth, max_vars, max_string;
@@ -47,7 +49,10 @@ typedef enum {
     JN_WAIT,
     JN_ACTION,
     JN_REPEAT,
+    JN_RUN,          /* run "other"(input: expr) as out; */
+    JN_RETURN,       /* return expr; */
     JN_ARG,
+    JN_PARAM,        /* a job input declaration */
     JN_EXPR_LIT,
     JN_EXPR_REF,
     JN_EXPR_UNARY,
@@ -75,6 +80,7 @@ typedef struct jobs_node {
     uint16_t line, col;
     struct jobs_node *next;      /* sibling in a block/list */
     struct jobs_node *a, *b, *c; /* kind-specific children */
+    struct jobs_node *d;         /* JN_JOB: the input parameter list (JN_PARAM) */
     int64_t count;               /* JN_REPEAT: literal repeat count */
     union {
         struct { const char *s; uint32_t slen; const char *s2; uint32_t slen2; } str;

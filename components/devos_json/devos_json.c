@@ -243,9 +243,16 @@ bool devos_json_path(const char *js, size_t len, const char *path, devos_json_va
             if (*ps) return false;
         }
     }
-    /* classify the resolved value; objects and arrays read as null */
+    /* classify the resolved value; objects and arrays keep their raw JSON */
     if (p >= end) return false;
-    if (*p == '{' || *p == '[') { out->kind = DEVOS_JSON_NULL; return true; }
+    if (*p == '{' || *p == '[') {
+        const char *e = devos_json_span(p, end);
+        if (!e) return false;
+        out->kind = DEVOS_JSON_RAW;
+        out->s = p;
+        out->len = (uint32_t)(e - p);
+        return true;
+    }
     if (*p == '"') {
         const char *e = value_end(p, end);
         if (!e) return false;

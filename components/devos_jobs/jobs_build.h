@@ -64,6 +64,9 @@ bool jobs_build_delete(jobs_build_t *b, const jobs_node_t *block, const jobs_nod
 bool jobs_build_move(jobs_build_t *b, const jobs_node_t *block, const jobs_node_t *stmt, int dir);
 /* Replace a statement's expression (wait duration / set value) with a literal. */
 bool jobs_build_set_wait(jobs_build_t *b, const jobs_node_t *stmt, int64_t ms);
+/* Edit a repeat's count and loop-index name; its body stays read-only in the
+ * Builder (edited in Text). Count must be 1..JOBS_MAX_REPEAT. */
+bool jobs_build_set_repeat(jobs_build_t *b, const jobs_node_t *stmt, int64_t count, const char *index);
 /* Number of statements in a block. */
 int jobs_build_block_count(const jobs_node_t *block);
 /* Move a statement to a target index within its block. */

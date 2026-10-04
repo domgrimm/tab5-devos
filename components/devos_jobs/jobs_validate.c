@@ -325,10 +325,9 @@ static void check_action(V *v, jobs_node_t *n)
 {
     const devos_action_descriptor_t *d = devos_actions_find(n->u.str.s);
     if (!d) {
-        /* Reusable job calls need a cycle/depth/cancel design first; reject them
-         * clearly rather than parsing an unbounded recursion (PLAN.md 9.3). */
-        if (strcmp(n->u.str.s, "run") == 0 || strcmp(n->u.str.s, "call") == 0)
-            verr(v, n, "job calls are not supported in language version %d", JOBS_LANG_VERSION);
+        /* Reusable job calls use `run "job"(...)`, not an action named call. */
+        if (strcmp(n->u.str.s, "call") == 0)
+            verr(v, n, "unknown action 'call' (reusable jobs are called with run \"name\"(...))");
         else
             verr(v, n, "unknown action '%s'", n->u.str.s);
         return;
@@ -398,6 +397,32 @@ static void check_stmt(V *v, jobs_node_t *n)
             for (jobs_node_t *c = n->a ? n->a->a : NULL; c && !v->failed; c = c->next) check_stmt(v, c);
             pop_scope(v);
         }
+        break;
+    }
+    case JN_RUN: {
+        if (!n->u.str.s || !n->u.str.s[0]) verr(v, n, "run needs a job name");
+        for (jobs_node_t *a = n->a; a; a = a->next) {
+            if (a->kind != JN_ARG) continue;
+            for (jobs_node_t *b = n->a; b && b != a; b = b->next)
+                if (b->kind == JN_ARG && b->u.str.s && a->u.str.s && strcmp(b->u.str.s, a->u.str.s) == 0) {
+                    verr(v, a, "duplicate input '%s'", a->u.str.s);
+                    break;
+                }
+            bool tainted = false;
+            expr_type(v, a->a, &tainted, true);
+        }
+        if (n->u.str.s2) {
+            if (sym_find(v, n->u.str.s2)) verr(v, n, "'%s' is already defined", n->u.str.s2);
+            else if (!sym_add(v, n->u.str.s2, TY_ANY, false, NULL))
+                verr(v, n, "too many variables (max %d)", JOBS_MAX_VARS);
+        }
+        break;
+    }
+    case JN_RETURN: {
+        bool tainted = false;
+        ty_t t = expr_type(v, n->a, &tainted, true);
+        if (t == TY_OBJ) verr(v, n, "'return' cannot return a whole output");
+        if (tainted) verr(v, n, "'return' cannot return a secret");
         break;
     }
     case JN_BLOCK:
@@ -494,7 +519,17 @@ bool jobs_validate(jobs_ast_t *ast)
 
     check_trigger(&v, job->a);
     check_policy(&v, job->b);
+
+    /* the job's input parameters are read-only typed locals visible to the body */
+    push_scope(&v);
+    for (jobs_node_t *p = job->d; p; p = p->next) {
+        if (!p->u.str.s || !p->u.str.s[0]) continue;
+        if (!sym_add(&v, p->u.str.s, val_to_ty((devos_val_type_t)p->sub), false, NULL))
+            verr(&v, p, "duplicate parameter '%s'", p->u.str.s);
+        else sym_find(&v, p->u.str.s)->readonly = true;
+    }
     check_block(&v, job->c);
+    pop_scope(&v);
 
     return ast->diag_count == 0;
 }

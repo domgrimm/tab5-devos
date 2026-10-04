@@ -218,7 +218,92 @@ int main(void)
         CHECK(strstr(tail + 3 * JOBS_SYSTEM_LOG_LINE, "missing null") != NULL);
     }
 
-    /* 10. the step budget caps an oversized repeat body instead of hanging */
+    /* json_get of an object returns its raw JSON, composable with another get */
+    apply_ok("rawjson", "version 1;\njob \"RawJson\" {\n trigger manual;\n"
+                        " set body = \"{\\\"nested\\\": {\\\"ok\\\": true, \\\"n\\\": 7}}\";\n"
+                        " set sub = json_get(body, \"nested\");\n"
+                        " set ok = json_get(sub, \"ok\");\n"
+                        " set nn = json_get(sub, \"n\");\n"
+                        " if ok { system.log(message: \"composed ${nn}\"); }\n"
+                        "}\n");
+    base = jobs_system_log_count();
+    CHECK(devos_jobs_run_now("rawjson") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(jobs_system_log_count() == base + 1);
+    CHECK(strcmp(last_log(), "composed 7") == 0);
+
+    /* 10. reusable job calls: typed inputs, a return value, cycle and errors */
+    apply_ok("echo", "version 1;\njob \"Echo\"(msg: string) {\n trigger manual;\n"
+                     " system.log(message: msg);\n return msg;\n}\n");
+    apply_ok("caller", "version 1;\njob \"Caller\" {\n trigger manual;\n"
+                       " run \"Echo\"(msg: \"hello\") as out;\n"
+                       " system.log(message: \"got ${out}\");\n}\n");
+    base = jobs_system_log_count();
+    CHECK(devos_jobs_run_now("caller") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(jobs_system_log_count() == base + 2);
+    CHECK(strcmp(last_log(), "got hello") == 0);
+
+    /* a child that branches; the parent consumes the returned boolean */
+    s_check_ok = 1;
+    apply_ok("isup", "version 1;\njob \"IsUp\" {\n trigger manual;\n test.check() as c;\n return c.ok;\n}\n");
+    apply_ok("usesup", "version 1;\njob \"UsesUp\" {\n trigger manual;\n"
+                       " run \"IsUp\"() as up;\n if up { system.log(message: \"child up\"); }\n"
+                       " else { system.log(message: \"child down\"); }\n}\n");
+    CHECK(devos_jobs_run_now("usesup") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(strcmp(last_log(), "child up") == 0);
+
+    /* a missing input is a runtime error (the callee's params are not known at
+     * the caller's validation time) */
+    apply_ok("needarg", "version 1;\njob \"NeedArg\"(x: int) {\n trigger manual;\n return x;\n}\n");
+    apply_ok("missarg", "version 1;\njob \"MissArg\" {\n trigger manual;\n run \"NeedArg\"() as v;\n}\n");
+    CHECK(devos_jobs_run_now("missarg") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        devos_job_summary_t ms;
+        bool found = false;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &ms) && strcmp(ms.id, "missarg") == 0) { found = true; break; }
+        CHECK(found && strstr(ms.last_result, "missing input") != NULL);
+    }
+
+    /* cycles (direct or indirect) are refused, not run forever */
+    apply_ok("cyca", "version 1;\njob \"CycA\" {\n trigger manual;\n run \"CycB\"() as x;\n}\n");
+    apply_ok("cycb", "version 1;\njob \"CycB\" {\n trigger manual;\n run \"CycA\"() as y;\n}\n");
+    CHECK(devos_jobs_run_now("cyca") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        devos_job_summary_t cs;
+        bool found = false;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &cs) && strcmp(cs.id, "cyca") == 0) { found = true; break; }
+        CHECK(found && strstr(cs.last_result, "cycle") != NULL);
+    }
+
+    /* the call depth is bounded (root + JOBS_MAX_CALL_DEPTH nested calls) */
+    for (int i = 1; i <= 6; i++) {
+        char id[16], nm[16], src[256];
+        snprintf(id, sizeof(id), "deep%d", i);
+        snprintf(nm, sizeof(nm), "Deep%d", i);
+        if (i < 6)
+            snprintf(src, sizeof(src), "version 1;\njob \"%s\" {\n trigger manual;\n run \"Deep%d\"() as x;\n}\n", nm, i + 1);
+        else
+            snprintf(src, sizeof(src), "version 1;\njob \"%s\" {\n trigger manual;\n system.log(message: \"deep end\");\n}\n", nm);
+        uint32_t dr = 0;
+        CHECK(devos_jobs_apply(id, src, strlen(src), &dr) == DEVOS_OK);
+    }
+    CHECK(devos_jobs_run_now("deep1") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        devos_job_summary_t ds;
+        bool found = false;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &ds) && strcmp(ds.id, "deep1") == 0) { found = true; break; }
+        CHECK(found && strstr(ds.last_result, "too deep") != NULL);
+    }
+
+    /* the step budget caps an oversized repeat body instead of hanging */
     static char big[2048];
     size_t bo = (size_t)snprintf(big, sizeof(big),
                                  "version 1;\njob \"big\" {\n trigger manual;\n repeat 32 as i {\n");

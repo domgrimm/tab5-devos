@@ -301,6 +301,18 @@ bool jobs_build_set_wait(jobs_build_t *b, const jobs_node_t *stmt, int64_t ms)
     return true;
 }
 
+bool jobs_build_set_repeat(jobs_build_t *b, const jobs_node_t *stmt, int64_t count, const char *index)
+{
+    if (!b || !b->ast || !stmt || stmt->kind != JN_REPEAT) return false;
+    if (count < 1 || count > JOBS_MAX_REPEAT || !index || !index[0]) return false;
+    const char *copy = jobs_pool_str(b->ast, index, (uint32_t)strlen(index));
+    if (!copy) return false;
+    jobs_node_t *n = (jobs_node_t *)stmt;
+    n->count = count;
+    n->u.str.s = copy;
+    return true;
+}
+
 int jobs_build_block_count(const jobs_node_t *block)
 {
     int n = 0;

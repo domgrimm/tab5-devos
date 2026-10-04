@@ -21,7 +21,7 @@ extern "C" {
 #define JOBS_SUB_TOPIC_MAX  192   /* MQTT subscription topic (no devos_mqtt dependency) */
 
 /* ---- interpreter frames ---- */
-typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT, FRAME_REPEAT } jobs_frame_kind_t;
+typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT, FRAME_REPEAT, FRAME_CALL } jobs_frame_kind_t;
 
 typedef struct {
     uint8_t kind;
@@ -29,6 +29,9 @@ typedef struct {
     const jobs_node_t *cursor;      /* next statement in that block */
     const jobs_node_t *action;      /* FRAME_ACTION: the action node */
     const jobs_node_t *repeat;      /* FRAME_REPEAT: the repeat node */
+    const jobs_ast_t *call_ast;     /* FRAME_CALL: the callee AST (retained) */
+    const char *out_name;           /* FRAME_CALL: the caller's output variable */
+    int var_mark;                   /* FRAME_CALL: nvars to restore on return */
     int32_t iter;                   /* FRAME_REPEAT: iterations already started */
     devos_action_handle_t op;
     int64_t wake_ms;                /* FRAME_WAIT */
@@ -74,6 +77,11 @@ typedef struct {
     const jobs_node_t *cur;         /* current node, for the UI/trace */
     jobs_pending_event_t ev;        /* triggering event copy, for event.* in the body */
     bool ev_valid;
+    /* reusable job calls (PLAN.md 9.3) */
+    int call_depth;
+    char call_chain[JOBS_MAX_CALL_DEPTH][64];
+    bool call_value_valid;
+    devos_value_t call_value;
 } jobs_run_t;
 
 typedef struct {

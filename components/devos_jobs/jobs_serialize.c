@@ -62,6 +62,18 @@ static void emit_quoted(SB *b, const char *s)
 static void emit_expr(SB *b, const jobs_node_t *n);
 static void emit_block(SB *b, const jobs_node_t *block, int d);
 
+static const char *type_name(uint8_t t)
+{
+    switch (t) {
+    case DEVOS_VAL_INT: return "int";
+    case DEVOS_VAL_NUM: return "number";
+    case DEVOS_VAL_STR: return "string";
+    case DEVOS_VAL_BOOL: return "boolean";
+    case DEVOS_VAL_DURATION: return "duration";
+    default: return "string";
+    }
+}
+
 static void emit_str_node(SB *b, const jobs_node_t *n)
 {
     sb_put(b, "\"", 1);
@@ -174,6 +186,20 @@ static void emit_stmt(SB *b, const jobs_node_t *s, int d)
         sb_fmt(b, "repeat %lld as %s ", (long long)s->count, s->u.str.s);
         emit_block(b, s->a, d);
         break;
+    case JN_RUN:
+        ind(b, d);
+        sb_put(b, "run ", 4);
+        emit_quoted(b, s->u.str.s ? s->u.str.s : "");
+        if (s->a) emit_args(b, s->a, true);
+        if (s->u.str.s2) sb_fmt(b, " as %s", s->u.str.s2);
+        sb_put(b, ";\n", 2);
+        break;
+    case JN_RETURN:
+        ind(b, d);
+        sb_put(b, "return ", 7);
+        emit_expr(b, s->a);
+        sb_put(b, ";\n", 2);
+        break;
     case JN_BLOCK:
         emit_block(b, s, d);
         break;
@@ -227,6 +253,12 @@ size_t jobs_serialize(const jobs_ast_t *ast, char *out, size_t cap)
     sb_fmt(&b, "version %d;\n", JOBS_LANG_VERSION);
     sb_put(&b, "job ", 4);
     emit_quoted(&b, job->u.str.s ? job->u.str.s : "");
+    if (job->d) {
+        sb_put(&b, "(", 1);
+        for (const jobs_node_t *p = job->d; p; p = p->next)
+            sb_fmt(&b, "%s%s: %s", p == job->d ? "" : ", ", p->u.str.s, type_name(p->sub));
+        sb_put(&b, ")", 1);
+    }
     sb_put(&b, " {\n", 3);
     emit_trigger(&b, job->a, 1);
     emit_policy(&b, job->b, 1);
