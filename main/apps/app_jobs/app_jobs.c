@@ -1996,12 +1996,14 @@ static void jobs_init(void)
     mk_label(s_ctx.bld, "Steps  (tap to select, drag to reorder)", DEVOS_W_TEXT_DIM, 0, 56);
     s_ctx.step_list = lv_obj_create(s_ctx.bld);
     lv_obj_set_pos(s_ctx.step_list, 0, 72);
-    lv_obj_set_size(s_ctx.step_list, RW, 150);
+    lv_obj_set_size(s_ctx.step_list, RW, 120);
     lv_obj_set_style_radius(s_ctx.step_list, 4, 0);
     lv_obj_set_style_pad_all(s_ctx.step_list, 2, 0);
     lv_obj_set_style_border_width(s_ctx.step_list, 1, 0);
     devos_w_track(s_ctx.step_list, DEVOS_W_PANEL);
     lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_ctx.step_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_ctx.step_list, LV_DIR_VER);   /* rows are full width */
     for (int i = 0; i < STEP_ROWS; i++) {
         lv_obj_t *row = lv_obj_create(s_ctx.step_list);
         lv_obj_set_size(row, RW - 6, STEP_H - 4);
@@ -2021,17 +2023,17 @@ static void jobs_init(void)
     }
 
     s_ctx.dd_add = devos_w_dd(s_ctx.bld, "", 300);
-    lv_obj_set_pos(s_ctx.dd_add, 0, 232);
+    lv_obj_set_pos(s_ctx.dd_add, 0, 202);
     s_ctx.btn_add = devos_w_btn(s_ctx.bld, "Add  [Sym+U]", 110, add_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_add, 310, 232);
+    lv_obj_set_pos(s_ctx.btn_add, 310, 202);
     s_ctx.btn_bdel = devos_w_btn(s_ctx.bld, "Del step", 100, bdel_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_bdel, 425, 232);
+    lv_obj_set_pos(s_ctx.btn_bdel, 425, 202);
     s_ctx.btn_up = devos_w_btn(s_ctx.bld, "Up  [Sym+K]", 100, up_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_up, 530, 232);
+    lv_obj_set_pos(s_ctx.btn_up, 530, 202);
     s_ctx.btn_dn = devos_w_btn(s_ctx.bld, "Down  [Sym+J]", 100, dn_cb, NULL, NULL);
-    lv_obj_set_pos(s_ctx.btn_dn, 635, 232);
+    lv_obj_set_pos(s_ctx.btn_dn, 635, 202);
 
-    s_ctx.lbl_settings = mk_label(s_ctx.bld, "Step settings", DEVOS_W_TEXT_DIM, 0, 268);
+    s_ctx.lbl_settings = mk_label(s_ctx.bld, "Step settings", DEVOS_W_TEXT_DIM, 0, 238);
     /* legacy single-value widgets, used by the non-action inspectors */
     s_ctx.dd_param = devos_w_dd(s_ctx.bld, "", 220);
     lv_obj_set_pos(s_ctx.dd_param, 0, 286);
@@ -2044,19 +2046,19 @@ static void jobs_init(void)
     lv_obj_set_pos(s_ctx.dd_choice, 380, 286);
     lv_obj_add_flag(s_ctx.dd_choice, LV_OBJ_FLAG_HIDDEN);
     s_ctx.ta_val = devos_w_ta(s_ctx.bld, true, RW, 36);
-    lv_obj_set_pos(s_ctx.ta_val, 0, 326);
+    lv_obj_set_pos(s_ctx.ta_val, 0, 296);
     lv_textarea_set_max_length(s_ctx.ta_val, 240);
     lv_obj_add_event_cb(s_ctx.ta_val, val_commit_cb, LV_EVENT_DEFOCUSED, NULL);
     s_ctx.lbl_custom = devos_w_label(s_ctx.bld, NULL, DEVOS_W_TEXT_MUTED, "");
-    lv_obj_set_pos(s_ctx.lbl_custom, 0, 286);
+    lv_obj_set_pos(s_ctx.lbl_custom, 0, 256);
     lv_obj_set_width(s_ctx.lbl_custom, RW);
     lv_obj_add_flag(s_ctx.lbl_custom, LV_OBJ_FLAG_HIDDEN);
 
     /* P2: per-parameter form (one labelled row per action parameter) */
     s_ctx.form = lv_obj_create(s_ctx.bld);
     lv_obj_remove_style_all(s_ctx.form);
-    lv_obj_set_pos(s_ctx.form, 0, 286);
-    lv_obj_set_size(s_ctx.form, RW, CH - 286);
+    lv_obj_set_pos(s_ctx.form, 0, 256);
+    lv_obj_set_size(s_ctx.form, RW, CH - 256);
     lv_obj_set_style_pad_all(s_ctx.form, 0, 0);
     lv_obj_set_style_pad_row(s_ctx.form, 6, 0);
     lv_obj_set_flex_flow(s_ctx.form, LV_FLEX_FLOW_COLUMN);
