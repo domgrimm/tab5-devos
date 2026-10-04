@@ -615,9 +615,38 @@ static const char *param_type_hint(const devos_action_param_t *p)
     }
 }
 
-/* The value text currently shown for a parameter (literal form), or "". */
-static void param_value_text(const jobs_node_t *node, const devos_action_param_t *p, char *out, size_t cap)
+/* Names an expression can use here: outputs bound by earlier steps
+ * (<name> plus its known <name.field>s), repeat indices, and the event
+ * fields when the trigger is an event. Top-level walk; nested steps see
+ * the whole top level (a hint, not a scope check). */
+static void form_vars_hint(const jobs_node_t *node, char *out, size_t cap)
 {
+    if (out && cap) out[0] = '\0';
+    if (!out || cap == 0 || !s_ctx.build.ast || !s_ctx.build.ast->root) return;
+    size_t o = 0;
+    jobs_node_t *body = s_ctx.build.ast->root->c;
+    for (jobs_node_t *s = body ? body->a : NULL; s && o + 40 < cap; s = s->next) {
+        if (s == node) break;
+        if (s->kind == JN_REPEAT && s->u.str.s && s->u.str.s[0]) {
+            o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? " " : "", s->u.str.s);
+            continue;
+        }
+        const char *as = (s->kind == JN_ACTION || s->kind == JN_RUN) ? s->u.str.s2 : NULL;
+        if (!as || !as[0]) continue;
+        o += (size_t)snprintf(out + o, cap - o, "%s%s", o ? " " : "", as);
+        const devos_action_descriptor_t *d =
+            s->kind == JN_ACTION ? devos_actions_find(s->u.str.s) : NULL;
+        if (d) for (int k = 0; k < d->out_count && o + 40 < cap; k++)
+            o += (size_t)snprintf(out + o, cap - o, " %s.%s", as, d->outs[k].name);
+    }
+    jobs_node_t *t = jobs_build_trigger(&s_ctx.build);
+    if (t && t->sub == JTRIG_EVENT && o + 64 < cap)
+        o += (size_t)snprintf(out + o, cap - o, "%sevent.topic event.payload event.seq",
+                              o ? " " : "");
+}
+
+/* The value text currently shown for a parameter (literal form), or "". */
+static void param_value_text(const jobs_node_t *node, const devos_action_param_t *p, char *out, size_t cap){
     out[0] = '\0';
     if (!node || !p) return;
     if (p->type == DEVOS_VAL_DURATION) {
@@ -658,13 +687,20 @@ static void form_build(const jobs_node_t *node, const devos_action_descriptor_t 
         char lb[80];
         snprintf(lb, sizeof(lb), "%s%s", p->name, p->required ? "  *" : "");
         devos_w_set_text(s_ctx.form_lbl[i], lb);
-        /* help: help text, then type and default */
-        char hb[240];
+        /* help: help text, then type and default, then in-scope variables */
+        char hb[480];
         snprintf(hb, sizeof(hb), "%s%sType: %s%s%s%s",
                  p->help ? p->help : "", p->help ? "\n" : "",
                  param_type_hint(p),
                  p->expression ? ", or an expression" : "",
                  p->def ? "  -  default " : "", p->def ? p->def : "");
+        if (p->expression && !p->credential) {
+            char vars[256];
+            form_vars_hint(node, vars, sizeof(vars));
+            size_t hl = strlen(hb);
+            snprintf(hb + hl, sizeof(hb) - hl, "\nAvailable: %s",
+                     vars[0] ? vars : "(nothing bound yet - add a step with 'Save result as')");
+        }
         devos_w_set_text(s_ctx.form_help[i], hb);
 
         bool choice = p->choices != NULL || p->type == DEVOS_VAL_BOOL;
@@ -2037,6 +2073,7 @@ static void jobs_init(void)
         lv_obj_add_event_cb(s_ctx.form_expr[i], form_row_commit_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
         s_ctx.form_help[i] = devos_w_label(row, &lv_font_montserrat_12, DEVOS_W_TEXT_MUTED, "");
         lv_obj_set_width(s_ctx.form_help[i], RW - 12);
+        lv_label_set_long_mode(s_ctx.form_help[i], LV_LABEL_LONG_WRAP);
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
     /* Save result as */
