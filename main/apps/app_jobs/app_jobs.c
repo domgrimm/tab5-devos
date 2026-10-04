@@ -131,6 +131,15 @@ static char s_new_files[NEW_EX_MAX][48];
 static int s_new_n;
 static devos_focus_t s_new_focus;
 
+/* Dry run: async start + tick poll so the UI never blocks. */
+static devos_w_dialog_t s_dry_dlg;
+static bool s_dry_open;
+static bool s_dry_active;
+static devos_codeview_t s_dry_cv;
+static EXT_RAM_BSS_ATTR char s_dry_text[4096];
+static EXT_RAM_BSS_ATTR devos_dryrun_t s_dry_res;
+static EXT_RAM_BSS_ATTR char s_dry_src[SRCMAX];
+
 static void set_mode(ui_mode_t m);
 static void set_tab(jobs_tab_t t);
 static bool selected_summary(devos_job_summary_t *out);
@@ -208,6 +217,7 @@ static void list_refresh(void)
     s_ctx.n = 0;
     for (int i = 0; i < devos_jobs_count() && s_ctx.n < DEVOS_JOBS_MAX; i++) {
         if (!devos_jobs_summary_at(i, &sum)) continue;
+        if (sum.id[0] == '~') continue;           /* in-memory dry run, never listed */
         snprintf(s_ctx.ids[s_ctx.n], sizeof(s_ctx.ids[0]), "%s", sum.id);
         char g = sum.running ? '>'
                 : sum.state != DEVOS_JOB_ENABLED ? 'o'
@@ -1004,6 +1014,77 @@ static void act_cancel(void)
     if (devos_jobs_cancel(s_ctx.ids[s_ctx.sel]) == DEVOS_OK) devos_toast_show("Cancelling", DEVOS_TOAST_WARN, 0);
 }
 
+/* Copy line N (1-based) out of the draft source for the trace view. */
+static void src_line(const char *src, int n, char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+    if (!src || n < 1 || !out || cap == 0) return;
+    const char *p = src;
+    for (int i = 1; i < n && *p; i++) {
+        p = strchr(p, '\n');
+        if (!p) return;
+        p++;
+    }
+    size_t k = 0;
+    while (p[k] && p[k] != '\n' && k + 1 < cap) { out[k] = p[k]; k++; }
+    out[k] = '\0';
+    while (k > 0 && (out[k - 1] == ' ' || out[k - 1] == '\t')) out[--k] = '\0';
+    /* strip leading indentation for a compact trace view */
+    size_t lead = 0;
+    while (out[lead] == ' ' || out[lead] == '\t') lead++;
+    if (lead) memmove(out, out + lead, strlen(out + lead) + 1);
+}
+
+static void dry_close(void)
+{
+    s_dry_open = false;
+    devos_w_dialog_show(&s_dry_dlg, false);
+}
+
+static void dry_show_result(void)
+{
+    size_t o = 0;
+    const char *verdict = s_dry_res.timed_out ? "TIMED OUT" : s_dry_res.ok ? "OK" : "FAILED";
+    o += (size_t)snprintf(s_dry_text + o, sizeof(s_dry_text) - o,
+                          "Dry run: %s\n%s\n%d steps, %d ms\n",
+                          verdict, s_dry_res.message, s_dry_res.steps, (int)s_dry_res.duration_ms);
+    const char *src = s_dry_src[0] ? s_dry_src : cur_source();
+    for (int i = 0; i < s_dry_res.trace_n && o < sizeof(s_dry_text) - 120; i++) {
+        char line[96];
+        src_line(src, s_dry_res.trace[i].line, line, sizeof(line));
+        o += (size_t)snprintf(s_dry_text + o, sizeof(s_dry_text) - o, "%3d  %-50.50s  %s\n",
+                              s_dry_res.trace[i].line, line,
+                              s_dry_res.trace[i].result == 2 ? "ERROR" :
+                              s_dry_res.trace[i].result == 1 ? "skipped" : "ran");
+    }
+    devos_codeview_set(&s_dry_cv, s_dry_text);
+    s_dry_open = true;
+    devos_w_dialog_show(&s_dry_dlg, true);
+}
+
+static void dry_ok_cb(lv_event_t *e) { LV_UNUSED(e); dry_close(); }
+
+/* Test the draft without applying it: validate, start, poll from tick_cb. */
+static void act_dryrun(void)
+{
+    if (s_dry_active) { say("A dry run is already going."); return; }
+    const char *src = cur_source();
+    char diag[160];
+    if (devos_jobs_check(src, strlen(src), diag, sizeof(diag)) != DEVOS_OK) {
+        char b[200];
+        snprintf(b, sizeof(b), "Can't dry-run an invalid draft: %s", diag);
+        say(b);
+        return;
+    }
+    if (devos_jobs_dry_start(src, strlen(src), diag, sizeof(diag)) != DEVOS_OK) {
+        say(diag[0] ? diag : "Couldn't start the dry run.");
+        return;
+    }
+    snprintf(s_dry_src, sizeof(s_dry_src), "%s", src);   /* trace lines map to this text */
+    s_dry_active = true;
+    devos_toast_show("Dry run started", DEVOS_TOAST_OK, 0);
+}
+
 /* Name the duplicate "Copy of <name>" by replacing the job's quoted name. */
 static void dup_rename(const char *src, char *out, size_t cap)
 {
@@ -1159,6 +1240,7 @@ static void act_delete(void)
 static void del_ok_cb(lv_event_t *e) { LV_UNUSED(e); delete_confirmed(); }
 static void del_cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_delete_dialog(); }
 static void jobset_cb(lv_event_t *e) { LV_UNUSED(e); open_job_settings(); }
+static void dryrun_cb(lv_event_t *e) { LV_UNUSED(e); act_dryrun(); }
 
 /* ---- Job settings dialog (name + policy) ---- */
 static bool ensure_build(void)
@@ -1292,6 +1374,11 @@ static void tick_cb(lv_timer_t *t)
         char rl[40];
         snprintf(rl, sizeof(rl), "%s  [%s]", run ? "Cancel" : "Run now", run ? "Sym+X" : "Sym+R");
         devos_w_set_text(lv_obj_get_child(s_ctx.btn_run, 0), rl);
+    }
+    /* dry run: poll the engine without blocking the UI */
+    if (s_dry_active && devos_jobs_dry_poll(&s_dry_res, 30000)) {
+        s_dry_active = false;
+        dry_show_result();
     }
 }
 
@@ -1843,6 +1930,8 @@ static void jobs_init(void)
     lv_obj_set_pos(s_ctx.btn_run, RX + 450, ty);
     lv_obj_t *btn_jobset = devos_w_btn(scr, "Settings  [Sym+E]", 150, jobset_cb, NULL, NULL);
     lv_obj_set_pos(btn_jobset, RX + 600, ty);
+    lv_obj_t *btn_dry = devos_w_btn(scr, "Dry run  [Sym+W]", 140, dryrun_cb, NULL, NULL);
+    lv_obj_set_pos(btn_dry, RX + 760, ty);
 
     s_ctx.lbl_hint = devos_w_label(scr, &lv_font_montserrat_12, DEVOS_W_TEXT_MUTED, "");
     lv_obj_set_pos(s_ctx.lbl_hint, RX, ty + 34);
@@ -1879,6 +1968,20 @@ static void jobs_init(void)
     devos_focus_add(&s_new_focus, s_new_dd);
     devos_focus_add(&s_new_focus, nok);
     devos_focus_add(&s_new_focus, ncl);
+
+    /* Dry-run result dialog: verdict + per-step trace as source lines */
+    devos_w_dialog(&s_dry_dlg, scr, 760, 420, LV_SYMBOL_PLAY "  Dry run");
+    lv_obj_t *dry_panel = lv_obj_create(s_dry_dlg.box);
+    lv_obj_remove_style_all(dry_panel);
+    devos_w_track(dry_panel, DEVOS_W_CODE);
+    lv_obj_set_size(dry_panel, 720, 300);
+    lv_obj_align(dry_panel, LV_ALIGN_TOP_LEFT, 0, 40);
+    lv_obj_set_style_pad_all(dry_panel, 8, 0);
+    devos_codeview_create(&s_dry_cv, dry_panel);
+    s_dry_cv.plain = true;
+    lv_obj_t *dry_ok = devos_w_btn(s_dry_dlg.box, "Close", 120, dry_ok_cb, NULL, NULL);
+    lv_obj_set_size(dry_ok, 120, 36);
+    lv_obj_align(dry_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
     /* Job settings dialog: name, timeout, overlap, cooldown */
     devos_w_dialog(&s_ctx.dlg_job, scr, 560, 360, LV_SYMBOL_SETTINGS "  Job settings");
@@ -1945,6 +2048,7 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.btn_apply);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_enable);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_run);
+    devos_focus_add(&s_ctx.focus, btn_dry);
 
     devos_theme_add_listener(steps_theme_cb, NULL);
     devos_cmdpal_add(&CMD_NEW);
@@ -1986,6 +2090,8 @@ static void jobs_show(void)
 static void jobs_hide(void)
 {
     draft_save();                                   /* unsaved edits survive the visit */
+    if (s_dry_active) { devos_jobs_dry_cancel(); s_dry_active = false; }
+    if (s_dry_open) dry_close();
     if (s_ctx.screen) lv_obj_add_flag(s_ctx.screen, LV_OBJ_FLAG_HIDDEN);
     jobs_build_free(&s_ctx.build);
     s_ctx.build.ast = NULL;
@@ -2005,6 +2111,12 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         if (key == '\r' || key == '\n') { commit_job_settings(); return true; }
         if (key == LV_KEY_ESC) { close_job_settings(); return true; }
         if (devos_focus_key(&s_ctx.job_focus, key, mods)) return true;
+        return true;
+    }
+
+    /* The dry-run result owns the keyboard: Enter/Esc closes it. */
+    if (s_dry_open) {
+        if (key == '\r' || key == '\n' || key == LV_KEY_ESC) { dry_close(); return true; }
         return true;
     }
 
@@ -2060,6 +2172,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'o': set_tab(TAB_OVERVIEW); return true;
         case 'y': set_tab(TAB_RUNS); return true;
         case 'e': open_job_settings(); return true;        /* Sym+P is system sleep */
+        case 'w': act_dryrun(); return true;
         case 'l': toggle_list(); return true;
         case 'c': act_validate(); return true;
         case 'a': builder_commit_all(); act_apply(); return true;
@@ -2167,6 +2280,7 @@ static const char *jobs_shortcuts(void)
            "Sym+C / Sym+A\tValidate / Apply (unsaved changes)\n"
            "Sym+G / Sym+R / Sym+X\tEnable / Run now / Cancel\n"
            "Sym+E\tJob settings (name, timeout, overlap, cooldown)\n"
+           "Sym+W\tDry-run the draft (no apply, with trace)\n"
            "Sym+O / Sym+Y\tOverview / Runs\n"
            "Sym+B / Sym+M\tBuilder / Text\n"
            "Builder\n"

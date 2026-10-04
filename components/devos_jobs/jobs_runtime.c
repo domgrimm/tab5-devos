@@ -524,7 +524,8 @@ static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
 
     /* Bounded history, written through the Core 1 worker so the scheduler
      * (Core 0) never blocks on the SD card. Structured so the UI reads it
-     * without parsing JSONL itself (devos_jobs_history_at). */
+     * without parsing JSONL itself (devos_jobs_history_at). Dry runs
+     * ("~dry") leave no history behind. */
     char err[96];
     devos_json_escape(msg ? msg : "", err, sizeof(err));
     char line[224];
@@ -532,7 +533,7 @@ static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
              "{\"run\":\"%s\",\"wall\":%lld,\"cause\":\"%s\",\"ok\":%s,\"ms\":%lld,\"steps\":%d,\"err\":\"%s\"}",
              r->run_id, (long long)j->last_run_wall_s, jobs_cause_name((jobs_cause_t)j->last_cause),
              ok ? "true" : "false", (long long)(now - r->started_ms), r->steps, err);
-    jobs_store_history_append_async(j->id, line);
+    if (j->id[0] != '~') jobs_store_history_append_async(j->id, line);
 }
 
 static void cancel_pending(jobs_job_t *j)

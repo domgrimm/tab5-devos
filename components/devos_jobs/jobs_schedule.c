@@ -643,6 +643,125 @@ const char *devos_jobs_topic_advisory(void)
     return jobs_validate_topic_advisory();
 }
 
+#define DRY_ID "~dry"               /* in-memory only: never in the catalog */
+
+static int64_t s_dry_t0;
+static uint32_t s_dry_timeout_ms;
+
+devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, size_t cap)
+{
+    if (diag && cap) diag[0] = '\0';
+    if (!source) return DEVOS_ERR_INVALID_ARG;
+    jobs_ast_t *ast = jobs_parse(source, len, NULL);
+    if (!ast) return DEVOS_ERR_NO_MEM;
+    if (!jobs_validate(ast)) {
+        if (diag && cap)
+            snprintf(diag, cap, "%.95s", ast->diag_count ? ast->diag[0].msg : "invalid definition");
+        jobs_ast_free(ast);
+        return DEVOS_ERR_INVALID_ARG;
+    }
+    if (jobs_find(DRY_ID)) { jobs_ast_free(ast); return DEVOS_ERR_INVALID_STATE; }
+    jobs_job_t *j = job_alloc();
+    if (!j) { jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
+    memset(j, 0, sizeof(*j));
+    j->used = true;
+    snprintf(j->id, sizeof(j->id), "%s", DRY_ID);
+    j->ast = ast;
+    j->revision = 1;
+    snprintf(j->name, sizeof(j->name), "%s", ast->root->u.str.s ? ast->root->u.str.s : DRY_ID);
+    j->enabled = false;
+    read_trigger(j, ast);
+    s_dry_t0 = jobs_now_ms();
+    s_dry_timeout_ms = 0;                       /* set by the first poll */
+    start_run(j, s_dry_t0, JOBS_CAUSE_MANUAL);
+    return DEVOS_OK;
+}
+
+/* Harvest a finished (or timed-out) dry run and free its slot. */
+static devos_err_t dry_harvest(jobs_job_t *j, devos_dryrun_t *out, bool timed_out)
+{
+    if (timed_out) {
+        jobs_run_cancel(j);
+        out->timed_out = true;
+        snprintf(out->message, sizeof(out->message), "timed out after %u ms", (unsigned)s_dry_timeout_ms);
+    } else {
+        out->ok = j->last_ok;
+        snprintf(out->message, sizeof(out->message), "%.95s", j->last_result);
+    }
+    out->duration_ms = (int32_t)(jobs_now_ms() - s_dry_t0);
+    out->steps = j->run.steps;
+    out->trace_n = j->run.trace_n < DEVOS_DRYRUN_TRACE ? j->run.trace_n : DEVOS_DRYRUN_TRACE;
+    for (int i = 0; i < out->trace_n; i++) {
+        out->trace[i].line = j->run.trace[i].line;
+        out->trace[i].col = j->run.trace[i].col;
+        out->trace[i].kind = j->run.trace[i].kind;
+        out->trace[i].result = j->run.trace[i].result;
+    }
+    devos_err_t rc = out->timed_out ? DEVOS_ERR_TIMEOUT : DEVOS_OK;
+    jobs_event_unsubscribe(j);
+    jobs_ast_release(j->ast);
+    memset(j, 0, sizeof(*j));
+    return rc;
+}
+
+/* Non-blocking poll for the UI tick: true when the run finished (or the
+ * timeout elapsed) - the result is in *out and the slot is freed. While it
+ * returns false the scheduler is still advancing the run. */
+bool devos_jobs_dry_poll(devos_dryrun_t *out, uint32_t timeout_ms)
+{
+    if (!out) return true;
+    memset(out, 0, sizeof(*out));
+    jobs_job_t *j = jobs_find(DRY_ID);
+    if (!j) return true;                         /* none active */
+    if (timeout_ms == 0) timeout_ms = 30000;
+    if (timeout_ms < 1000) timeout_ms = 1000;
+    if (timeout_ms > 120000) timeout_ms = 120000;
+    s_dry_timeout_ms = timeout_ms;
+    if (!j->run.active) { dry_harvest(j, out, false); return true; }
+    if (jobs_now_ms() - s_dry_t0 >= (int64_t)timeout_ms) { dry_harvest(j, out, true); return true; }
+    return false;
+}
+
+void devos_jobs_dry_cancel(void)
+{
+    jobs_job_t *j = jobs_find(DRY_ID);
+    if (!j) return;
+    if (j->run.active) jobs_run_cancel(j);
+    jobs_event_unsubscribe(j);
+    if (j->ast) jobs_ast_release(j->ast);
+    memset(j, 0, sizeof(*j));
+}
+
+devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_ms,
+                               devos_dryrun_t *out)
+{
+    if (!source || !out) return DEVOS_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    if (timeout_ms == 0) timeout_ms = 30000;
+    if (timeout_ms < 1000) timeout_ms = 1000;
+    if (timeout_ms > 120000) timeout_ms = 120000;
+    char diag[160];
+    devos_err_t rc = devos_jobs_dry_start(source, len, diag, sizeof(diag));
+    if (rc != DEVOS_OK) {
+        snprintf(out->message, sizeof(out->message), "%.95s", diag);
+        return rc;
+    }
+    /* The scheduler advances the run (same as Run now). Under a fake clock
+     * (host tests) there is no scheduler task, so pump the run directly. */
+    bool fake = jobs_platform_clock_overridden();
+    int max_iter = (int)(timeout_ms / 20);
+    for (int i = 0; i < max_iter; i++) {
+        jobs_job_t *j = jobs_find(DRY_ID);
+        if (!j || !j->run.active) break;
+        if (fake) jobs_run_tick(j, jobs_now_ms());
+        else jobs_platform_sleep_ms(20);
+    }
+    if (devos_jobs_dry_poll(out, timeout_ms)) return out->timed_out ? DEVOS_ERR_TIMEOUT : DEVOS_OK;
+    devos_jobs_dry_cancel();
+    out->timed_out = true;
+    return DEVOS_ERR_TIMEOUT;
+}
+
 int devos_jobs_history_recent(const char *id, devos_run_record_t *out, int max)
 {
     if (!id || !out || max <= 0) return 0;

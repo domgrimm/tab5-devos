@@ -186,6 +186,31 @@ typedef struct {
 } devos_jobs_step_t;
 int devos_jobs_trace(const char *id, devos_jobs_step_t *out, int max);
 
+/* Draft dry run (engine item 6): validate and run `source` without applying
+ * it - no catalog entry, no revision, no history. The run executes through
+ * the normal scheduler path (start here, the scheduler advances it) with the
+ * manual cause. Returns INVALID_ARG when the draft is invalid (message holds
+ * the diagnostic), INVALID_STATE when another dry run is active, TIMEOUT when
+ * it did not finish in timeout_ms (1-120 s, 0 = 30 s). Trace entries are
+ * oldest-first. */
+#define DEVOS_DRYRUN_TRACE 128
+typedef struct {
+    bool ok;
+    bool timed_out;
+    char message[96];
+    int32_t duration_ms;
+    int steps;
+    int trace_n;
+    devos_jobs_step_t trace[DEVOS_DRYRUN_TRACE];
+} devos_dryrun_t;
+devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_ms,
+                               devos_dryrun_t *out);
+/* Async form for the UI tick (same semantics, non-blocking): start the run,
+ * then poll until it returns true (result harvested, slot freed). A missed
+ * poll window only delays the result; cancel abandons it. */
+devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, size_t cap);
+bool devos_jobs_dry_poll(devos_dryrun_t *out, uint32_t timeout_ms);
+void devos_jobs_dry_cancel(void);
 /* ---- commands (bounded; return an admission result) ----
  * The UI enqueues these and gets completion through the snapshot API. They do
  * not return pointers into worker-owned memory. */

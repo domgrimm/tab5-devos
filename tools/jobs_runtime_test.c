@@ -425,6 +425,25 @@ int main(void)
         CHECK(rec[0].ok && strcmp(rec[0].cause, "manual") == 0 && rec[0].steps >= 2);
     }
 
+    /* dry run: validate + run a draft without applying anything */
+    {
+        devos_dryrun_t dr;
+        const char *dsrc = "version 1;\njob \"Dry\" {\n trigger manual;\n test.check() as c;\n"
+                           " if c.ok { system.log(message: \"dry ok\"); }\n}\n";
+        CHECK(devos_jobs_dry_run(dsrc, strlen(dsrc), 5000, &dr) == DEVOS_OK);
+        CHECK(dr.ok && !dr.timed_out && dr.steps >= 2 && dr.trace_n >= 2);
+        CHECK(strcmp(last_log(), "dry ok") == 0);
+        CHECK(devos_jobs_dry_run("version 1;\njob {\n trigger manual;\n}\n", 34, 1000, &dr) ==
+              DEVOS_ERR_INVALID_ARG);
+        CHECK(dr.message[0] != '\0');
+        bool ghost = false;
+        for (int i = 0; i < devos_jobs_count(); i++) {
+            devos_job_summary_t s;
+            if (devos_jobs_summary_at(i, &s) && s.id[0] == '~') ghost = true;
+        }
+        CHECK(!ghost);                           /* no catalog entry, no trace left */
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }
