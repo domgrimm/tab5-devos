@@ -63,7 +63,7 @@ typedef struct {
     lv_obj_t *lbl_problems;
     lv_obj_t *btn_new, *btn_validate, *btn_apply, *btn_enable, *btn_run, *btn_cancel, *btn_hist, *btn_del;
     /* Builder */
-    lv_obj_t *dd_kind, *ta_trig, *ta_where, *dd_topic;
+    lv_obj_t *dd_kind, *ta_trig, *ta_where, *dd_topic, *dd_hour, *dd_min;
     lv_obj_t *step_list, *step_row[STEP_ROWS], *step_lbl[STEP_ROWS];
     lv_obj_t *lbl_settings;
     lv_obj_t *dd_add, *btn_add, *btn_bdel, *btn_up, *btn_dn;
@@ -513,7 +513,18 @@ static void builder_refresh(void)
         lv_textarea_set_text(s_ctx.ta_where, jobs_build_trigger_where_text(t));
         if (s_ctx.dd_topic) refresh_topics();
         bool ev = kind == JTRIG_EVENT;
-        set_visible(s_ctx.ta_trig, !ev);
+        bool hm = kind == JTRIG_DAILY || kind == JTRIG_WEEKDAYS;
+        if (hm && s_ctx.dd_hour) {
+            int hh = 8, mm = 0;
+            sscanf(v, "%d:%d", &hh, &mm);
+            if (hh < 0 || hh > 23) hh = 8;
+            if (mm < 0 || mm > 59) mm = 0;
+            lv_dropdown_set_selected(s_ctx.dd_hour, (uint32_t)hh);
+            lv_dropdown_set_selected(s_ctx.dd_min, (uint32_t)mm);
+        }
+        set_visible(s_ctx.ta_trig, !ev && !hm);
+        if (s_ctx.dd_hour) set_visible(s_ctx.dd_hour, hm);
+        if (s_ctx.dd_min) set_visible(s_ctx.dd_min, hm);
         if (s_ctx.dd_topic) set_visible(s_ctx.dd_topic, ev);
         if (ev) lv_obj_remove_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(s_ctx.ta_where, LV_OBJ_FLAG_HIDDEN);
@@ -767,7 +778,16 @@ static void builder_commit_trigger(void)
                                                  kind == 3 ? JTRIG_WEEKDAYS : kind == 4 ? JTRIG_EVENT : JTRIG_MANUAL);
     const char *v = lv_textarea_get_text(s_ctx.ta_trig);
     if (kind == 1) { int64_t ms = parse_dur(v); if (ms > 0) jobs_build_set_trigger_duration(&s_ctx.build, ms); }
-    else if (kind == 2 || kind == 3) jobs_build_set_trigger_time(&s_ctx.build, v);
+    else if (kind == 2 || kind == 3) {
+        if (s_ctx.dd_hour && s_ctx.dd_min) {
+            char hm[8];
+            snprintf(hm, sizeof(hm), "%02d:%02d", (int)lv_dropdown_get_selected(s_ctx.dd_hour),
+                     (int)lv_dropdown_get_selected(s_ctx.dd_min));
+            jobs_build_set_trigger_time(&s_ctx.build, hm);
+        } else {
+            jobs_build_set_trigger_time(&s_ctx.build, v);
+        }
+    }
     else if (kind == 4) {
         int sel = (int)lv_dropdown_get_selected(s_ctx.dd_topic);
         if (sel >= 0 && sel < s_topic_n) jobs_build_set_trigger_event(&s_ctx.build, s_topic_ids[sel]);
@@ -775,6 +795,12 @@ static void builder_commit_trigger(void)
             say(s_ctx.build.diag);
     }
     builder_sync();
+}
+
+static void time_spinner_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (s_ctx.tab == TAB_BUILDER) builder_commit_trigger();
 }
 
 static void builder_commit_value(void)
@@ -1886,6 +1912,24 @@ static void jobs_init(void)
     s_ctx.ta_trig = devos_w_ta(s_ctx.bld, true, 190, 36);
     lv_obj_set_pos(s_ctx.ta_trig, 160, 18);
     lv_textarea_set_max_length(s_ctx.ta_trig, 48);
+    /* P2: hour/minute spinners for Daily/Weekdays (Left/Right change them) */
+    {
+        static char hours[24 * 3], mins[60 * 3];
+        if (!hours[0]) {
+            size_t o = 0;
+            for (int h = 0; h < 24; h++) o += (size_t)snprintf(hours + o, sizeof(hours) - o, "%s%02d", h ? "\n" : "", h);
+            o = 0;
+            for (int m = 0; m < 60; m++) o += (size_t)snprintf(mins + o, sizeof(mins) - o, "%s%02d", m ? "\n" : "", m);
+        }
+        s_ctx.dd_hour = devos_w_dd(s_ctx.bld, hours, 80);
+        lv_obj_set_pos(s_ctx.dd_hour, 160, 18);
+        lv_obj_add_flag(s_ctx.dd_hour, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(s_ctx.dd_hour, time_spinner_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        s_ctx.dd_min = devos_w_dd(s_ctx.bld, mins, 80);
+        lv_obj_set_pos(s_ctx.dd_min, 250, 18);
+        lv_obj_add_flag(s_ctx.dd_min, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(s_ctx.dd_min, time_spinner_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    }
     s_ctx.dd_topic = devos_w_dd(s_ctx.bld, "(no topics registered)", 250);
     lv_obj_set_pos(s_ctx.dd_topic, 160, 18);
     lv_obj_add_flag(s_ctx.dd_topic, LV_OBJ_FLAG_HIDDEN);
@@ -2158,6 +2202,8 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.btn_pause);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_kind);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_trig);
+    devos_focus_add(&s_ctx.focus, s_ctx.dd_hour);
+    devos_focus_add(&s_ctx.focus, s_ctx.dd_min);
     devos_focus_add(&s_ctx.focus, s_ctx.dd_topic);
     devos_focus_add(&s_ctx.focus, s_ctx.ta_where);
     devos_focus_add(&s_ctx.focus, s_ctx.step_list);
