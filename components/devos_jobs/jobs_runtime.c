@@ -13,6 +13,17 @@
 #define JOBS_DEFAULT_RUN_MS 60000
 
 /* ---- variables ---- */
+const char *jobs_cause_name(jobs_cause_t c)
+{
+    switch (c) {
+    case JOBS_CAUSE_MANUAL:   return "manual";
+    case JOBS_CAUSE_SCHEDULE: return "schedule";
+    case JOBS_CAUSE_EVENT:    return "event";
+    case JOBS_CAUSE_QUEUE:    return "queued";
+    default:                  return "-";
+    }
+}
+
 static jobs_var_t *var_find(jobs_run_t *r, const char *name)
 {
     for (int i = 0; i < r->nvars; i++)
@@ -418,11 +429,13 @@ bool jobs_trigger_where_matches(jobs_job_t *j)
     return b;
 }
 
-void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision)
+void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision,
+                    jobs_cause_t cause)
 {
     jobs_run_t *r = &j->run;
     memset(r, 0, sizeof(*r));
     r->active = true;
+    j->last_cause = (uint8_t)cause;
     snprintf(r->run_id, sizeof(r->run_id), "%s", run_id);
     r->ast = j->ast;
     jobs_ast_retain(j->ast);
@@ -504,13 +517,21 @@ static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
     snprintf(r->message, sizeof(r->message), "%.63s", msg ? msg : "");
     snprintf(j->last_result, sizeof(j->last_result), "%.63s", msg && msg[0] ? msg : (ok ? "ok" : "failed"));
     j->last_run_ms = now;
+    j->last_ok = ok;
+    j->last_run_wall_s = g_jobs.sys.time_valid ? g_jobs.sys.wall_unix_s : 0;
+    if (!ok && r->trace_n > 0) r->trace[r->trace_n - 1].result = 2;   /* the failing step */
     if (r->ast) { jobs_ast_release((jobs_ast_t *)r->ast); r->ast = NULL; }
 
     /* Bounded history, written through the Core 1 worker so the scheduler
-     * (Core 0) never blocks on the SD card. */
-    char line[128];
-    snprintf(line, sizeof(line), "{\"run\":\"%s\",\"ok\":%s,\"ms\":%lld}",
-             r->run_id, ok ? "true" : "false", (long long)(now - r->started_ms));
+     * (Core 0) never blocks on the SD card. Structured so the UI reads it
+     * without parsing JSONL itself (devos_jobs_history_at). */
+    char err[96];
+    devos_json_escape(msg ? msg : "", err, sizeof(err));
+    char line[224];
+    snprintf(line, sizeof(line),
+             "{\"run\":\"%s\",\"wall\":%lld,\"cause\":\"%s\",\"ok\":%s,\"ms\":%lld,\"steps\":%d,\"err\":\"%s\"}",
+             r->run_id, (long long)j->last_run_wall_s, jobs_cause_name((jobs_cause_t)j->last_cause),
+             ok ? "true" : "false", (long long)(now - r->started_ms), r->steps, err);
     jobs_store_history_append_async(j->id, line);
 }
 
@@ -620,6 +641,15 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
         f->cursor = s->next;
         r->cur = s;
         r->steps++;
+        if (r->trace_n < JOBS_TRACE_MAX) {
+            jobs_trace_t *tr = &r->trace[r->trace_n++];
+            tr->line = s->line;
+            tr->col = s->col;
+            tr->kind = s->kind;
+            tr->result = 0;
+        } else {
+            r->trace_over++;
+        }
         char err[64];
         switch (s->kind) {
         case JN_ACTION: {

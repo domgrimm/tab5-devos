@@ -136,6 +136,8 @@ bool jobs_validate(jobs_ast_t *ast);
  * disables it, keeping the validator free of an events dependency in tests. */
 typedef bool (*jobs_topic_check_fn)(const char *topic, void *user);
 void jobs_validate_set_topic_check(jobs_topic_check_fn fn, void *user);
+/* Advisory from the last jobs_validate() pass (NULL = none). */
+const char *jobs_validate_topic_advisory(void);
 /* Canonical source; returns the length (or the needed length if it didn't fit). */
 size_t jobs_serialize(const jobs_ast_t *ast, char *out, size_t cap);
 /* Canonical text of one expression (for the Builder's fields). */

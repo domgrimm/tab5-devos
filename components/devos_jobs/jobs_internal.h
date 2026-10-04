@@ -18,6 +18,24 @@ extern "C" {
 #define JOBS_VAR_NAME_MAX 40
 #define JOBS_RUN_STRPOOL  1024
 #define JOBS_SECRET_SCRATCH 1024   /* resolved credential copies, wiped after use */
+#define JOBS_TRACE_MAX    128      /* executed steps kept per run, for the trace view */
+
+/* Why a run started (shown in the history and the run detail). */
+typedef enum {
+    JOBS_CAUSE_NONE = 0,
+    JOBS_CAUSE_MANUAL,
+    JOBS_CAUSE_SCHEDULE,
+    JOBS_CAUSE_EVENT,
+    JOBS_CAUSE_QUEUE,          /* coalesced (queue_one) automatic run */
+} jobs_cause_t;
+const char *jobs_cause_name(jobs_cause_t c);
+
+/* One executed step, snapshotted so it survives the AST release at run end. */
+typedef struct {
+    uint16_t line, col;
+    uint8_t kind;               /* jobs_node_kind_t */
+    uint8_t result;             /* 0 ran, 1 condition false, 2 error */
+} jobs_trace_t;
 #define JOBS_EV_PAYLOAD_MAX 256   /* bounded copy of a triggering event payload */
 #define JOBS_SUB_TOPIC_MAX  192   /* MQTT subscription topic (no devos_mqtt dependency) */
 
@@ -80,6 +98,9 @@ typedef struct {
     const jobs_node_t *cur;         /* current node, for the UI/trace */
     jobs_pending_event_t ev;        /* triggering event copy, for event.* in the body */
     bool ev_valid;
+    jobs_trace_t trace[JOBS_TRACE_MAX];
+    int trace_n;
+    uint32_t trace_over;            /* steps dropped once the ring filled */
     /* reusable job calls (PLAN.md 9.3) */
     int call_depth;
     char call_chain[JOBS_MAX_CALL_DEPTH][64];
@@ -125,6 +146,9 @@ typedef struct {
     jobs_run_t run;
     char last_result[64];
     int64_t last_run_ms;
+    int64_t last_run_wall_s;        /* unix seconds, 0 when the clock was unset */
+    bool last_ok;
+    uint8_t last_cause;             /* jobs_cause_t */
     uint32_t skipped;               /* coalesced/skipped triggers */
 } jobs_job_t;
 
@@ -155,7 +179,8 @@ typedef struct {
 extern jobs_engine_t g_jobs;
 
 /* jobs_runtime.c: begin a run, advance it one tick, cancel it. */
-void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision);
+void jobs_run_begin(jobs_job_t *j, const char *run_id, int64_t now_ms, uint32_t revision,
+                    jobs_cause_t cause);
 void jobs_run_tick(jobs_job_t *j, int64_t now_ms);
 void jobs_run_cancel(jobs_job_t *j);
 /* Evaluate an event trigger's optional `where` against g_jobs.cur_event.

@@ -419,7 +419,7 @@ devos_err_t jobs_store_draft_load(const char *id, char *out, size_t cap, size_t 
 }
 
 /* ---------------------------------------------------------------- worker */
-typedef struct { char id[JOBS_STORE_ID_MAX]; char line[128]; } hreq_t;
+typedef struct { char id[JOBS_STORE_ID_MAX]; char line[256]; } hreq_t;
 #define HQUEUE 16
 static hreq_t s_hq[HQUEUE];
 static int s_hqh, s_hqn;

@@ -29,11 +29,21 @@ typedef struct {
 
 static jobs_topic_check_fn s_topic_check;
 static void *s_topic_user;
+static char s_topic_advisory[160];       /* non-blocking: an unregistered event topic */
+static bool s_topic_advisory_set;
 
 void jobs_validate_set_topic_check(jobs_topic_check_fn fn, void *user)
 {
     s_topic_check = fn;
     s_topic_user = user;
+}
+
+/* Non-blocking advisory set during the last jobs_validate() pass: a trigger
+ * references an event topic no app registers, so it can never fire. The job
+ * still loads (it may be from a switched-off provider) but the UI warns. */
+const char *jobs_validate_topic_advisory(void)
+{
+    return s_topic_advisory_set ? s_topic_advisory : NULL;
 }
 
 static void verr(V *v, const jobs_node_t *n, const char *fmt, ...)
@@ -468,8 +478,11 @@ static void check_trigger(V *v, jobs_node_t *t)
     case JTRIG_EVENT: {
         v->in_event = true;
         if (!t->u.str.s || !t->u.str.s[0]) verr(v, t, "an event trigger needs a topic");
-        else if (s_topic_check && !s_topic_check(t->u.str.s, s_topic_user))
-            verr(v, t, "unknown event topic '%s' (no app registers it)", t->u.str.s);
+        else if (s_topic_check && !s_topic_check(t->u.str.s, s_topic_user)) {
+            snprintf(s_topic_advisory, sizeof(s_topic_advisory),
+                     "Event topic \"%s\" is not registered, so the trigger never fires.", t->u.str.s);
+            s_topic_advisory_set = true;
+        }
         for (jobs_node_t *a = t->a; a; a = a->next) {
             static const struct { const char *n; ty_t t; } ea[] = {
                 { "topic", TY_STR }, { "include_retained", TY_BOOL }, { "debounce", TY_DUR },
@@ -519,6 +532,7 @@ bool jobs_validate(jobs_ast_t *ast)
     if (ast->diag_count > 0) return false;
     if (!ast->root) return false;
 
+    s_topic_advisory_set = false;
     V v;
     memset(&v, 0, sizeof(v));
     v.ast = ast;

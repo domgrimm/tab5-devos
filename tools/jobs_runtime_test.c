@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
@@ -389,6 +390,39 @@ int main(void)
         for (int i = 0; i < devos_jobs_count(); i++)
             if (devos_jobs_summary_at(i, &bs) && strcmp(bs.id, "big") == 0) { found = true; break; }
         CHECK(found && strstr(bs.last_result, "step budget") != NULL);
+    }
+
+    /* dashboard fields + structured history + trace (P1 engine additions) */
+    apply_ok("dash", "version 1;\njob \"dash\" {\n trigger every 1s;\n test.check() as c;\n"
+                     " if c.ok { system.log(message: \"dash ok\"); }\n}\n");
+    CHECK(devos_jobs_run_now("dash") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        devos_job_summary_t ds;
+        bool found = false;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &ds) && strcmp(ds.id, "dash") == 0) { found = true; break; }
+        CHECK(found);
+        CHECK(ds.last_ok && strcmp(ds.last_cause, "manual") == 0);
+    }
+    CHECK(devos_jobs_set_enabled("dash", true) == DEVOS_OK);
+    {
+        devos_job_summary_t ds;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &ds) && strcmp(ds.id, "dash") == 0) break;
+        CHECK(ds.next_run_in_ms > 0 && ds.next_run_in_ms <= 1000);   /* first run after one interval */
+    }
+    {
+        devos_jobs_step_t steps[8];
+        int tn = devos_jobs_trace("dash", steps, 8);
+        CHECK(tn >= 2);                              /* the action + the if */
+    }
+    usleep(60 * 1000);                               /* the history worker flushes */
+    {
+        devos_run_record_t rec[4];
+        int hr = devos_jobs_history_recent("dash", rec, 4);
+        CHECK(hr >= 1);
+        CHECK(rec[0].ok && strcmp(rec[0].cause, "manual") == 0 && rec[0].steps >= 2);
     }
 
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);

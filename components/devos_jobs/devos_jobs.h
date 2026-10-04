@@ -51,6 +51,12 @@ typedef struct {
     char last_result[48];    /* "ok 3s ago", "failed: ..." */
     bool running;
     uint32_t revision;       /* active definition revision */
+    /* P1 dashboard extras */
+    int64_t next_run_wall_s; /* unix seconds of the next wall-clock run, 0 = none */
+    int64_t next_run_in_ms;  /* ms until the next run, 0 = none/unknown */
+    int64_t last_run_wall_s; /* unix seconds of the last run, 0 = unknown */
+    bool last_ok;            /* the last finished run's result */
+    char last_cause[12];     /* "manual" / "schedule" / "event" / "queued" / "-" */
 } devos_job_summary_t;
 
 typedef struct {
@@ -152,8 +158,33 @@ bool devos_jobs_run(devos_jobs_run_t *out);
 devos_err_t devos_jobs_source(const char *id, char *out, size_t cap, size_t *out_len);
 /* Parse + validate without applying; the first diagnostic goes to diag. */
 devos_err_t devos_jobs_check(const char *source, size_t len, char *diag, size_t cap);
+/* Advisory about the active revision: NULL, or a warning such as an event topic
+ * no app registers (the job still loads so it can be fixed, but it never fires). */
+const char *devos_jobs_topic_advisory(void);
+
 /* Recent run-history lines for a job (newest last), bounded. Returns bytes. */
 int devos_jobs_history(const char *id, char *out, size_t cap);
+
+/* Structured run history (P1 Runs tab): newest first, no JSONL parsing in the
+ * UI. Returns the number written (<= max). */
+typedef struct {
+    int64_t wall;            /* unix seconds, 0 unknown */
+    int32_t duration_ms;
+    bool ok;
+    int steps;
+    char cause[12];          /* manual / schedule / event / queued */
+    char error[64];          /* "" when clean */
+} devos_run_record_t;
+int devos_jobs_history_recent(const char *id, devos_run_record_t *out, int max);
+
+/* The retained trace of a job's most recent run: executed steps with their
+ * source line and outcome (0 ran, 1 skipped, 2 error). Returns the count. */
+typedef struct {
+    int line, col;
+    int kind;                /* jobs_node_kind_t */
+    int result;
+} devos_jobs_step_t;
+int devos_jobs_trace(const char *id, devos_jobs_step_t *out, int max);
 
 /* ---- commands (bounded; return an admission result) ----
  * The UI enqueues these and gets completion through the snapshot API. They do

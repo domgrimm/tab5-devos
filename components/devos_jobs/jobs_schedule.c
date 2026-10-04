@@ -10,6 +10,7 @@
 #include "jobs_internal.h"
 #include "jobs_platform.h"
 #include "jobs_store.h"
+#include "devos_json.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -64,11 +65,11 @@ static void fmt_trigger(const jobs_job_t *j, char *out, size_t cap)
     }
 }
 
-static void start_run(jobs_job_t *j, int64_t now)
+static void start_run(jobs_job_t *j, int64_t now, jobs_cause_t cause)
 {
     char id[JOBS_RUN_ID_MAX];
     snprintf(id, sizeof(id), "r%u", (unsigned)++g_jobs.run_seq);
-    jobs_run_begin(j, id, now, j->revision);
+    jobs_run_begin(j, id, now, j->revision, cause);
 }
 
 /* ---- calendar (daily / weekdays) ---------------------------------------- */
@@ -439,6 +440,18 @@ bool devos_jobs_summary_at(int index, devos_job_summary_t *out)
         snprintf(out->last_result, sizeof(out->last_result), "%s", j->last_result);
         out->running = j->run.active;
         out->revision = j->revision;
+        out->last_run_wall_s = j->last_run_wall_s;
+        out->last_ok = j->last_ok;
+        snprintf(out->last_cause, sizeof(out->last_cause), "%s",
+                 (j->last_result[0] || j->last_run_ms) ? jobs_cause_name((jobs_cause_t)j->last_cause) : "-");
+        if (j->trigger_kind == JTRIG_EVERY && j->has_next) {
+            int64_t now = jobs_now_ms();
+            out->next_run_in_ms = j->next_due_ms > now ? j->next_due_ms - now : 0;
+        } else if ((j->trigger_kind == JTRIG_DAILY || j->trigger_kind == JTRIG_WEEKDAYS) && j->next_wall_valid) {
+            out->next_run_wall_s = j->next_wall_s;
+            if (g_jobs.sys.time_valid && j->next_wall_s > g_jobs.sys.wall_unix_s)
+                out->next_run_in_ms = (j->next_wall_s - g_jobs.sys.wall_unix_s) * 1000;
+        }
         return true;
     }
     return false;
@@ -539,7 +552,7 @@ devos_err_t devos_jobs_run_now(const char *id)
     if (!j) return DEVOS_ERR_NOT_FOUND;
     if (!j->ast) return DEVOS_ERR_INVALID_STATE;
     if (j->run.active) return DEVOS_ERR_INVALID_STATE;      /* overlap: skip */
-    start_run(j, jobs_now_ms());
+    start_run(j, jobs_now_ms(), JOBS_CAUSE_MANUAL);
     return DEVOS_OK;
 }
 
@@ -623,6 +636,61 @@ devos_err_t devos_jobs_source(const char *id, char *out, size_t cap, size_t *out
 int devos_jobs_history(const char *id, char *out, size_t cap)
 {
     return jobs_store_history_read(id, out, cap);
+}
+
+const char *devos_jobs_topic_advisory(void)
+{
+    return jobs_validate_topic_advisory();
+}
+
+int devos_jobs_history_recent(const char *id, devos_run_record_t *out, int max)
+{
+    if (!id || !out || max <= 0) return 0;
+    static EXT_RAM_BSS_ATTR char buf[4096];
+    int n = jobs_store_history_read(id, buf, sizeof(buf));
+    if (n <= 0) return 0;
+    const char *end_buf = buf + n;
+    const char *starts[128];
+    int count = 0;
+    const char *p = buf;
+    while (p < end_buf && count < 128) {
+        const char *e = memchr(p, '\n', (size_t)(end_buf - p));
+        if (!e) e = end_buf;
+        if (e > p) starts[count++] = p;
+        p = e + 1;
+    }
+    int written = 0;
+    for (int i = count - 1; i >= 0 && written < max; i--) {   /* newest first */
+        const char *line = starts[i];
+        const char *end = memchr(line, '\n', (size_t)(end_buf - line));
+        if (!end) end = end_buf;
+        devos_run_record_t *r = &out[written];
+        memset(r, 0, sizeof(*r));
+        double d = 0;
+        if (devos_json_member_num(line, end, "wall", &d)) r->wall = (int64_t)d;
+        if (devos_json_member_num(line, end, "ms", &d)) r->duration_ms = (int32_t)d;
+        if (devos_json_member_num(line, end, "steps", &d)) r->steps = (int)d;
+        const char *okp = devos_json_member(line, end, "ok");
+        r->ok = okp && *okp == 't';
+        devos_json_member_str(line, end, "cause", r->cause, sizeof(r->cause));
+        devos_json_member_str(line, end, "err", r->error, sizeof(r->error));
+        written++;
+    }
+    return written;
+}
+
+int devos_jobs_trace(const char *id, devos_jobs_step_t *out, int max)
+{
+    jobs_job_t *j = jobs_find(id);
+    if (!j || !out || max <= 0) return 0;
+    int n = j->run.trace_n < max ? j->run.trace_n : max;
+    for (int i = 0; i < n; i++) {
+        out[i].line = j->run.trace[i].line;
+        out[i].col = j->run.trace[i].col;
+        out[i].kind = j->run.trace[i].kind;
+        out[i].result = j->run.trace[i].result;
+    }
+    return n;
 }
 
 /* ---- scheduler tick ------------------------------------------------------ */
@@ -714,10 +782,12 @@ void devos_jobs_tick(void)
         if (!j->run.active) {
             bool fire = due || j->pending_run;
             if (fire) {
+                bool queued = j->pending_run;
                 j->pending_run = false;
                 if (admit_auto(j, now)) {
                     j->last_start_ms = now;
-                    start_run(j, now);       /* copies the event into the run */
+                    start_run(j, now, queued ? JOBS_CAUSE_QUEUE :
+                              (j->trigger_kind == JTRIG_EVENT ? JOBS_CAUSE_EVENT : JOBS_CAUSE_SCHEDULE));
                     jobs_run_tick(j, now);   /* advance the fresh run one step */
                 } else {
                     j->skipped++;            /* cooldown */
