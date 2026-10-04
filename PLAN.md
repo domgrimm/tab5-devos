@@ -558,9 +558,21 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     `error`. Jobs admits one DNS lookup at a time (the engine pool holds two). Both reuse the
     shared socket routing (so VPN routing applies). `tools/jobs_network_test.c` drives a fake DNS
     server, an async WoL (including a hostname target) and a concurrent UI lookup.
-*   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
-    credential-capable field and are wiped after the operation. Persistence must be genuinely
-    encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
+*   **Secrets (`devos_secrets`, `secret("name")`).** Named references only: a source stores
+    `secret("name")` in a credential-capable field (never a literal, never interpolated, never
+    logged). Values are sealed at rest with ChaCha20-Poly1305 under a 32-byte device key; the blob
+    is `/.devos/secrets.enc` on the SD card and the key is in NVS (a file under the SD root in the
+    simulator). The device key is generated on first use, never hardcoded. The engine resolves a
+    credential immediately before a provider field uses it into a per-run scratch copy and wipes
+    that copy right after the action starts (and at run end); a missing reference fails the run
+    with the reference name. Provisioning is by `devos_secrets_set()` or a
+    `/.devos/secrets.import` file (`name=value` lines, read once, sealed, then wiped and removed).
+    **Security statement, not a claim:** the blob is genuinely AEAD-encrypted, so a copy of the SD
+    card alone is ciphertext; the device key in plain NVS is the weak link, so full at-rest
+    protection needs NVS encryption. An `nvs_keys` partition is present (offset 0x12000) and
+    `devos_secrets_security_note()` says so; enabling `CONFIG_NVS_ENCRYPTION` and flashing the keys
+    is the production step, and is **not verified on hardware** (Phase 10 gate). The simulator uses
+    a test key on disk, which is not target security parity.
 *   **Scheduling.** Monotonic clock for `every`/`wait`/cooldown/deadlines; wall clock only for
     daily/weekdays and display. Intervals are phase-anchored and skip missed periods; daily
     schedules claim one occurrence per local date (DST-safe); clock jumps recompute wall-time
@@ -574,8 +586,9 @@ them be built either from a schema-driven GUI Builder or as text - both over one
 *   **Limits (initial, to be measured).** 32 jobs, 16 KiB source, 128 nodes, depth 8, 32
     variables, 4 active runs (1/job), 2 Jobs HTTP tickets, 1 probe, 1 Jobs DNS lookup (engine
     pool 2), repeat count 1-32, job call depth 4, 8 input parameters/job, 60 s default run (5 min
-    max), 256 steps, 128 trace entries/run, 50 history summaries/job. Large buffers live in PSRAM;
-    engine headers carry no LVGL so the parser is host-tested.
+    max), 256 steps, 128 trace entries/run, 50 history summaries/job, 32 secrets (name 40 B,
+    value 512 B, sealed blob <= 24 KiB). Large buffers live in PSRAM; engine headers carry no
+    LVGL so the parser is host-tested.
     **Static target footprint** (`idf.py size`, `esp32p4`, this revision): app image 2,606,436 B
     (35% of the 4 MB partition free); DIRAM 322,781 / 576,464 B used (56.0%, 253,683 B free at
     link time, above the 120 KB runtime reserve), External RAM (PSRAM) BSS 1,829,616 B (2.7%). The
@@ -586,13 +599,14 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     are safe before init. `README.md`, `AGENTS.md` and `main/apps/app_template/` document the
     required provider/event hooks for future apps.
 
-**Status:** Phases 0-9 are implemented and host-tested, including the Phase 9 follow-up that closed
-its deferrals: the language (model / parser / validator / serializer), the action and event
-primitives, the scheduler and interpreter, durable storage and recovery, the Builder + Text GUI,
-calendar and system-event triggers, reliable MQTT, Docker background operations, the advanced
-language (`repeat`, `json_get`, reusable typed job calls) and the `network.wol` / `network.dns`
-actions. Phase 10 covers the remaining on-device validation (heap/stack high-water marks, a soak,
-SD recovery, verified encrypted credentials); a static size measurement is recorded in section 10.
+**Status:** Jobs phases 0-9 and the host-testable half of Phase 10 are implemented and host-tested
+(15 suites / 733 checks): the language (model / parser / validator / serializer), actions/events,
+the scheduler and interpreter, durable storage and recovery (plus a crash/power-loss fixture), the
+Builder + Text GUI, calendar and system-event triggers, reliable MQTT, Docker background operations,
+the advanced language (`repeat`, `json_get`, reusable typed job calls), the `network.wol` /
+`network.dns` actions, and the encrypted credential store. The remaining Phase 10 items are
+on-device measurements, a hardware soak, SD power-loss testing and verified NVS-encryption
+provisioning; they require a Tab5 and are listed as pending, never inferred from host results.
 
 ---
 
@@ -959,9 +973,24 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       calls + child return, missing input, cycle, depth cap), `tools/jobs_build_test.c` (90:
       editable repeat, opaque body, call preservation), `tools/jobs_network_test.c` (26: async
       WoL incl. a hostname target, DNS success/NXDOMAIN/admission, concurrent UI + Jobs lookups).
-- [ ] **Phase 10** - target hardening: on-device heap/stack high-water marks and a mixed-workload
-      soak (a static `idf.py size` pass is recorded in section 10), SD crash/recovery, verified
-      encrypted credential persistence.
+- [~] **Phase 10** - target hardening. Host-testable work is done; on-device gates are listed and
+      explicitly **not** claimed.
+      *Done:* the encrypted credential store (`devos_secrets`, ChaCha20-Poly1305 over a device key,
+      `/.devos/secrets.enc` + NVS key, provisioning import, resolve/wipe) with `tools/secrets_test.c`
+      (73 checks); `secret("name")` resolved through a boot hook with a per-run scratch wiped after
+      each action (`tools/jobs_runtime_test.c`); an SD crash/power-loss recovery fixture
+      (`tools/jobs_crash_test.c`, 56 checks) which also exposed and fixed a real gap - a torn but
+      readable `catalog.json` did not fall back to `catalog.json.prev`; a mixed-workload soak
+      (`tools/jobs_soak_test.c`, 12000 iterations, no leaked job/action slots); engine memory/stack
+      telemetry (`devos_jobs_memory()`, scheduler + storage worker high-water marks, internal
+      heap/largest block, shown in the Jobs tile) for on-device reading; a `nvs_keys` partition;
+      a static `idf.py size` measurement recorded in §3.18.
+      *Pending (hardware):* real heap/largest-block and stack high-water marks under VPN + SSH +
+      Jobs, a multi-hour soak with MQTT ingress and the screen off, SD removal and power-interruption
+      on an expendable card, and verified NVS-encryption provisioning. These require the Tab5 and
+      are not marked passed from host results.
+- [ ] **Hardware gates recorded** - fill in the measured values and pass/fail once a Tab5 is
+      available; the plan must not treat the host/simulator results above as hardware evidence.
 
 ---
 
@@ -971,7 +1000,7 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
 tab5-devos/
 ├── CMakeLists.txt                 # Top-level ESP-IDF CMake configuration
 ├── sdkconfig.defaults             # Default ESP-IDF configuration (P4, PSRAM, FreeRTOS)
-├── partitions.csv                 # Flash partition table (app, ota_0, ota_1, nvs, storage)
+├── partitions.csv                 # Flash partition table (app, ota, nvs, nvs_keys, storage)
 ├── components/                    # Modular devOS components
 │   ├── devos_config/              # devos_config.h: pins, buffers, constants, app id enum
 │   ├── devos_core/                # App manager, window switcher, event bus
@@ -1036,7 +1065,11 @@ tab5-devos/
 │   ├── modular_launcher_test.c    # Host-side unit test for modular app registry & pagination
 │   ├── ota_test.c                 # Host test: OTA check + install over a loopback server, power states
 │   ├── fileshare_test.c           # Host-side end-to-end test of the file-sharing server
-│   └── vterm_test.c               # Host-side unit test for the terminal emulator
+│   ├── vterm_test.c               # Host-side unit test for the terminal emulator
+│   ├── jobs_*_test.c              # Jobs host suites: parse, build, runtime, store, schedule,
+│   │                              #   compat, http, mqtt, docker, network, crash/recovery, soak
+│   ├── actions_test.c / events_test.c   # action registry + event core
+│   └── secrets_test.c             # encrypted credential store (seal, reload, wrong key, import)
 ```
 
 ---

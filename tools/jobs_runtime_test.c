@@ -78,6 +78,46 @@ static const devos_action_descriptor_t SLOW_D = {
     .id = "test.slow", .schema_version = 1, .outs = BOOL_O, .out_count = 1, .ops = &SLOW_OPS,
 };
 
+/* A credential-capable provider: records the token it was handed. */
+static char s_got_token[64];
+static int s_secret_wipes;
+static devos_err_t auth_start(const devos_action_args_t *a, const devos_action_context_t *c, void **op)
+{
+    (void)c;
+    const char *t = (a && a->arg_count > 0 && a->args[0].type == DEVOS_VAL_STR) ? a->args[0].v.str.s : "";
+    snprintf(s_got_token, sizeof(s_got_token), "%s", t);
+    t_op_t *o = calloc(1, sizeof(*o));
+    if (!o) return DEVOS_ERR_NO_MEM;
+    o->need = 1;
+    o->outs[0].type = DEVOS_VAL_BOOL;
+    o->outs[0].v.b = true;
+    *op = o;
+    return DEVOS_OK;
+}
+static const devos_action_ops_t AUTH_OPS = { auth_start, t_poll, t_cancel, t_release, NULL };
+static const devos_action_param_t AUTH_P[] = {
+    { .name = "token", .type = DEVOS_VAL_STR, .credential = true, .max_len = 256 },
+};
+static const devos_action_descriptor_t AUTH_D = {
+    .id = "test.auth", .schema_version = 1, .params = AUTH_P, .param_count = 1,
+    .outs = BOOL_O, .out_count = 1, .ops = &AUTH_OPS,
+};
+
+/* Fake secret store: "tok" -> "s3cr3t"; records wipes. */
+static int fake_secret_resolve(const char *name, char *out, size_t cap, void *user)
+{
+    (void)user;
+    if (strcmp(name, "tok") != 0) return -1;
+    snprintf(out, cap, "s3cr3t");
+    return 6;
+}
+static void fake_secret_wipe(void *p, size_t len)
+{
+    (void)p;
+    (void)len;
+    s_secret_wipes++;
+}
+
 static const char *last_log(void)
 {
     static char lines[1 * JOBS_SYSTEM_LOG_LINE];
@@ -101,6 +141,8 @@ int main(void)
     jobs_system_register();
     CHECK(devos_actions_register(&CHECK_D) == DEVOS_OK);
     CHECK(devos_actions_register(&SLOW_D) == DEVOS_OK);
+    CHECK(devos_actions_register(&AUTH_D) == DEVOS_OK);
+    devos_jobs_set_secret_hooks(fake_secret_resolve, fake_secret_wipe, NULL);
 
     /* 1. branch on a negative transport result */
     s_check_ok = 0;
@@ -301,6 +343,33 @@ int main(void)
         for (int i = 0; i < devos_jobs_count(); i++)
             if (devos_jobs_summary_at(i, &ds) && strcmp(ds.id, "deep1") == 0) { found = true; break; }
         CHECK(found && strstr(ds.last_result, "too deep") != NULL);
+    }
+
+    /* a credential field written as secret("name") resolves through the hook
+     * and the run's copy is wiped after the action starts */
+    apply_ok("auth", "version 1;\njob \"Auth\" {\n trigger manual;\n"
+                     " test.auth(token: secret(\"tok\")) as r;\n"
+                     " if r.ok { system.log(message: \"auth ok\"); }\n}\n");
+    s_got_token[0] = '\0';
+    s_secret_wipes = 0;
+    CHECK(devos_jobs_run_now("auth") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(strcmp(s_got_token, "s3cr3t") == 0);
+    CHECK(s_secret_wipes >= 1);                    /* the run wiped its copy */
+    CHECK(strcmp(last_log(), "auth ok") == 0);
+
+    /* a missing secret fails the run with a clear diagnostic, never a blank
+     * credential */
+    apply_ok("authmiss", "version 1;\njob \"AuthMiss\" {\n trigger manual;\n"
+                         " test.auth(token: secret(\"nope\")) as r;\n}\n");
+    CHECK(devos_jobs_run_now("authmiss") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        devos_job_summary_t as;
+        bool found = false;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &as) && strcmp(as.id, "authmiss") == 0) { found = true; break; }
+        CHECK(found && strstr(as.last_result, "not available") != NULL);
     }
 
     /* the step budget caps an oversized repeat body instead of hanging */

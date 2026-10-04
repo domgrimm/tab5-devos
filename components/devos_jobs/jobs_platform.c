@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 
 static SemaphoreHandle_t s_mx;
+static TaskHandle_t s_sched_task;
 static jobs_clock_fn s_clock;
 static void *s_clock_user;
 
@@ -35,8 +36,13 @@ bool jobs_platform_start_scheduler(void (*fn)(void *), void *arg)
     (void)arg;
     /* 8 KiB: the tick drains the bounded event queue (devos_events_drain copies
      * a batch to its stack before running callbacks outside the lock). */
-    return xTaskCreatePinnedToCore(sched_task, "jobs", 8192, (void *)fn, 3, NULL,
+    return xTaskCreatePinnedToCore(sched_task, "jobs", 8192, (void *)fn, 3, &s_sched_task,
                                    DEVOS_CORE_NET_CRYPTO) == pdPASS;
+}
+
+int jobs_platform_sched_stack_free(void)
+{
+    return s_sched_task ? (int)uxTaskGetStackHighWaterMark(s_sched_task) : 0;
 }
 #else
 #include <pthread.h>
@@ -78,6 +84,8 @@ bool jobs_platform_start_scheduler(void (*fn)(void *), void *arg)
     pthread_detach(t);
     return true;
 }
+
+int jobs_platform_sched_stack_free(void) { return 0; }
 #endif
 
 void jobs_platform_set_clock(jobs_clock_fn fn, void *user)

@@ -26,6 +26,9 @@ void jobs_unlock(void);
 /* Start the scheduler loop on Core 0 (target) / a thread (host). */
 bool jobs_platform_start_scheduler(void (*fn)(void *), void *arg);
 void jobs_platform_sleep_ms(int ms);
+/* Free stack (bytes) at the scheduler task's high-water mark; 0 when unknown
+ * or on the host (a measurement aid, not a scheduling input). */
+int jobs_platform_sched_stack_free(void);
 
 #ifdef __cplusplus
 }

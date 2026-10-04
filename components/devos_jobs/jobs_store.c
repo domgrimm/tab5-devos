@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 static SemaphoreHandle_t s_wmx;
+static TaskHandle_t s_io_task;
 #define W_LOCK()   do { if (s_wmx) xSemaphoreTake(s_wmx, portMAX_DELAY); } while (0)
 #define W_UNLOCK() do { if (s_wmx) xSemaphoreGive(s_wmx); } while (0)
 #else
@@ -124,13 +125,16 @@ static entry_t *entry_add(const char *id)
     return e;
 }
 
-static void catalog_parse(const char *buf, size_t len)
+/* Parse the catalog; true when a jobs array was found (even if empty). A torn
+ * or malformed file returns false so the caller can use .prev. */
+static bool catalog_parse(const char *buf, size_t len)
 {
     s_entries_n = 0;
+    if (!buf || len == 0) return false;
     const char *jobs = devos_json_member(buf, buf + len, "jobs");
-    if (!jobs || *jobs != '[') return;
+    if (!jobs || *jobs != '[') return false;
     const char *end = devos_json_span(jobs, buf + len);
-    if (!end) return;
+    if (!end) return false;
     /* iterate the array elements (objects) */
     const char *p = jobs + 1;
     while (p < end && s_entries_n < 32) {
@@ -148,6 +152,7 @@ static void catalog_parse(const char *buf, size_t len)
         }
         p = el;
     }
+    return true;
 }
 
 static bool catalog_load(void)
@@ -157,12 +162,14 @@ static bool catalog_load(void)
     path_join(prev, sizeof(prev), ".devos/jobs/catalog.json.prev");
     char *buf = NULL;
     size_t len = 0;
-    if (!read_file(path, &buf, &len)) {
-        if (!read_file(prev, &buf, &len)) { s_entries_n = 0; return false; }
-    }
-    catalog_parse(buf, len);
+    if (read_file(path, &buf, &len) && catalog_parse(buf, len)) { free(buf); return true; }
     free(buf);
-    return true;
+    buf = NULL;
+    len = 0;
+    if (read_file(prev, &buf, &len) && catalog_parse(buf, len)) { free(buf); return true; }
+    free(buf);
+    s_entries_n = 0;
+    return false;
 }
 
 static devos_err_t catalog_save(void)
@@ -471,7 +478,7 @@ bool jobs_store_worker_start(void)
     if (!s_wmx) s_wmx = xSemaphoreCreateMutex();
     if (s_worker_run) return true;
     s_worker_run = true;
-    if (xTaskCreatePinnedToCore(store_worker_task, "jobs_io", 4096, NULL, 2, NULL,
+    if (xTaskCreatePinnedToCore(store_worker_task, "jobs_io", 4096, NULL, 2, &s_io_task,
                                 DEVOS_CORE_UI_INPUT) != pdPASS) {
         s_worker_run = false;
         return false;
@@ -479,6 +486,10 @@ bool jobs_store_worker_start(void)
     return true;
 }
 void jobs_store_worker_stop(void) { s_worker_run = false; }
+int jobs_store_stack_free(void)
+{
+    return s_io_task ? (int)uxTaskGetStackHighWaterMark(s_io_task) : 0;
+}
 #else
 static void *store_worker_thread(void *arg)
 {
@@ -504,4 +515,5 @@ bool jobs_store_worker_start(void)
     return true;
 }
 void jobs_store_worker_stop(void) { s_worker_run = false; }
+int jobs_store_stack_free(void) { return 0; }
 #endif

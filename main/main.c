@@ -41,6 +41,7 @@
 #include "jobs_providers/jobs_providers.h"
 #include "devos_jobs.h"
 #include "devos_events.h"
+#include "devos_secrets.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -401,6 +402,18 @@ static bool jobs_docker_gate(char *reason, size_t cap)
     return false;
 }
 
+/* The boot bridge installs the devos_secrets resolver so a credential field
+ * written as secret("name") resolves without the engine depending on NVS/SD. */
+static int jobs_secret_resolve(const char *name, char *out, size_t cap, void *user)
+{
+    (void)user;
+    return devos_secret_resolve(name, out, cap);
+}
+static void jobs_secret_wipe(void *p, size_t len)
+{
+    devos_secret_wipe((char *)p, len);
+}
+
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
 static void jobs_sync_system(void)
@@ -518,6 +531,11 @@ static void devos_system_bringup(void)
      * device's POSIX zone, which sysmon has already applied. */
     devos_jobs_set_offset_fn(jobs_tz_offset_at, NULL);
     devos_jobs_set_mqtt_hooks(jobs_mqtt_sub, jobs_mqtt_unsub, NULL);
+    devos_jobs_set_secret_hooks(jobs_secret_resolve, jobs_secret_wipe, NULL);
+    if (devos_core_app_enabled("jobs")) {
+        devos_secrets_init();
+        printf("[devOS] Jobs secrets: %s\n", devos_secrets_security_note());
+    }
     START_ENGINE("jobs", devos_jobs_init());
     if (devos_core_apps_boot_kind() != DEVOS_APPS_BOOT_NORMAL) devos_jobs_set_safe_pause(true);
     devos_core_add_restart_check(devos_jobs_restart_check);

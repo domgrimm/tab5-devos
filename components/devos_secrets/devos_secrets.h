@@ -53,6 +53,22 @@ bool devos_secrets_has(const char *name);
 int devos_secret_resolve(const char *name, char *out, size_t cap);
 void devos_secret_wipe(char *buf, size_t len);
 
+/* ---- provisioning (Settings / import; never exposes a value) ---- */
+/* Create or replace a reference. label is display-only. */
+devos_err_t devos_secrets_set(const char *name, const char *value, const char *label);
+devos_err_t devos_secrets_delete(const char *name);
+/* Persist the current set (called by set/delete; exposed for tests). */
+devos_err_t devos_secrets_save(void);
+/* Install the 32-byte device key (provisioning); reloads the store. */
+devos_err_t devos_secrets_set_device_key(const uint8_t key[32]);
+/* Wipe decrypted values and forget the key (lock/shutdown/tests). */
+void devos_secrets_deinit(void);
+/* A human-readable description of the at-rest protection actually in use.
+ * Never claims more than is verified. */
+const char *devos_secrets_security_note(void);
+/* True when the last load found a present-but-unreadable blob. */
+bool devos_secrets_corrupt(void);
+
 #ifdef __cplusplus
 }
 #endif

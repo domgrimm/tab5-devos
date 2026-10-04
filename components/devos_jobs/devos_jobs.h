@@ -103,6 +103,16 @@ typedef struct {
 } devos_jobs_system_t;
 void devos_jobs_set_system(const devos_jobs_system_t *s);
 
+/* Live engine memory/stack telemetry (Phase 10 measurement aid). Safe when the
+ * engine is off; task fields are 0 until the task exists and on the host. */
+typedef struct {
+    uint32_t internal_free_kb;      /* free internal SRAM */
+    uint32_t internal_largest_kb;   /* largest free internal block */
+    uint32_t sched_stack_free;      /* scheduler task stack headroom (bytes) */
+    uint32_t store_stack_free;      /* storage worker stack headroom (bytes) */
+} devos_jobs_memory_t;
+void devos_jobs_memory(devos_jobs_memory_t *out);
+
 /* Optional: the local UTC offset at a given UTC instant, for DST-correct
  * daily/weekdays occurrences. The boot bridge installs one built on the
  * device's POSIX timezone; host tests inject a fake. NULL means "use the
@@ -118,6 +128,14 @@ void devos_jobs_set_offset_fn(devos_jobs_offset_fn fn, void *user);
 typedef int  (*devos_jobs_mqtt_sub_fn)(const char *topic, void *user);
 typedef void (*devos_jobs_mqtt_unsub_fn)(int handle, void *user);
 void devos_jobs_set_mqtt_hooks(devos_jobs_mqtt_sub_fn sub, devos_jobs_mqtt_unsub_fn unsub, void *user);
+
+/* Secret resolver hooks: the boot bridge installs these so a credential field
+ * written as secret("name") resolves through devos_secrets without the engine
+ * depending on the NVS/SD store. `resolve` returns the value length (> 0) or
+ * -1; the engine wipes its copy after the action that used it starts. */
+typedef int  (*devos_jobs_secret_fn)(const char *name, char *out, size_t cap, void *user);
+typedef void (*devos_jobs_secret_wipe_fn)(void *p, size_t len);
+void devos_jobs_set_secret_hooks(devos_jobs_secret_fn resolve, devos_jobs_secret_wipe_fn wipe, void *user);
 
 /* Advance the scheduler once (interval deadlines, running jobs, waits). The
  * target calls this from its Core 0 task; host tests drive it with a fake

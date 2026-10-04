@@ -82,6 +82,7 @@ idf_component_register(
         devos_actions
         devos_events
         devos_jobs
+        devos_secrets
         devos_audio
         lvgl
         nvs_flash

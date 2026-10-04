@@ -69,6 +69,9 @@ devos_err_t jobs_store_draft_load(const char *id, char *out, size_t cap, size_t 
  * never blocks on SD. Without the worker (host/tests) they run inline. */
 bool jobs_store_worker_start(void);
 void jobs_store_worker_stop(void);
+/* Free stack (bytes) at the storage worker's high-water mark; 0 when unknown
+ * or on the host. */
+int jobs_store_stack_free(void);
 void jobs_store_history_append_async(const char *id, const char *line);
 uint32_t jobs_store_history_dropped(void);
 /* Copy the recent history file (bounded, newest last) into out; bytes copied. */

@@ -156,6 +156,17 @@ does one DNS query (`server` empty = the DHCP server; `ip:port` is accepted) and
 `rcode`, `count`, `first` and `error`; it runs in its own lookup context, so it never disturbs a
 lookup in the Network app, and Jobs runs one at a time.
 
+**Credentials.** A job never stores a password or token. A credential-capable field takes
+`secret("name")`, e.g. `http.request(..., bearer_token: secret("health-token"))`. Values live in an
+encrypted store sealed with ChaCha20-Poly1305 under a device key; the engine resolves one only for
+that field and wipes the copy as soon as the action starts. Add a secret from code
+(`devos_secrets_set`) or drop `/sdcard/.devos/secrets.import` with `name=value` lines - it is sealed
+in, wiped and removed the next time Jobs starts (you can upload it from **Settings > File Sharing**).
+`devos_secrets_security_note()` states the actual protection: the blob on the card is genuinely
+encrypted, but the device key lives in plain NVS until NVS encryption is enabled. An `nvs_keys`
+partition is reserved; enabling `CONFIG_NVS_ENCRYPTION` and flashing the keys is the production
+hardening step, and is not yet verified on hardware.
+
 Docker actions run in the background, whether or not the Docker screen is open.
 `docker.inspect(container: "web")` reads the daemon directly by id or name (`ok`, `status`,
 `state`, `health`, `id`, `name`, `updated`); `docker.start` / `stop` / `restart` return `status`,

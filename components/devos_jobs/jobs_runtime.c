@@ -31,6 +31,16 @@ static const char *pool_dup(jobs_run_t *r, const char *s, size_t n)
     return p;
 }
 
+/* Wipe any credential copies the run resolved (called after each action starts,
+ * and at run end). Uses the engine's wipe when the bridge installed one. */
+static void wipe_run_secrets(jobs_run_t *r)
+{
+    if (!r->secret_used) return;
+    if (g_jobs.secret_wipe) g_jobs.secret_wipe(r->secret_scratch, r->secret_used);
+    else memset(r->secret_scratch, 0, r->secret_used);
+    r->secret_used = 0;
+}
+
 static bool var_set(jobs_run_t *r, const char *name, const devos_value_t *v, char *err, size_t errcap)
 {
     jobs_var_t *slot = var_find(r, name);
@@ -227,8 +237,22 @@ static bool eval_call(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, c
         }
     }
     if (strcmp(fn, "secret") == 0) {
-        snprintf(err, errcap, "secrets are not configured");
-        return false;
+        if (argc != 1) { snprintf(err, errcap, "secret(\"name\") needs one argument"); return false; }
+        const jobs_node_t *sn = e->a;
+        const char *nm = (sn && sn->kind == JN_EXPR_STR && sn->a && !sn->a->next && sn->a->sub == JSP_LITERAL)
+                             ? sn->a->u.str.s : NULL;
+        if (!nm || !nm[0]) { snprintf(err, errcap, "secret(\"name\") needs a literal name"); return false; }
+        if (!g_jobs.secret_resolve) { snprintf(err, errcap, "secrets are not configured"); return false; }
+        size_t room = sizeof(r->secret_scratch) - r->secret_used;
+        if (room < 2) { snprintf(err, errcap, "too many secrets in one action"); return false; }
+        char *dst = r->secret_scratch + r->secret_used;
+        int n = g_jobs.secret_resolve(nm, dst, room, g_jobs.secret_user);
+        if (n < 0) { snprintf(err, errcap, "secret \"%s\" is not available", nm); return false; }
+        r->secret_used += (size_t)n + 1;
+        out->type = DEVOS_VAL_STR;
+        out->v.str.s = dst;
+        out->v.str.len = (uint32_t)n;
+        return true;
     }
     snprintf(err, errcap, "unknown function '%s'", fn);
     return false;
@@ -472,6 +496,7 @@ static bool val_type_ok(devos_val_type_t got, uint8_t want)
 static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
 {
     jobs_run_t *r = &j->run;
+    wipe_run_secrets(r);
     release_calls(r);
     r->active = false;
     r->finished = true;
@@ -605,6 +630,7 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
             devos_action_args_t a = { .args = av, .arg_count = d->param_count, .run_id = r->run_id };
             devos_action_handle_t h;
             devos_err_t rc = devos_action_start(s->u.str.s, &a, NULL, &h);
+            wipe_run_secrets(r);                       /* provider copied what it needs */
             if (rc != DEVOS_OK) {
                 char m[80];
                 snprintf(m, sizeof(m), "%s %s", s->u.str.s,

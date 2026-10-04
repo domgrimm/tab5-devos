@@ -1028,7 +1028,12 @@ static int jobs_telemetry(char lines[3][64])
             if (sum.running) running++;
         }
     snprintf(lines[0], sizeof(lines[0]), "* %d of %d enabled", on, total);
-    snprintf(lines[1], sizeof(lines[1]), "* %d running", running);
+    devos_jobs_memory_t mem;
+    devos_jobs_memory(&mem);
+    if (mem.sched_stack_free)
+        snprintf(lines[1], sizeof(lines[1]), "* %d running, %uB sched stack", running, (unsigned)mem.sched_stack_free);
+    else
+        snprintf(lines[1], sizeof(lines[1]), "* %d running", running);
     devos_events_stats_t es;
     devos_events_stats(&es);
     const char *state = devos_jobs_safe_paused() ? "paused (recovery)" :

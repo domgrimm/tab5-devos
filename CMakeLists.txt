@@ -74,6 +74,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_actions
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_events
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_jobs
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_secrets
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_err
         ${CMAKE_CURRENT_SOURCE_DIR}/main/jobs_providers
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_totp
@@ -162,6 +163,7 @@ else()
         components/devos_hashfile/devos_hashfile.c
         components/devos_actions/devos_actions.c
         components/devos_events/devos_events.c
+        components/devos_secrets/devos_secrets.c
         components/devos_jobs/jobs_model.c
         components/devos_jobs/jobs_parse.c
         components/devos_jobs/jobs_validate.c

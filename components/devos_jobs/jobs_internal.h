@@ -17,6 +17,7 @@ extern "C" {
 #define JOBS_RUN_ID_MAX   20
 #define JOBS_VAR_NAME_MAX 40
 #define JOBS_RUN_STRPOOL  1024
+#define JOBS_SECRET_SCRATCH 1024   /* resolved credential copies, wiped after use */
 #define JOBS_EV_PAYLOAD_MAX 256   /* bounded copy of a triggering event payload */
 #define JOBS_SUB_TOPIC_MAX  192   /* MQTT subscription topic (no devos_mqtt dependency) */
 
@@ -74,6 +75,8 @@ typedef struct {
     int nvars;
     char strpool[JOBS_RUN_STRPOOL];   /* interpolated/output strings, run-scoped */
     size_t strpool_used;
+    char secret_scratch[JOBS_SECRET_SCRATCH];  /* resolved credentials; wiped after use */
+    size_t secret_used;
     const jobs_node_t *cur;         /* current node, for the UI/trace */
     jobs_pending_event_t ev;        /* triggering event copy, for event.* in the body */
     bool ev_valid;
@@ -144,6 +147,9 @@ typedef struct {
     devos_jobs_mqtt_sub_fn mqtt_sub;      /* installed by the boot bridge */
     devos_jobs_mqtt_unsub_fn mqtt_unsub;
     void *mqtt_user;
+    devos_jobs_secret_fn secret_resolve;  /* installed by the boot bridge */
+    devos_jobs_secret_wipe_fn secret_wipe;
+    void *secret_user;
 } jobs_engine_t;
 
 extern jobs_engine_t g_jobs;

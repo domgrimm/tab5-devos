@@ -16,6 +16,7 @@
 
 #ifdef ESP_PLATFORM
 #include "devos_config.h"
+#include "esp_heap_caps.h"
 #endif
 #ifndef EXT_RAM_BSS_ATTR
 #define EXT_RAM_BSS_ATTR
@@ -366,6 +367,25 @@ void devos_jobs_set_mqtt_hooks(devos_jobs_mqtt_sub_fn sub, devos_jobs_mqtt_unsub
     g_jobs.mqtt_sub = sub;
     g_jobs.mqtt_unsub = unsub;
     g_jobs.mqtt_user = user;
+}
+
+void devos_jobs_set_secret_hooks(devos_jobs_secret_fn resolve, devos_jobs_secret_wipe_fn wipe, void *user)
+{
+    g_jobs.secret_resolve = resolve;
+    g_jobs.secret_wipe = wipe;
+    g_jobs.secret_user = user;
+}
+
+void devos_jobs_memory(devos_jobs_memory_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->sched_stack_free = (uint32_t)jobs_platform_sched_stack_free();
+    out->store_stack_free = (uint32_t)jobs_store_stack_free();
+#ifdef ESP_PLATFORM
+    out->internal_free_kb = (uint32_t)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    out->internal_largest_kb = (uint32_t)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+#endif
 }
 
 /* ---- snapshots ---- */
