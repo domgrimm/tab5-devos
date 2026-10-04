@@ -213,6 +213,18 @@ int main(void)
     CHECK(exists("sim_sdcard/.devos/jobs/history/h.jsonl"));
     jobs_store_worker_stop();
 
+    /* revisions API: newest-first numbers and one generation's source */
+    {
+        uint32_t revs[8];
+        int rn = jobs_store_revisions("roundtrip", revs, 8);
+        CHECK(rn >= 2 && revs[0] > revs[1]);   /* newest first */
+        char rsrc[1024];
+        int rl = jobs_store_revision_read("roundtrip", revs[0], rsrc, sizeof(rsrc));
+        CHECK(rl > 0 && strstr(rsrc, "version 1;") != NULL);
+        CHECK(jobs_store_revision_read("roundtrip", 9999, rsrc, sizeof(rsrc)) == 0);
+        CHECK(jobs_store_revision_read("nope", 1, rsrc, sizeof(rsrc)) == 0);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

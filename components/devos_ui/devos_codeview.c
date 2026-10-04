@@ -2,6 +2,8 @@
 #include "devos_codeview.h"
 #include "devos_theme.h"
 #include <ctype.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -142,4 +144,71 @@ void devos_codeview_create(devos_codeview_t *cv, lv_obj_t *scroll)
     lv_obj_remove_flag(cv->view, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(cv->view, 10, 10);
     lv_obj_add_event_cb(cv->view, cv_draw_cb, LV_EVENT_DRAW_MAIN, cv);
+}
+
+/* Unified line diff (old -> new): every line is emitted with a ' ', '-' or
+ * '+' prefix so the view's diff colours apply. Pure (no LVGL): host-tested.
+ * Lines per side are capped at DIFF_LINES; longer inputs are truncated with a
+ * marker. Returns the bytes written (excluding NUL). */
+#define DIFF_LINES 160
+
+static int split_lines(const char *t, const char **lines, char *buf, size_t cap)
+{
+    int n = 0;
+    if (!t) return 0;
+    size_t o = 0;
+    const char *p = t;
+    while (*p && n < DIFF_LINES && o + 1 < cap) {
+        const char *e = strchr(p, '\n');
+        size_t L = e ? (size_t)(e - p) : strlen(p);
+        if (o + L + 1 >= cap) break;
+        memcpy(buf + o, p, L);
+        buf[o + L] = '\0';
+        lines[n++] = buf + o;
+        o += L + 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return n;
+}
+
+int devos_codeview_diff(const char *old_text, const char *new_text, char *out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    static char abuf[DIFF_LINES * 96], bbuf[DIFF_LINES * 96];
+    const char *a[DIFF_LINES], *b[DIFF_LINES];
+    int na = split_lines(old_text, a, abuf, sizeof(abuf));
+    int nb = split_lines(new_text, b, bbuf, sizeof(bbuf));
+    uint16_t *m = malloc((size_t)(na + 1) * (nb + 1) * sizeof(uint16_t));
+    if (!m) return 0;
+    for (int i = na; i >= 0; i--)
+        for (int j = nb; j >= 0; j--) {
+            size_t at = (size_t)i * (nb + 1) + j;
+            if (i == na || j == nb) m[at] = 0;
+            else if (strcmp(a[i], b[j]) == 0) m[at] = m[at + (nb + 1) + 1] + 1;
+            else {
+                uint16_t x = m[at + (nb + 1)], y = m[at + 1];
+                m[at] = x > y ? x : y;
+            }
+        }
+    size_t o = 0;
+    int i = 0, j = 0;
+    while ((i < na || j < nb) && o + 100 < cap) {
+        size_t at = (size_t)i * (nb + 1) + j;
+        if (i < na && j < nb && strcmp(a[i], b[j]) == 0) {
+            o += (size_t)snprintf(out + o, cap - o, "  %s\n", a[i]);
+            i++; j++;
+        } else if (i < na && (j >= nb || m[at + (nb + 1)] >= m[at + 1])) {
+            o += (size_t)snprintf(out + o, cap - o, "- %s\n", a[i]);
+            i++;
+        } else if (j < nb) {
+            o += (size_t)snprintf(out + o, cap - o, "+ %s\n", b[j]);
+            j++;
+        } else {
+            break;
+        }
+    }
+    free(m);
+    return (int)o;
 }

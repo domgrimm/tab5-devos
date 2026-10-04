@@ -64,6 +64,10 @@ devos_err_t jobs_store_history_append(const char *id, const char *line);
 /* Draft checkpoint: never activates a revision. */
 devos_err_t jobs_store_draft_save(const char *id, const char *source, size_t len);
 devos_err_t jobs_store_draft_load(const char *id, char *out, size_t cap, size_t *out_len);
+/* Revision generations, newest-first (for the Revisions view). */
+int jobs_store_revisions(const char *id, uint32_t *out, int max);
+/* Read one generation's source; returns bytes, 0 when absent. */
+int jobs_store_revision_read(const char *id, uint32_t rev, char *out, size_t cap);
 
 /* Core 1 storage worker: history appends are queued so the scheduler (Core 0)
  * never blocks on SD. Without the worker (host/tests) they run inline. */

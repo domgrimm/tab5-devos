@@ -211,6 +211,10 @@ devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_
 devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, size_t cap);
 bool devos_jobs_dry_poll(devos_dryrun_t *out, uint32_t timeout_ms);
 void devos_jobs_dry_cancel(void);
+/* Revision generations for the Revisions view: newest-first numbers, and
+ * one generation's source. Rollback is an ordinary apply of old source. */
+int devos_jobs_revisions(const char *id, uint32_t *out, int max);
+int devos_jobs_revision_source(const char *id, uint32_t rev, char *out, size_t cap);
 /* ---- commands (bounded; return an admission result) ----
  * The UI enqueues these and gets completion through the snapshot API. They do
  * not return pointers into worker-owned memory. */

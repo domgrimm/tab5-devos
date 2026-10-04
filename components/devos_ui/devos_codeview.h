@@ -26,7 +26,9 @@ void devos_codeview_create(devos_codeview_t *cv, lv_obj_t *scroll);
 /* Show `text` (kept by pointer: it must stay valid) and scroll to the top.
  * Set cv->plain first for ordinary text files. */
 void devos_codeview_set(devos_codeview_t *cv, const char *text);
-
+/* Unified line diff (old -> new) as ' '/'-'/'+' lines for the diff colours.
+ * Pure (no LVGL): host-tested. Returns bytes written (excluding NUL). */
+int devos_codeview_diff(const char *old_text, const char *new_text, char *out, size_t cap);
 #ifdef __cplusplus
 }
 #endif

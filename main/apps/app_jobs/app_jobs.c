@@ -56,6 +56,7 @@ typedef struct {
     /* views */
     lv_obj_t *ov, *runs, *bld;
     lv_obj_t *lbl_ov_trigger, *lbl_ov_next, *lbl_ov_runs, *lbl_ov_policy;
+    lv_obj_t *btn_revs;
     lv_obj_t *runs_panel;
     devos_codeview_t runs_cv;
     lv_obj_t *ta_src;
@@ -140,6 +141,17 @@ static EXT_RAM_BSS_ATTR char s_dry_text[4096];
 static EXT_RAM_BSS_ATTR devos_dryrun_t s_dry_res;
 static EXT_RAM_BSS_ATTR char s_dry_src[SRCMAX];
 
+/* Revisions view: list generations, view/diff one, roll back (adds a rev). */
+static devos_w_dialog_t s_rev_dlg;
+static bool s_rev_open;
+static lv_obj_t *s_rev_dd, *s_rev_mode;
+static devos_codeview_t s_rev_cv;
+static uint32_t s_rev_nums[32];
+static int s_rev_n;
+static EXT_RAM_BSS_ATTR char s_rev_old[SRCMAX];
+static EXT_RAM_BSS_ATTR char s_rev_text[8192];
+static devos_focus_t s_rev_focus;
+
 static void set_mode(ui_mode_t m);
 static void set_tab(jobs_tab_t t);
 static bool selected_summary(devos_job_summary_t *out);
@@ -153,6 +165,9 @@ static void form_commit(const jobs_node_t *node);
 static void open_job_settings(void);
 static void commit_job_settings(void);
 static void close_job_settings(void);
+static void open_revisions(void);
+static void rev_rollback(void);
+static void rev_close(void);
 
 static const char *NEW_TEMPLATE =
     "version 1;\n"
@@ -1064,6 +1079,85 @@ static void dry_show_result(void)
 
 static void dry_ok_cb(lv_event_t *e) { LV_UNUSED(e); dry_close(); }
 
+/* ---- Revisions: view / diff / roll back ---- */
+static void rev_close(void)
+{
+    s_rev_open = false;
+    devos_w_dialog_show(&s_rev_dlg, false);
+}
+
+static void rev_show(void)
+{
+    if (s_ctx.n == 0 || s_rev_n == 0) return;
+    int sel = (int)lv_dropdown_get_selected(s_rev_dd);
+    if (sel < 0 || sel >= s_rev_n) sel = 0;
+    int n = devos_jobs_revision_source(s_ctx.ids[s_ctx.sel], s_rev_nums[sel],
+                                       s_rev_old, sizeof(s_rev_old));
+    if (n <= 0) { devos_codeview_set(&s_rev_cv, "(that generation is gone)"); return; }
+    bool diff = lv_dropdown_get_selected(s_rev_mode) == 1;
+    s_rev_cv.plain = !diff;
+    if (diff) {
+        devos_codeview_diff(s_rev_old, cur_source(), s_rev_text, sizeof(s_rev_text));
+        devos_codeview_set(&s_rev_cv, s_rev_text);
+    } else {
+        devos_codeview_set(&s_rev_cv, s_rev_old);
+    }
+}
+
+static void rev_rollback(void)
+{
+    if (s_ctx.n == 0 || s_rev_n == 0) { rev_close(); return; }
+    int sel = (int)lv_dropdown_get_selected(s_rev_dd);
+    if (sel < 0 || sel >= s_rev_n) sel = 0;
+    static EXT_RAM_BSS_ATTR char old[SRCMAX];
+    int n = devos_jobs_revision_source(s_ctx.ids[s_ctx.sel], s_rev_nums[sel], old, sizeof(old));
+    if (n <= 0) { say("That generation is gone."); return; }
+    uint32_t rev = 0;
+    devos_err_t rc = devos_jobs_apply_base(s_ctx.ids[s_ctx.sel], old, (size_t)n,
+                                           s_ctx.base_rev, true, &rev);
+    if (rc == DEVOS_OK) {
+        s_ctx.base_rev = rev;
+        rev_close();
+        refresh_list();
+        load_selected();
+        if (s_ctx.tab == TAB_BUILDER) set_mode(MODE_BUILDER);
+        if (s_ctx.tab == TAB_OVERVIEW) refresh_overview();
+        devos_toast_show("Rolled back (new revision)", DEVOS_TOAST_OK, 0);
+    } else if (rc == DEVOS_ERR_INVALID_STATE) {
+        say("Changed elsewhere - reload first.");
+    } else {
+        say("Couldn't roll back.");
+    }
+}
+
+static void rev_ok_cb(lv_event_t *e) { LV_UNUSED(e); rev_rollback(); }
+static void rev_cancel_cb(lv_event_t *e) { LV_UNUSED(e); rev_close(); }
+static void rev_pick_cb(lv_event_t *e) { LV_UNUSED(e); rev_show(); }
+static void revs_cb(lv_event_t *e) { LV_UNUSED(e); open_revisions(); }
+
+static void open_revisions(void)
+{
+    if (s_ctx.n == 0) { say("No job selected."); return; }
+    s_rev_n = devos_jobs_revisions(s_ctx.ids[s_ctx.sel], s_rev_nums, 32);
+    if (s_rev_n <= 0) { say("No saved revisions yet."); return; }
+    char opts[32 * 24];
+    size_t o = 0;
+    opts[0] = '\0';
+    devos_job_summary_t sum;
+    uint32_t active = selected_summary(&sum) ? sum.revision : 0;
+    for (int i = 0; i < s_rev_n; i++)
+        o += (size_t)snprintf(opts + o, sizeof(opts) - o, "%srev %u%s",
+                              i ? "\n" : "", (unsigned)s_rev_nums[i],
+                              s_rev_nums[i] == active ? "  (active)" : "");
+    lv_dropdown_set_options(s_rev_dd, opts);
+    lv_dropdown_set_selected(s_rev_dd, 0);
+    lv_dropdown_set_selected(s_rev_mode, 0);
+    rev_show();
+    s_rev_open = true;
+    devos_w_dialog_show(&s_rev_dlg, true);
+    devos_focus_first(&s_rev_focus);
+}
+
 /* Test the draft without applying it: validate, start, poll from tick_cb. */
 static void act_dryrun(void)
 {
@@ -1751,6 +1845,9 @@ static void jobs_init(void)
     s_ctx.lbl_ov_runs = devos_w_label(s_ctx.ov, devos_w_mono(), DEVOS_W_TEXT, "");
     lv_obj_set_pos(s_ctx.lbl_ov_runs, 0, 220);
     lv_obj_set_width(s_ctx.lbl_ov_runs, RW);
+    lv_obj_t *btn_revs = devos_w_btn(s_ctx.ov, "Revisions  [Sym+Z]", 170, revs_cb, NULL, NULL);
+    lv_obj_set_pos(btn_revs, 0, CH - 40);
+    s_ctx.btn_revs = btn_revs;
 
     /* ---- Text ---- */
     s_ctx.ta_src = devos_w_ta(scr, false, RW, CH);
@@ -1983,6 +2080,35 @@ static void jobs_init(void)
     lv_obj_set_size(dry_ok, 120, 36);
     lv_obj_align(dry_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
+    /* Revisions dialog: generation picker, View/Diff, rollback */
+    devos_w_dialog(&s_rev_dlg, scr, 760, 460, LV_SYMBOL_REFRESH "  Revisions");
+    s_rev_dd = devos_w_dd(s_rev_dlg.box, "", 220);
+    lv_obj_align(s_rev_dd, LV_ALIGN_TOP_LEFT, 0, 40);
+    lv_obj_add_event_cb(s_rev_dd, rev_pick_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    s_rev_mode = devos_w_dd(s_rev_dlg.box, "View\nDiff vs draft", 180);
+    lv_obj_align(s_rev_mode, LV_ALIGN_TOP_LEFT, 232, 40);
+    lv_obj_add_event_cb(s_rev_mode, rev_pick_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *rev_panel = lv_obj_create(s_rev_dlg.box);
+    lv_obj_remove_style_all(rev_panel);
+    devos_w_track(rev_panel, DEVOS_W_CODE);
+    lv_obj_set_size(rev_panel, 720, 300);
+    lv_obj_align(rev_panel, LV_ALIGN_TOP_LEFT, 0, 84);
+    lv_obj_set_style_pad_all(rev_panel, 8, 0);
+    devos_codeview_create(&s_rev_cv, rev_panel);
+    s_rev_cv.plain = true;
+    devos_w_set_text(s_rev_dlg.msg, "Enter = roll back (adds a new revision)      Esc = close");
+    lv_obj_t *rok = devos_w_btn_kind(s_rev_dlg.box, DEVOS_W_BTN_PRIMARY, "Roll back", 130, rev_ok_cb, NULL, NULL);
+    lv_obj_set_size(rok, 130, 36);
+    lv_obj_align(rok, LV_ALIGN_BOTTOM_RIGHT, -132, 0);
+    lv_obj_t *rcl = devos_w_btn(s_rev_dlg.box, "Close", 120, rev_cancel_cb, NULL, NULL);
+    lv_obj_set_size(rcl, 120, 36);
+    lv_obj_align(rcl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    devos_focus_init(&s_rev_focus);
+    devos_focus_add(&s_rev_focus, s_rev_dd);
+    devos_focus_add(&s_rev_focus, s_rev_mode);
+    devos_focus_add(&s_rev_focus, rok);
+    devos_focus_add(&s_rev_focus, rcl);
+
     /* Job settings dialog: name, timeout, overlap, cooldown */
     devos_w_dialog(&s_ctx.dlg_job, scr, 560, 360, LV_SYMBOL_SETTINGS "  Job settings");
     lv_obj_t *jrow = lv_obj_create(s_ctx.dlg_job.box);
@@ -2049,6 +2175,7 @@ static void jobs_init(void)
     devos_focus_add(&s_ctx.focus, s_ctx.btn_enable);
     devos_focus_add(&s_ctx.focus, s_ctx.btn_run);
     devos_focus_add(&s_ctx.focus, btn_dry);
+    devos_focus_add(&s_ctx.focus, s_ctx.btn_revs);
 
     devos_theme_add_listener(steps_theme_cb, NULL);
     devos_cmdpal_add(&CMD_NEW);
@@ -2120,6 +2247,32 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         return true;
     }
 
+    /* The Revisions dialog owns the keyboard: arrows move, Enter rolls back. */
+    if (s_rev_open) {
+        lv_obj_t *rf = devos_focus_get(&s_rev_focus);
+        bool on_dd = (rf == s_rev_dd || rf == s_rev_mode) && !lv_dropdown_is_open(s_rev_dd) &&
+                     !lv_dropdown_is_open(s_rev_mode);
+        if (on_dd && (key == LV_KEY_UP || key == LV_KEY_DOWN || key == LV_KEY_LEFT || key == LV_KEY_RIGHT)) {
+            lv_obj_t *dd = rf;
+            int n = (int)lv_dropdown_get_option_count(dd);
+            int sel = (int)lv_dropdown_get_selected(dd);
+            if (key == LV_KEY_DOWN || key == LV_KEY_RIGHT) sel++;
+            else sel--;
+            if (sel < 0) sel = 0;
+            if (sel >= n) sel = n - 1;
+            if (sel != (int)lv_dropdown_get_selected(dd)) {
+                lv_dropdown_set_selected(dd, (uint32_t)sel);
+                lv_obj_send_event(dd, LV_EVENT_VALUE_CHANGED, NULL);
+            }
+            return true;
+        }
+        bool lists_open = lv_dropdown_is_open(s_rev_dd) || lv_dropdown_is_open(s_rev_mode);
+        if (!lists_open && (key == '\r' || key == '\n')) { rev_rollback(); return true; }
+        if (devos_focus_key(&s_rev_focus, key, mods)) return true;
+        if (key == LV_KEY_ESC) { rev_close(); return true; }
+        return true;
+    }
+
     /* The New-job picker owns the keyboard. Arrows pick the starter directly;
      * Enter creates (unless the option list is open - then it selects);
      * Tab reaches the buttons, Esc cancels. */
@@ -2173,6 +2326,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'y': set_tab(TAB_RUNS); return true;
         case 'e': open_job_settings(); return true;        /* Sym+P is system sleep */
         case 'w': act_dryrun(); return true;
+        case 'z': open_revisions(); return true;
         case 'l': toggle_list(); return true;
         case 'c': act_validate(); return true;
         case 'a': builder_commit_all(); act_apply(); return true;
@@ -2212,6 +2366,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'n': case 'N': act_new(); return true;
         case 'd': case 'D': act_delete(); return true;
         case 'e': case 'E': open_job_settings(); return true;
+        case 'z': case 'Z': open_revisions(); return true;
         case LV_KEY_ESC: return false;              /* Home */
         default: return false;
         }
@@ -2281,6 +2436,7 @@ static const char *jobs_shortcuts(void)
            "Sym+G / Sym+R / Sym+X\tEnable / Run now / Cancel\n"
            "Sym+E\tJob settings (name, timeout, overlap, cooldown)\n"
            "Sym+W\tDry-run the draft (no apply, with trace)\n"
+           "Sym+Z\tRevisions (view, diff, roll back)\n"
            "Sym+O / Sym+Y\tOverview / Runs\n"
            "Sym+B / Sym+M\tBuilder / Text\n"
            "Builder\n"

@@ -293,6 +293,30 @@ int jobs_store_load(jobs_store_load_cb cb, void *user)
     return accepted;
 }
 
+int jobs_store_revisions(const char *id, uint32_t *out, int max)
+{
+    if (!id || !out || max <= 0) return 0;
+    if (!s_st.available) return 0;
+    return collect_revs(id, out, max);
+}
+
+int jobs_store_revision_read(const char *id, uint32_t rev, char *out, size_t cap)
+{
+    if (!id || !out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!s_st.available) return 0;
+    char path[JOBS_STORE_PATH_MAX];
+    path_join(path, sizeof(path), ".devos/jobs/revisions/%s/%u.job", id, (unsigned)rev);
+    char *buf = NULL;
+    size_t len = 0;
+    if (!read_file(path, &buf, &len)) return 0;
+    size_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(out, buf, n);
+    out[n] = '\0';
+    free(buf);
+    return (int)n;
+}
+
 /* ---------------------------------------------------------------- commit */
 devos_err_t jobs_store_commit(const char *id, const char *source, size_t len,
                               uint32_t revision, bool enabled)

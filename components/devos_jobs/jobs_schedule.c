@@ -643,6 +643,16 @@ const char *devos_jobs_topic_advisory(void)
     return jobs_validate_topic_advisory();
 }
 
+int devos_jobs_revisions(const char *id, uint32_t *out, int max)
+{
+    return jobs_store_revisions(id, out, max);
+}
+
+int devos_jobs_revision_source(const char *id, uint32_t rev, char *out, size_t cap)
+{
+    return jobs_store_revision_read(id, rev, out, cap);
+}
+
 #define DRY_ID "~dry"               /* in-memory only: never in the catalog */
 
 static int64_t s_dry_t0;
