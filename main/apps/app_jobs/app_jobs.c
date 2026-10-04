@@ -1798,12 +1798,12 @@ static void refresh_problems(void)
 static void update_footer(void)
 {
     if (!s_ctx.lbl_hint) return;
-    const char *h = s_ctx.tab == TAB_TEXT ? "Typing edits the source  Ctrl+S apply  Sym+O overview  Sym+Y runs  Esc list"
-                  : s_ctx.tab == TAB_OVERVIEW ? "Sym+B builder  Sym+M text  Sym+Y runs  Sym+A apply  Sym+G enable  Sym+E settings  Esc list"
-                  : s_ctx.tab == TAB_RUNS ? "Up / Down  pick  Sym+O overview  Sym+B builder  Esc list"
-                  : "Up / Down  pick a step  Sym+U add  Del delete  Sym+K/Sym+J move  Sym+O overview  Sym+M text";
+    const char *h = s_ctx.tab == TAB_TEXT ? "Type to edit  Ctrl+S apply  Sym+O overview  Sym+Y runs  Esc list"
+                  : s_ctx.tab == TAB_OVERVIEW ? "Sym+B builder  Sym+M text  Sym+Y runs  Sym+A apply  Esc list"
+                  : s_ctx.tab == TAB_RUNS ? "Up/Down pick run  Sym+O overview  Sym+B builder  Esc list"
+                  : "Up/Down pick step  Sym+U add  Del delete  Sym+K/J move  [ ] indent";
     if (!s_ctx.list_visible)
-        h = s_ctx.tab == TAB_OVERVIEW ? "Sym+L jobs  Sym+B builder  Sym+M text  Sym+Y runs  Sym+A apply"
+        h = s_ctx.tab == TAB_OVERVIEW ? "Sym+L jobs  Sym+B builder  Sym+M text  Sym+A apply"
                                       : "Sym+L jobs  Sym+O overview  Sym+Y runs  Esc";
     devos_w_set_text(s_ctx.lbl_hint, h);
 }

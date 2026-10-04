@@ -391,6 +391,13 @@ int main(void)
             if (devos_jobs_summary_at(i, &bs) && strcmp(bs.id, "big") == 0) { found = true; break; }
         CHECK(found && strstr(bs.last_result, "step budget") != NULL);
     }
+    usleep(60 * 1000);                               /* the history worker flushes */
+    {
+        devos_run_record_t rec[2];
+        int hr = devos_jobs_history_recent("big", rec, 2);
+        CHECK(hr >= 1 && !rec[0].ok);
+        CHECK(strstr(rec[0].error, "step budget") != NULL);   /* failures keep the message */
+    }
 
     /* dashboard fields + structured history + trace (P1 engine additions) */
     apply_ok("dash", "version 1;\njob \"dash\" {\n trigger every 1s;\n test.check() as c;\n"
@@ -423,6 +430,7 @@ int main(void)
         int hr = devos_jobs_history_recent("dash", rec, 4);
         CHECK(hr >= 1);
         CHECK(rec[0].ok && strcmp(rec[0].cause, "manual") == 0 && rec[0].steps >= 2);
+        CHECK(rec[0].error[0] == '\0');      /* the error column stays blank on success */
     }
 
     /* dry run: validate + run a draft without applying anything */

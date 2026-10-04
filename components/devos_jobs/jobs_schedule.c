@@ -816,6 +816,7 @@ int devos_jobs_history_recent(const char *id, devos_run_record_t *out, int max)
         r->ok = okp && *okp == 't';
         devos_json_member_str(line, end, "cause", r->cause, sizeof(r->cause));
         devos_json_member_str(line, end, "err", r->error, sizeof(r->error));
+        if (r->ok) r->error[0] = '\0';   /* the error column stays blank on success */
         written++;
     }
     return written;

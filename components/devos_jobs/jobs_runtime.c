@@ -525,9 +525,11 @@ static void finish_run(jobs_job_t *j, bool ok, const char *msg, int64_t now)
     /* Bounded history, written through the Core 1 worker so the scheduler
      * (Core 0) never blocks on the SD card. Structured so the UI reads it
      * without parsing JSONL itself (devos_jobs_history_at). Dry runs
-     * ("~dry") leave no history behind. */
+     * ("~dry") leave no history behind. The error column stays blank unless
+     * the run actually failed. */
     char err[96];
-    devos_json_escape(msg ? msg : "", err, sizeof(err));
+    if (ok) err[0] = '\0';
+    else devos_json_escape(msg ? msg : "", err, sizeof(err));
     char line[224];
     snprintf(line, sizeof(line),
              "{\"run\":\"%s\",\"wall\":%lld,\"cause\":\"%s\",\"ok\":%s,\"ms\":%lld,\"steps\":%d,\"err\":\"%s\"}",
