@@ -602,13 +602,17 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     required provider/event hooks for future apps.
 
 **Status:** Jobs phases 0-9 and the host-testable half of Phase 10 are implemented and host-tested
-(15 suites / 733 checks): the language (model / parser / validator / serializer), actions/events,
+(15 suites / 779 checks): the language (model / parser / validator / serializer), actions/events,
 the scheduler and interpreter, durable storage and recovery (plus a crash/power-loss fixture), the
 Builder + Text GUI, calendar and system-event triggers, reliable MQTT, Docker background operations,
 the advanced language (`repeat`, `json_get`, reusable typed job calls), the `network.wol` /
-`network.dns` actions, and the encrypted credential store. The remaining Phase 10 items are
+`network.dns` actions, and the encrypted credential store. The UI was reworked to the review's
+dashboard-first layout (left job list, Overview / Builder / Text / Runs tabs, Problems strip,
+state-aware toolbar, draft protection, delete confirmation), and P2/P3 added control steps in the
+Builder, run-history records, a per-run trace and failure toasts. The remaining Phase 10 items are
 on-device measurements, a hardware soak, SD power-loss testing and verified NVS-encryption
-provisioning; they require a Tab5 and are listed as pending, never inferred from host results.
+provisioning; they require a Tab5 and are listed as pending, never inferred from host results. The
+review's per-parameter settings form, examples/duplicate, dry run and revisions view are still open.
 
 ---
 
