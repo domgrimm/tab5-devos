@@ -498,11 +498,15 @@ them be built either from a schema-driven GUI Builder or as text - both over one
 *   **Language v1.** `version 1;` then one `job "name" { ... }`. One trigger (`manual`, `every
     <dur>`, `daily`/`weekdays` `"HH:MM"`, `event "topic"(...)`), an optional `policy(timeout,
     overlap, cooldown)`, then typed action calls with named arguments and an optional `as name`
-    output, `set`, `if`/`else`, and `wait`. Values are null / bool / int / number / string /
-    duration; expressions use `! && || == != < <= > >=`; builtins `contains`, `json_get` and
-    `secret`. Strings may interpolate `${reference}`. `repeat` parses but is diagnosed
-    unsupported until the advanced-language phase. `tools/jobs_parse_test.c` covers the grammar,
-    diagnostics, limits and the canonical round trip.
+    output, `set`, `if`/`else`, `wait`, and a bounded `repeat <1..32> as <index> { ... }` (the
+    index is a read-only integer; loops are cap by the 256-step budget and the run deadline).
+    Values are null / bool / int / number / string / duration; expressions use
+    `! && || == != < <= > >=`; builtins `contains`, `json_get` and `secret`. `json_get(body, path)`
+    is a narrow reader: dot-separated object members with optional `[index]` array access
+    (`nested.ok`, `list[1]`), returning a typed scalar or null when the path is missing; it is not
+    full JSONPath. Strings may interpolate `${reference}`. Job calls (`run`/`call`) are rejected
+    until a cycle/depth/cancel design exists. `tools/jobs_parse_test.c` covers the grammar,
+    diagnostics, limits, the opaque repeat and the canonical round trip.
 *   **Action contract (`devos_actions`).** Static immutable schemas (id, version, provider,
     typed parameters with required/default/bounds/enum/credential capability, typed outputs,
     effect class, retry safety) registered from a boot provider hook, not from an app's LVGL
@@ -540,6 +544,15 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     A switched-off Docker app makes every `docker.*` action unavailable with a reason (Jobs never
     re-enables an app). A `docker.container_state_changed` event stays deferred until its
     polling/freshness semantics are defined; jobs poll `docker.inspect` in the meantime.
+*   **Secondary network actions (`network.wol`, `network.dns`).** `network.wol` sends a magic
+    packet with a per-call result (`sent`, `target`, `error`); the target must be empty
+    (broadcast) or an IPv4 literal, so no hostname resolve ever blocks the scheduler. `network.dns`
+    runs a request-specific DNS lookup through a small ticket pool in `devos_netdiag`
+    (`devos_dns_ctx_start/poll/cancel/release`): each lookup owns its task, socket and result, so
+    a job never disturbs an in-progress Network UI lookup. The `server` field accepts `ip` or
+    `ip:port`; outputs are `ok`, `rcode`, `count`, `first`, `error`. Both reuse the shared socket
+    routing (so VPN routing applies). `tools/jobs_network_test.c` drives a fake DNS server and a
+    concurrent UI lookup.
 *   **Secrets (`devos_secrets`).** Named references only; values resolve immediately before a
     credential-capable field and are wiped after the operation. Persistence must be genuinely
     encrypted before secret-bearing automation ships - plain `nvs_open()` is not proof.
@@ -562,11 +575,11 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     are safe before init. `README.md`, `AGENTS.md` and `main/apps/app_template/` document the
     required provider/event hooks for future apps.
 
-**Status:** Phases 0-8 are implemented and host-tested: the language (model / parser / validator /
+**Status:** Phases 0-9 are implemented and host-tested: the language (model / parser / validator /
 serializer), the action and event primitives, the scheduler and interpreter, durable storage and
-recovery, the Builder + Text GUI, calendar and system-event triggers, reliable MQTT, and Docker
-background operations (this phase). Phase 9 (advanced language: bounded `repeat`, callable jobs,
-optional WoL/DNS) and Phase 10 (target hardening) follow the roadmap below.
+recovery, the Builder + Text GUI, calendar and system-event triggers, reliable MQTT, Docker
+background operations, and the advanced language (`repeat`, `json_get`) plus the `network.wol` /
+`network.dns` actions. Phase 10 (target hardening) follows the roadmap below.
 
 ---
 
@@ -906,8 +919,23 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       example round-trip, inspect success / not-found / transport error, accepted-vs-unknown, two
       commands never overwriting, the config snapshot, queue saturation, the app gate, the UI
       note, cancellation and exact release.
-- [ ] **Phase 9** - advanced language: bounded `repeat`, opaque Builder nodes, `json_get`, optional
-      WoL/DNS, typed job calls.
+- [x] **Phase 9** - advanced language and secondary actions. The interpreter runs a bounded
+      `repeat <1..32> as <index> { ... }` on an explicit frame (`FRAME_REPEAT`), binding the
+      read-only integer index each pass; the 256-step budget and run deadline cap loops, and the
+      validator rejects a bad count, a reassigned index and a duplicate loop variable. The repeat
+      node carries its own `count` field (it needs a count and a name, which the shared union could
+      not hold). `json_get(body, "a.b[1].c")` is a narrow dot-path reader added to `devos_json`
+      (dot members + optional array indexes, bounded path/index/walk, missing -> null, strings
+      unescaped into the run pool) - not full JSONPath. The Builder shows a repeat as one opaque,
+      read-only row (it does not flatten the body) and preserves its source while surrounding steps
+      are added, edited, moved or deleted. `network.wol` (per-call `sent`/`target`/`error`, IPv4 or
+      broadcast only so no DNS blocks the scheduler) and `network.dns` (a ticket-pool context API
+      in `devos_netdiag`, independent of the UI's singleton) register as actions; the `server`
+      field takes `ip[:port]`. Job calls (`run`/`call`) are still rejected with a clear diagnostic
+      until a cycle/depth/cancel design exists. Tests: `tools/jobs_parse_test.c` (46),
+      `tools/jobs_runtime_test.c` (54: repeat, read-only index, step budget, json_get),
+      `tools/jobs_build_test.c` (81: opaque repeat), `tools/jobs_network_test.c` (22: WoL, DNS,
+      concurrent UI + Jobs lookups).
 - [ ] **Phase 10** - target hardening: SRAM/PSRAM/stack/size measurements, mixed-workload soak, SD
       crash/recovery, verified encrypted credential persistence.
 

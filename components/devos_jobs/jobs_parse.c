@@ -604,8 +604,7 @@ static jobs_node_t *parse_stmt(P *p)
         next(p);
         jobs_node_t *n = jobs_node_new(p->ast, JN_REPEAT, t.off, t.len, t.line, t.col);
         if (!n) return NULL;
-        n->flags |= JNF_UNSUPPORTED;
-        n->u.i = count;
+        n->count = count;
         n->u.str.s = jobs_pool_str(p->ast, nm.s, nm.slen);
         if (!n->u.str.s) return NULL;
         n->a = parse_block(p);

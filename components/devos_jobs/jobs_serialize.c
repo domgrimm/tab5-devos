@@ -171,7 +171,7 @@ static void emit_stmt(SB *b, const jobs_node_t *s, int d)
         break;
     case JN_REPEAT:
         ind(b, d);
-        sb_fmt(b, "repeat %lld as %s ", (long long)s->u.i, s->u.str.s);
+        sb_fmt(b, "repeat %lld as %s ", (long long)s->count, s->u.str.s);
         emit_block(b, s->a, d);
         break;
     case JN_BLOCK:

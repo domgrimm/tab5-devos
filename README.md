@@ -32,7 +32,7 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
-| **Jobs** | Persistent automation: a keyboard-first job list and Text editor over a small language (manual / interval / daily / weekdays / event triggers, typed actions, `if`/`wait`), Validate/Apply/Enable/Run now/Cancel, diagnostics and run history. Keeps running while the app is hidden or the screen is off |
+| **Jobs** | Persistent automation: a keyboard-first job list and Text editor over a small language (manual / interval / daily / weekdays / event triggers, typed actions, `if`/`wait`/`repeat`, `json_get`), Validate/Apply/Enable/Run now/Cancel, diagnostics and run history. Keeps running while the app is hidden or the screen is off |
 | **Settings** | Wi-Fi, file sharing, display, power, time zone, updates, and switching apps on and off |
 
 Global keys, from any app: **Sym + Space** command palette (type part of an app or command, Enter runs it), **Sym + I** system info (power, memory, network, CPU), **Sym + S** keyboard shortcuts (everywhere, and for the app you're in), **Sym + V** paste (one clipboard for every app: Ctrl + C in the Editor or C in the Authenticator copies, Sym + V pastes into any text field or the Terminal), **Sym + H** Home Screen, **Sym + T** dark / light theme, **Sym + − / +** brightness, **Sym + P** screen off (sleep), **Sym + Shift + R** restart (asks first), **Sym + Shift + Q** shut down (asks first), **Sym + 1…6** built-in apps, **Alt + Tab** previous app, **Esc** back out (and to the Home Screen when nothing else wants it). The Tab5 keyboard has no Fn key; **Sym** is the system modifier, and **Aa** is Shift. In the top bar, a tap on the Wi-Fi name, the battery, the clock or the **Shared** mark opens that part of Settings.
@@ -92,12 +92,41 @@ absent or invalid battery never fires) and `mqtt.message` (from the configured b
 optional `policy(overlap: "skip" |
 "queue_one", cooldown: 5m)` controls automatic admission; **Run now** bypasses the cooldown.
 
-Actions are `http.request`, `network.ping`, `system.log`, `system.notify`, `mqtt.publish` and
-`docker.inspect` / `docker.start` / `docker.stop` / `docker.restart`. An
+Actions are `http.request`, `network.ping`, `network.wol`, `network.dns`, `system.log`,
+`system.notify`, `mqtt.publish` and `docker.inspect` / `docker.start` / `docker.stop` /
+`docker.restart`. An
 `mqtt.message` trigger declares the broker subscription it needs - `event "mqtt.message"(topic:
 "home/doorbell")` - so the broker sends only those topics; retained messages are ignored unless
 `include_retained: true` is set. MQTT is one configured broker over plain TCP (no TLS), and a job
 never carries the broker password: it stays in the MQTT app's settings.
+
+The body can loop and read JSON: `repeat <1..32> as i { ... }` runs the block with a read-only
+integer index, and `json_get(body, "a.b[1].c")` pulls one scalar out of a JSON string (a
+dot-separated path with optional array indexes; a missing path is `null`). Loops stop at the
+256-step budget or the run timeout, so repeated network work can't run away:
+
+```text
+version 1;
+job "Wait for the NAS" {
+    trigger every 1m;
+    set up = false;
+    repeat 5 as i {
+        if !up {
+            network.ping(host: "nas.local", timeout: 2s) as p;
+            if p.ok { set up = true; system.log(message: "NAS up after ${i} tries"); }
+            else { wait 2s; }
+        }
+    }
+    if !up { system.notify(message: "NAS still offline", level: "warning"); }
+}
+```
+
+`network.wol(mac: "aa:bb:cc:dd:ee:ff", target: "192.168.1.255")` sends a magic packet (empty
+`target` = broadcast; only an IPv4 address, so nothing blocks the scheduler) and reports
+`sent`/`target`/`error`. `network.dns(name: "nas.local", type: "A")` does one DNS query
+(`server` empty = the DHCP server; `ip:port` is accepted) and reports `ok`, `rcode`, `count`,
+`first` and `error`; it runs in its own lookup context, so it never disturbs a lookup in the
+Network app.
 
 Docker actions run in the background, whether or not the Docker screen is open.
 `docker.inspect(container: "web")` reads the daemon directly by id or name (`ok`, `status`,
@@ -130,7 +159,9 @@ commands never overwrite each other.
 **Builder** is the default view (press **Sym+M** for Text). It has a trigger card (Manual / Every /
 Daily / Weekdays / Event, with the event topic and an optional `where` filter), a step tree you
 can tap to select and **drag to reorder**, and a settings inspector generated from each action's
-schema; conditions, `set` values and expression-capable parameters can hold full expressions. The
+schema; conditions, `set` values and expression-capable parameters can hold full expressions. A
+`repeat` block appears as one read-only card (its body is edited in Text); steps around it can
+still be added, edited, moved and deleted without changing it. The
 commands are on **Sym+key** so they work while typing in a field: **Sym+B** Builder, **Sym+M** Text,
 **Sym+C** validate, **Sym+A** apply, **Sym+G** enable, **Sym+R** run, **Sym+X** cancel, **Sym+Y**
 history, **Sym+N** new, **Sym+D** delete, **Sym+U** add a step, **Sym+K**/**Sym+J** move a step.

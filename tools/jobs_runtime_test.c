@@ -179,6 +179,64 @@ int main(void)
     CHECK(strcmp(last_log(), "auto") == 0);
     devos_jobs_set_paused(false);
 
+    /* stop the interval jobs so the later checks see only their own logs */
+    devos_jobs_set_enabled("every", false);
+    devos_jobs_set_enabled("paused", false);
+
+    /* 8. bounded repeat: the body runs once per index; the index is read-only */
+    s_now += 1000;
+    apply_ok("loop", "version 1;\njob \"loop\" {\n trigger manual;\n"
+                     " repeat 3 as i {\n system.log(message: \"iter ${i}\");\n }\n}\n");
+    base = jobs_system_log_count();
+    CHECK(devos_jobs_run_now("loop") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(jobs_system_log_count() == base + 3);
+    CHECK(strcmp(last_log(), "iter 2") == 0);
+
+    /* 9. json_get: dot paths, array indexes, missing -> null */
+    apply_ok("json", "version 1;\njob \"json\" {\n trigger manual;\n"
+                     " set body = \"{\\\"temp\\\": 21, \\\"list\\\": [10, 20], \\\"nested\\\": {\\\"ok\\\": true}}\";\n"
+                     " set t = json_get(body, \"temp\");\n"
+                     " system.log(message: \"temp=${t}\");\n"
+                     " set a = json_get(body, \"list[1]\");\n"
+                     " system.log(message: \"arr=${a}\");\n"
+                     " if json_get(body, \"nested.ok\") { system.log(message: \"nested true\"); }\n"
+                     " set missing = json_get(body, \"nope\");\n"
+                     " if missing == null { system.log(message: \"missing null\"); }\n"
+                     "}\n");
+    base = jobs_system_log_count();
+    CHECK(devos_jobs_run_now("json") == DEVOS_OK);
+    devos_jobs_tick();
+    CHECK(jobs_system_log_count() == base + 4);
+    {
+        static char tail[4 * JOBS_SYSTEM_LOG_LINE];
+        int tn = jobs_system_log_tail(tail, 4);
+        CHECK(tn == 4);
+        CHECK(strstr(tail + 0 * JOBS_SYSTEM_LOG_LINE, "temp=21") != NULL);
+        CHECK(strstr(tail + 1 * JOBS_SYSTEM_LOG_LINE, "arr=20") != NULL);
+        CHECK(strstr(tail + 2 * JOBS_SYSTEM_LOG_LINE, "nested true") != NULL);
+        CHECK(strstr(tail + 3 * JOBS_SYSTEM_LOG_LINE, "missing null") != NULL);
+    }
+
+    /* 10. the step budget caps an oversized repeat body instead of hanging */
+    static char big[2048];
+    size_t bo = (size_t)snprintf(big, sizeof(big),
+                                 "version 1;\njob \"big\" {\n trigger manual;\n repeat 32 as i {\n");
+    for (int i = 0; i < 10 && bo < sizeof(big) - 80; i++)
+        bo += (size_t)snprintf(big + bo, sizeof(big) - bo, "  system.log(message: \"x\");\n");
+    bo += (size_t)snprintf(big + bo, sizeof(big) - bo, " }\n}\n");
+    uint32_t brev = 0;
+    CHECK(devos_jobs_apply("big", big, bo, &brev) == DEVOS_OK);
+    CHECK(devos_jobs_run_now("big") == DEVOS_OK);
+    devos_jobs_tick();
+    {
+        bool found = false;
+        devos_job_summary_t bs;
+        for (int i = 0; i < devos_jobs_count(); i++)
+            if (devos_jobs_summary_at(i, &bs) && strcmp(bs.id, "big") == 0) { found = true; break; }
+        CHECK(found && strstr(bs.last_result, "step budget") != NULL);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

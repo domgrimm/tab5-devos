@@ -21,13 +21,15 @@ extern "C" {
 #define JOBS_SUB_TOPIC_MAX  192   /* MQTT subscription topic (no devos_mqtt dependency) */
 
 /* ---- interpreter frames ---- */
-typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT } jobs_frame_kind_t;
+typedef enum { FRAME_BLOCK = 0, FRAME_ACTION, FRAME_WAIT, FRAME_REPEAT } jobs_frame_kind_t;
 
 typedef struct {
     uint8_t kind;
     const jobs_node_t *block;       /* FRAME_BLOCK: the block being walked */
     const jobs_node_t *cursor;      /* next statement in that block */
     const jobs_node_t *action;      /* FRAME_ACTION: the action node */
+    const jobs_node_t *repeat;      /* FRAME_REPEAT: the repeat node */
+    int32_t iter;                   /* FRAME_REPEAT: iterations already started */
     devos_action_handle_t op;
     int64_t wake_ms;                /* FRAME_WAIT */
 } jobs_frame_t;

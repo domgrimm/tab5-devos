@@ -4,6 +4,7 @@
 #include "jobs_internal.h"
 #include "jobs_platform.h"
 #include "jobs_store.h"
+#include "devos_json.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -172,9 +173,44 @@ static bool eval_call(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, c
         return true;
     }
     if (strcmp(fn, "json_get") == 0) {
-        /* narrow extraction is the advanced-language phase; missing is null */
-        out->type = DEVOS_VAL_NULL;
-        return true;
+        /* Narrow dot-path extraction (PLAN.md 6.2): a missing value is null,
+         * never an error; a decoded string is copied into the run pool so it
+         * lives as long as the variable that holds it. */
+        if (argc != 2) { snprintf(err, errcap, "json_get(body, path) needs two arguments"); return false; }
+        devos_value_t body;
+        if (!eval(r, e->a, &body, err, errcap)) return false;
+        if (body.type != DEVOS_VAL_STR || !body.v.str.s) { out->type = DEVOS_VAL_NULL; return true; }
+        const jobs_node_t *pn = e->a->next;
+        const char *path = (pn && pn->kind == JN_EXPR_STR && pn->a && !pn->a->next && pn->a->sub == JSP_LITERAL)
+                               ? pn->a->u.str.s : NULL;
+        if (!path || !path[0]) { snprintf(err, errcap, "json_get() path must be a literal string"); return false; }
+        devos_json_val_t jv;
+        if (!devos_json_path(body.v.str.s, body.v.str.len, path, &jv)) { out->type = DEVOS_VAL_NULL; return true; }
+        switch (jv.kind) {
+        case DEVOS_JSON_BOOL: out->type = DEVOS_VAL_BOOL; out->v.b = jv.b; return true;
+        case DEVOS_JSON_INT:  out->type = DEVOS_VAL_INT;  out->v.i = jv.i; return true;
+        case DEVOS_JSON_NUM:  out->type = DEVOS_VAL_NUM;  out->v.n = jv.n; return true;
+        case DEVOS_JSON_STR: {
+            /* Reject a value whose raw length cannot fit the run pool rather
+             * than silently truncating it (escapes only make it shorter). */
+            size_t room = sizeof(r->strpool) - r->strpool_used;
+            uint32_t raw = jv.len >= 2 ? jv.len - 2 : 0;
+            if ((size_t)raw + 1 > room) { snprintf(err, errcap, "json_get string too long"); return false; }
+            if (room < 2) { snprintf(err, errcap, "run string pool full"); return false; }
+            char *dst = r->strpool + r->strpool_used;
+            if (!devos_json_parse_str(jv.s, jv.s + jv.len, dst, room)) {
+                out->type = DEVOS_VAL_NULL;
+                return true;
+            }
+            size_t dl = strlen(dst);
+            r->strpool_used += dl + 1;
+            out->type = DEVOS_VAL_STR;
+            out->v.str.s = dst;
+            out->v.str.len = (uint32_t)dl;
+            return true;
+        }
+        default: out->type = DEVOS_VAL_NULL; return true;
+        }
     }
     if (strcmp(fn, "secret") == 0) {
         snprintf(err, errcap, "secrets are not configured");
@@ -429,6 +465,29 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
             if (now_ms >= f->wake_ms) { r->nframes--; continue; }
             return;                                       /* yield */
         }
+        if (f->kind == FRAME_REPEAT) {
+            /* Re-entered for each iteration: bind the read-only index, then run
+             * the body as a nested block. The step budget and run deadline cap
+             * the loop even though the count is bounded at validation. */
+            const jobs_node_t *rep = f->repeat;
+            int64_t count = rep ? rep->count : 0;
+            if (f->iter >= count) { r->nframes--; continue; }
+            devos_value_t iv;
+            iv.type = DEVOS_VAL_INT;
+            iv.v.i = f->iter;
+            f->iter++;
+            char lerr[64];
+            if (!var_set(r, rep->u.str.s, &iv, lerr, sizeof(lerr))) {
+                finish_run(j, false, lerr, now_ms);
+                return;
+            }
+            if (r->nframes >= JOBS_MAX_FRAMES) { finish_run(j, false, "too deeply nested", now_ms); return; }
+            jobs_frame_t *nf = &r->frames[r->nframes++];
+            nf->kind = FRAME_BLOCK;
+            nf->block = rep->a;
+            nf->cursor = rep->a ? rep->a->a : NULL;
+            continue;
+        }
         if (f->kind == FRAME_ACTION) {
             devos_action_state_t st;
             devos_action_result_t res;
@@ -471,7 +530,14 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
             devos_action_args_t a = { .args = av, .arg_count = d->param_count, .run_id = r->run_id };
             devos_action_handle_t h;
             devos_err_t rc = devos_action_start(s->u.str.s, &a, NULL, &h);
-            if (rc != DEVOS_OK) { finish_run(j, false, "action unavailable or busy", now_ms); return; }
+            if (rc != DEVOS_OK) {
+                char m[80];
+                snprintf(m, sizeof(m), "%s %s", s->u.str.s,
+                         rc == DEVOS_ERR_INVALID_ARG ? "has invalid arguments" :
+                         rc == DEVOS_ERR_INVALID_STATE ? "is unavailable or busy" : "could not start");
+                finish_run(j, false, m, now_ms);
+                return;
+            }
             if (r->nframes >= JOBS_MAX_FRAMES) { devos_action_release(h); finish_run(j, false, "too deeply nested", now_ms); return; }
             jobs_frame_t *nf = &r->frames[r->nframes++];
             nf->kind = FRAME_ACTION;
@@ -506,6 +572,15 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
                 jobs_frame_t *nf = &r->frames[r->nframes++];
                 nf->kind = FRAME_WAIT;
                 nf->wake_ms = now_ms + s->u.i;
+            }
+            break;
+        case JN_REPEAT:
+            if (r->nframes >= JOBS_MAX_FRAMES) { finish_run(j, false, "too deeply nested", now_ms); return; }
+            {
+                jobs_frame_t *nf = &r->frames[r->nframes++];
+                nf->kind = FRAME_REPEAT;
+                nf->repeat = s;
+                nf->iter = 0;
             }
             break;
         case JN_BLOCK:

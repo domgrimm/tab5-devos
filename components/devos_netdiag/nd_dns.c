@@ -236,7 +236,23 @@ static EXT_RAM_BSS_ATTR struct {
     volatile bool task;
     char server[48], name[128];
     uint16_t type;
+    uint16_t port;
 } D = { .mx = ND_MUTEX_INIT };
+
+/* Split "host" or "host:port" (port 1..65535); host is copied to hostcap. */
+static void split_host_port(const char *in, char *host, size_t hostcap, uint16_t *port)
+{
+    snprintf(host, hostcap, "%s", in ? in : "");
+    *port = 53;
+    char *colon = strrchr(host, ':');
+    if (colon && colon[1]) {
+        int p = atoi(colon + 1);
+        if (p > 0 && p < 65536) {
+            *port = (uint16_t)p;
+            *colon = '\0';
+        }
+    }
+}
 
 void devos_dns_default_server(char *out, size_t cap)
 {
@@ -279,9 +295,9 @@ static void lookup_rr(void *ud, int section, const char *name, uint16_t type, ui
     fmt_rdata(type, msg, len, rdoff, rdlen, rr->data, sizeof(rr->data));
 }
 
-static int dns_tcp(const char *server, const uint8_t *q, int qlen, uint8_t *buf, int cap)
+static int dns_tcp(const char *server, uint16_t port, const uint8_t *q, int qlen, uint8_t *buf, int cap)
 {
-    int fd = devos_net_socket_connect(server, 53, 3000);
+    int fd = devos_net_socket_connect(server, port, 3000);
     if (fd < 0) return -1;
     uint8_t lenb[2] = { (uint8_t)(qlen >> 8), (uint8_t)qlen };
     int got = -1;
@@ -305,55 +321,53 @@ static int dns_tcp(const char *server, const uint8_t *q, int qlen, uint8_t *buf,
     return got;
 }
 
-static void lookup_task(void *arg)
+/* The lookup core shared by the Network UI's singleton and Jobs' per-call
+ * contexts: one query, one result, an optional stop flag checked while waiting.
+ * No shared state is read or written here. */
+static void dns_lookup_core(const char *server, uint16_t port, const char *name, uint16_t type,
+                            devos_dns_result_t *r, volatile bool *stop)
 {
-    (void)arg;
-    devos_dns_result_t *r = nd_alloc(sizeof(*r));
+    memset(r, 0, sizeof(*r));
+    snprintf(r->server, sizeof(r->server), "%s", server);
+    snprintf(r->query, sizeof(r->query), "%s", name);
+    r->qtype = type;
     uint8_t *q = nd_alloc(512), *buf = nd_alloc(8192);
-    if (!r || !q || !buf) {
-        free(r);
+    if (!q || !buf) {
+        snprintf(r->error, sizeof(r->error), "Out of memory");
         free(q);
         free(buf);
-        nd_lock(&D.mx);
-        snprintf(D.res.error, sizeof(D.res.error), "Out of memory");
-        D.res.busy = false;
-        D.gen++;
-        nd_unlock(&D.mx);
-        D.task = false;
         return;
     }
-    snprintf(r->server, sizeof(r->server), "%s", D.server);
-    snprintf(r->query, sizeof(r->query), "%s", D.name);
-    r->qtype = D.type;
-    uint16_t id = (uint16_t)(nd_ms() * 7919);
-    const char *names[1] = { D.name };
-    uint16_t types[1] = { D.type };
-    int qlen = nd_dns_build_query(q, 512, id, names, types, 1, true, false);
+    uint16_t qid = (uint16_t)(nd_ms() * 7919);
+    const char *names[1] = { name };
+    uint16_t types[1] = { type };
+    int qlen = nd_dns_build_query(q, 512, qid, names, types, 1, true, false);
     int64_t t0 = nd_ms();
     int n = -1;
     struct in_addr sa;
     if (qlen < 0) snprintf(r->error, sizeof(r->error), "That name isn't valid");
-    else if (!inet_aton(D.server, &sa)) snprintf(r->error, sizeof(r->error), "The server must be an IP address");
+    else if (!inet_aton(server, &sa)) snprintf(r->error, sizeof(r->error), "The server must be an IP address");
     else {
         int s = socket(AF_INET, SOCK_DGRAM, 0);
         if (s < 0) snprintf(r->error, sizeof(r->error), "No socket (errno %d)", errno);
         else {
             devos_net_socket_route(s, sa.s_addr);
-            struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(53), .sin_addr = sa };
-            for (int attempt = 0; attempt < 2 && n < 0; attempt++) {
+            struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr = sa };
+            for (int attempt = 0; attempt < 2 && n < 0 && !(stop && *stop); attempt++) {
                 sendto(s, q, (size_t)qlen, 0, (struct sockaddr *)&to, sizeof(to));
                 int64_t end = nd_ms() + 1500;
                 while (n < 0) {
+                    if (stop && *stop) break;
                     int left = (int)(end - nd_ms());
                     if (left <= 0 || nd_wait_readable(s, left) <= 0) break;
                     int k = (int)recv(s, buf, 8192, 0);
-                    if (k >= 12 && rd16(buf) == id) n = k;
+                    if (k >= 12 && rd16(buf) == qid) n = k;
                 }
             }
             close(s);
-            if (n < 0) snprintf(r->error, sizeof(r->error), "No answer from %s", D.server);
-            else if (buf[2] & 0x02) {                        /* truncated: ask over TCP */
-                int k = dns_tcp(D.server, q, qlen, buf, 8192);
+            if (n < 0 && !(stop && *stop)) snprintf(r->error, sizeof(r->error), "No answer from %s", server);
+            else if (n >= 12 && (buf[2] & 0x02)) {           /* truncated: ask over TCP */
+                int k = dns_tcp(server, port, q, qlen, buf, 8192);
                 if (k >= 12) n = k;
                 else r->truncated = true;
             }
@@ -371,15 +385,169 @@ static void lookup_task(void *arg)
             if (flags & 0x0200) r->truncated = true;
         }
     }
+    free(q);
+    free(buf);
+}
+
+static void lookup_task(void *arg)
+{
+    (void)arg;
+    devos_dns_result_t *r = nd_alloc(sizeof(*r));
+    if (!r) {
+        nd_lock(&D.mx);
+        snprintf(D.res.error, sizeof(D.res.error), "Out of memory");
+        D.res.busy = false;
+        D.gen++;
+        nd_unlock(&D.mx);
+        D.task = false;
+        return;
+    }
+    dns_lookup_core(D.server, D.port, D.name, D.type, r, NULL);
     nd_lock(&D.mx);
     D.res = *r;
     D.res.busy = false;
     D.gen++;
     nd_unlock(&D.mx);
     free(r);
-    free(q);
-    free(buf);
     D.task = false;
+}
+
+/* ---- request-specific lookups (Jobs network.dns) ----
+ * A small ticket pool of independent lookups. Each owns its own task, socket,
+ * deadline and result, so a Jobs lookup never clobbers an in-progress Network
+ * UI lookup (PLAN.md 7.3). Tickets are slot + monotonic id; a released or
+ * cancelled ticket's result is discarded. */
+#define DEVOS_DNS_CTX_MAX 2
+static EXT_RAM_BSS_ATTR struct {
+    nd_mutex_t mx;
+    bool used, busy, stop;
+    uint32_t id;
+    char server[48], name[128];
+    uint16_t type;
+    uint16_t port;
+    devos_dns_result_t res;
+} C[DEVOS_DNS_CTX_MAX];
+static uint32_t C_seq;
+
+static void ctx_task(void *arg)
+{
+    int slot = (int)(intptr_t)arg;
+    char server[48], name[128];
+    uint16_t type, port;
+    uint32_t id;
+    nd_lock(&C[slot].mx);
+    snprintf(server, sizeof(server), "%s", C[slot].server);
+    snprintf(name, sizeof(name), "%s", C[slot].name);
+    type = C[slot].type;
+    port = C[slot].port;
+    id = C[slot].id;
+    nd_unlock(&C[slot].mx);
+
+    devos_dns_result_t *r = nd_alloc(sizeof(*r));
+    if (r) dns_lookup_core(server, port, name, type, r, &C[slot].stop);
+    nd_lock(&C[slot].mx);
+    if (C[slot].used && C[slot].id == id) {
+        if (r) C[slot].res = *r;
+        C[slot].busy = false;
+    }
+    nd_unlock(&C[slot].mx);
+    free(r);
+}
+
+int devos_dns_ctx_start(const char *server, const char *name, uint16_t type)
+{
+    if (!name || !name[0]) return 0;
+    char nm[128];
+    snprintf(nm, sizeof(nm), "%s", name);
+    size_t l = strlen(nm);
+    while (l && (nm[l - 1] == '.' || nm[l - 1] == ' ')) nm[--l] = '\0';
+    const char *sp = nm;
+    while (*sp == ' ') sp++;
+    if (!*sp) return 0;
+
+    int slot = -1;
+    for (int i = 0; i < DEVOS_DNS_CTX_MAX; i++) {
+        nd_lock(&C[i].mx);
+        bool free_slot = !C[i].used;
+        nd_unlock(&C[i].mx);
+        if (free_slot) { slot = i; break; }
+    }
+    if (slot < 0) return 0;
+    nd_lock(&C[slot].mx);
+    C[slot].used = true;
+    C[slot].busy = true;
+    C[slot].stop = false;
+    C[slot].id = ++C_seq;
+    if (!C[slot].id) C[slot].id = ++C_seq;
+    struct in_addr a;
+    if (inet_aton(sp, &a)) {                                  /* IP -> reverse lookup */
+        uint8_t *b = (uint8_t *)&a.s_addr;
+        snprintf(C[slot].name, sizeof(C[slot].name), "%u.%u.%u.%u.in-addr.arpa", b[3], b[2], b[1], b[0]);
+        C[slot].type = DEVOS_DNS_PTR;
+    } else {
+        snprintf(C[slot].name, sizeof(C[slot].name), "%s", sp);
+        C[slot].type = type ? type : DEVOS_DNS_A;
+    }
+    char sv[48];
+    if (server && server[0]) snprintf(sv, sizeof(sv), "%s", server);
+    else devos_dns_default_server(sv, sizeof(sv));
+    split_host_port(sv, C[slot].server, sizeof(C[slot].server), &C[slot].port);
+    memset(&C[slot].res, 0, sizeof(C[slot].res));
+    char nmbuf[128], svbuf[48];
+    snprintf(nmbuf, sizeof(nmbuf), "%s", C[slot].name);
+    snprintf(svbuf, sizeof(svbuf), "%s", C[slot].server);
+    snprintf(C[slot].res.query, sizeof(C[slot].res.query), "%s", nmbuf);
+    snprintf(C[slot].res.server, sizeof(C[slot].res.server), "%s", svbuf);
+    C[slot].res.qtype = C[slot].type;
+    C[slot].res.busy = true;
+    uint32_t id = C[slot].id;
+    nd_unlock(&C[slot].mx);
+
+    if (nd_spawn(ctx_task, (void *)(intptr_t)slot, "jobsdns", 6144) != 0) {
+        nd_lock(&C[slot].mx);
+        if (C[slot].used && C[slot].id == id) {
+            C[slot].busy = false;
+            snprintf(C[slot].res.error, sizeof(C[slot].res.error), "Couldn't start the lookup");
+        }
+        nd_unlock(&C[slot].mx);
+        return 0;
+    }
+    return (int)id;
+}
+
+/* 0 running, 1 done (out filled), -1 unknown ticket. */
+int devos_dns_ctx_poll(int ticket, devos_dns_result_t *out)
+{
+    if (ticket <= 0) return -1;
+    for (int i = 0; i < DEVOS_DNS_CTX_MAX; i++) {
+        nd_lock(&C[i].mx);
+        if (C[i].used && C[i].id == (uint32_t)ticket) {
+            bool busy = C[i].busy;
+            if (!busy && out) *out = C[i].res;
+            nd_unlock(&C[i].mx);
+            return busy ? 0 : 1;
+        }
+        nd_unlock(&C[i].mx);
+    }
+    return -1;
+}
+
+void devos_dns_ctx_cancel(int ticket)
+{
+    for (int i = 0; i < DEVOS_DNS_CTX_MAX; i++) {
+        nd_lock(&C[i].mx);
+        if (C[i].used && C[i].id == (uint32_t)ticket) { C[i].stop = true; nd_unlock(&C[i].mx); return; }
+        nd_unlock(&C[i].mx);
+    }
+}
+
+void devos_dns_ctx_release(int ticket)
+{
+    for (int i = 0; i < DEVOS_DNS_CTX_MAX; i++) {
+        nd_lock(&C[i].mx);
+        if (C[i].used && C[i].id == (uint32_t)ticket) { C[i].used = false; nd_unlock(&C[i].mx); return; }
+        nd_unlock(&C[i].mx);
+    }
 }
 
 int devos_dns_lookup_start(const char *server, const char *name, uint16_t type)
@@ -402,12 +570,14 @@ int devos_dns_lookup_start(const char *server, const char *name, uint16_t type)
         snprintf(D.name, sizeof(D.name), "%s", s);
         D.type = type ? type : DEVOS_DNS_A;
     }
-    if (server && server[0]) snprintf(D.server, sizeof(D.server), "%s", server);
-    else devos_dns_default_server(D.server, sizeof(D.server));
+    char sv[48];
+    if (server && server[0]) snprintf(sv, sizeof(sv), "%s", server);
+    else devos_dns_default_server(sv, sizeof(sv));
+    split_host_port(sv, D.server, sizeof(D.server), &D.port);
     memset(&D.res, 0, sizeof(D.res));
     D.res.busy = true;
     snprintf(D.res.query, sizeof(D.res.query), "%s", D.name);
-    snprintf(D.res.server, sizeof(D.res.server), "%s", D.server);
+    snprintf(D.res.server, sizeof(D.res.server), "%s%s", D.server, D.port != 53 ? " (custom port)" : "");
     D.res.qtype = D.type;
     D.task = true;
     D.gen++;
@@ -820,4 +990,5 @@ void nd_dns_init(void)
 {
     nd_mutex_create(&D.mx);
     nd_mutex_create(&M.mx);
+    for (int i = 0; i < DEVOS_DNS_CTX_MAX; i++) nd_mutex_create(&C[i].mx);
 }

@@ -59,7 +59,7 @@ void devos_wol_format_mac(const uint8_t mac[6], char *out, size_t cap)
 
 /* Resolve the destination string to an address: "" = broadcast, an IP is used
  * as-is, anything else goes through the shared resolver (mDNS / DNS). */
-static int resolve_dest(const char *addr, struct in_addr *out)
+static int resolve_dest(const char *addr, struct in_addr *out, char *err, size_t errcap)
 {
     if (!addr || !*addr) {
         out->s_addr = htonl(INADDR_BROADCAST);
@@ -67,14 +67,21 @@ static int resolve_dest(const char *addr, struct in_addr *out)
     }
     if (inet_pton(AF_INET, addr, out) == 1) return 0;
     char ip[16];
-    if (devos_net_resolve(addr, ip, sizeof(ip)) != 0) return -1;
-    return inet_pton(AF_INET, ip, out) == 1 ? 0 : -1;
+    if (devos_net_resolve(addr, ip, sizeof(ip)) != 0 ||
+        inet_pton(AF_INET, ip, out) != 1) {
+        if (err && errcap) snprintf(err, errcap, "Could not resolve \"%.40s\"", addr ? addr : "");
+        return -1;
+    }
+    return 0;
 }
 
-static int send_one(const uint8_t mac[6], struct in_addr dst, int port)
+static int send_one(const uint8_t mac[6], struct in_addr dst, int port, char *err, size_t errcap)
 {
     int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) { snprintf(s_err, sizeof(s_err), "Could not open a UDP socket"); return -1; }
+    if (s < 0) {
+        if (err && errcap) snprintf(err, errcap, "Could not open a UDP socket");
+        return -1;
+    }
     int one = 1;
     setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
     devos_net_socket_route(s, dst.s_addr);          /* via a VPN if it claims it */
@@ -85,35 +92,39 @@ static int send_one(const uint8_t mac[6], struct in_addr dst, int port)
 
     struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr = dst };
     int r = (int)sendto(s, pkt, sizeof(pkt), 0, (struct sockaddr *)&to, sizeof(to));
-#ifdef ESP_PLATFORM
     close(s);
-#else
-    close(s);
-#endif
-    if (r != (int)sizeof(pkt)) { snprintf(s_err, sizeof(s_err), "Send failed"); return -1; }
+    if (r != (int)sizeof(pkt)) {
+        if (err && errcap) snprintf(err, errcap, "Send failed");
+        return -1;
+    }
     return 0;
 }
 
-int devos_wol_send(const uint8_t mac[6], const char *addr)
+int devos_wol_send_ex(const uint8_t mac[6], const char *addr,
+                      char *target_out, size_t target_cap,
+                      char *err_out, size_t err_cap)
 {
-    s_err[0] = '\0';
+    if (err_out && err_cap) err_out[0] = '\0';
+    if (target_out && target_cap) target_out[0] = '\0';
     struct in_addr dst;
-    if (resolve_dest(addr, &dst) != 0) {
-        snprintf(s_err, sizeof(s_err), "Could not resolve \"%.40s\"", addr);
-        return -1;
-    }
+    if (resolve_dest(addr, &dst, err_out, err_cap) != 0) return -1;
     /* Port 9 is the convention; 7 (echo) is a belt-and-braces retry, ignored
      * if it fails. */
-    int r = send_one(mac, dst, 9);
-    if (r == 0) send_one(mac, dst, 7);
+    int r = send_one(mac, dst, 9, err_out, err_cap);
+    if (r == 0) send_one(mac, dst, 7, NULL, 0);
 
     struct in_addr show;
     if (!addr || !*addr) show.s_addr = htonl(INADDR_BROADCAST);
     else show = dst;
     char ip[16];
     inet_ntop(AF_INET, &show, ip, sizeof(ip));
-    snprintf(s_target, sizeof(s_target), "%s:9", ip);
+    if (target_out && target_cap) snprintf(target_out, target_cap, "%s:9", ip);
     return r;
+}
+
+int devos_wol_send(const uint8_t mac[6], const char *addr)
+{
+    return devos_wol_send_ex(mac, addr, s_target, sizeof(s_target), s_err, sizeof(s_err));
 }
 
 const char *devos_wol_error(void) { return s_err; }

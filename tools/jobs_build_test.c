@@ -182,6 +182,38 @@ int main(void)
         jobs_build_free(&c);
     }
 
+    /* opaque repeat: it appears as a single row (its body is not flattened),
+     * and editing a sibling preserves the repeat source exactly */
+    {
+        const char *R =
+            "version 1;\njob \"r\" {\n trigger manual;\n"
+            " system.log(message: \"before\");\n"
+            " repeat 3 as i {\n system.log(message: \"x\");\n system.log(message: \"y\");\n }\n"
+            " system.log(message: \"after\");\n}\n";
+        jobs_build_t rb;
+        memset(&rb, 0, sizeof(rb));
+        CHECK(jobs_build_load(&rb, R, strlen(R)));
+        jobs_build_row_t rr[JOBS_BUILD_ROWS];
+        int rn = jobs_build_rows(&rb, rr, JOBS_BUILD_ROWS);
+        CHECK(rn == 3);                                  /* before, repeat, after - body hidden */
+        CHECK(rr[1].node->kind == JN_REPEAT && rr[1].depth == 0);
+        CHECK(rr[1].node->count == 3);
+        CHECK(jobs_build_set_arg_str(&rb, rr[0].node, "message", "start"));
+        CHECK(jobs_build_revalidate(&rb));
+        char ro[1024];
+        jobs_build_source(&rb, ro, sizeof(ro));
+        CHECK(strstr(ro, "repeat 3 as i {") != NULL);
+        CHECK(strstr(ro, "system.log(message: \"x\");") != NULL);
+        CHECK(strstr(ro, "system.log(message: \"y\");") != NULL);
+        CHECK(strstr(ro, "\"before\"") == NULL && strstr(ro, "\"start\"") != NULL);
+        CHECK(jobs_build_delete(&rb, rr[1].block, rr[1].node));
+        CHECK(jobs_build_revalidate(&rb));
+        char ro2[1024];
+        jobs_build_source(&rb, ro2, sizeof(ro2));
+        CHECK(strstr(ro2, "repeat") == NULL && strstr(ro2, "\"start\"") != NULL && strstr(ro2, "\"after\"") != NULL);
+        jobs_build_free(&rb);
+    }
+
     /* the serialized draft is a valid, stable definition */
     char out1[2048], out2[2048];
     size_t l1 = jobs_build_source(&b, out1, sizeof(out1));

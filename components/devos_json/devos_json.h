@@ -33,6 +33,28 @@ const char *devos_json_member(const char *p, const char *end, const char *key);
 int devos_json_member_str(const char *obj, const char *end, const char *key, char *out, size_t cap);
 bool devos_json_member_num(const char *obj, const char *end, const char *key, double *out);
 
+/* ---- narrow dot-path extraction (Jobs `json_get`) ----
+ * A resolved scalar. STR points at the opening quote in the source (still
+ * escaped); decode it with devos_json_parse_str. */
+typedef enum {
+    DEVOS_JSON_NULL = 0, DEVOS_JSON_BOOL, DEVOS_JSON_INT, DEVOS_JSON_NUM, DEVOS_JSON_STR,
+} devos_json_kind_t;
+
+typedef struct {
+    devos_json_kind_t kind;
+    bool b;
+    int64_t i;
+    double n;
+    const char *s;          /* STR: opening quote into the source */
+    uint32_t len;           /* STR: bytes including both quotes */
+} devos_json_val_t;
+
+/* Resolve a dot-separated path with optional array indexes ("a.b[0].c",
+ * "[2].name"). Objects and arrays resolve to null; a missing member or a
+ * malformed/over-long path returns false. Bounded path, index and document
+ * walk; not full JSONPath. */
+bool devos_json_path(const char *js, size_t len, const char *path, devos_json_val_t *out);
+
 /* Balanced span of the {...} or [...] starting at p, or NULL. */
 const char *devos_json_span(const char *p, const char *end);
 

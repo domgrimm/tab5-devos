@@ -106,6 +106,15 @@ uint32_t devos_dns_generation(void);
 const char *devos_dns_type_name(uint16_t type);
 const char *devos_dns_rcode_name(int rcode);
 
+/* Request-specific lookups for Jobs (PLAN.md 7.3): an independent task, socket
+ * and result per ticket, so a job never disturbs an in-progress UI lookup.
+ * Returns a ticket > 0, or 0 (bad name / pool full). */
+int devos_dns_ctx_start(const char *server, const char *name, uint16_t type);
+/* 0 running, 1 done (out filled), -1 unknown ticket. */
+int devos_dns_ctx_poll(int ticket, devos_dns_result_t *out);
+void devos_dns_ctx_cancel(int ticket);
+void devos_dns_ctx_release(int ticket);
+
 /* ------------------------------------------------------------------ scan */
 #define DEVOS_SCAN_MAX_HOSTS 1024
 #define DEVOS_SCAN_MAX_OPEN  24         /* open ports kept per host */
@@ -186,6 +195,12 @@ int devos_wol_send(const uint8_t mac[6], const char *addr);
 const char *devos_wol_error(void);
 /* Where the last packet went, for the result line ("255.255.255.255:9"). */
 const char *devos_wol_last_target(void);
+
+/* Request-specific send for Jobs: caller-owned error/target buffers, so a job
+ * never reads the Network app's shared last-error (PLAN.md 7.3). */
+int devos_wol_send_ex(const uint8_t mac[6], const char *addr,
+                      char *target_out, size_t target_cap,
+                      char *err_out, size_t err_cap);
 
 #ifdef __cplusplus
 }

@@ -141,6 +141,26 @@ static void test_examples(void)
     ast = pv(DOOR);
     CHECK(ast && ast->diag_count == 0);
     jobs_ast_free(ast);
+
+    /* the README's bounded-retry example (repeat + read-only index + wait) */
+    const char *RETRY =
+        "version 1;\n"
+        "job \"Wait for the NAS\" {\n"
+        "    trigger every 1m;\n"
+        "    set up = false;\n"
+        "    repeat 5 as i {\n"
+        "        if !up {\n"
+        "            network.ping(host: \"nas.local\", timeout: 2s) as p;\n"
+        "            if p.ok { set up = true; system.log(message: \"NAS up after ${i} tries\"); }\n"
+        "            else { wait 2s; }\n"
+        "        }\n"
+        "    }\n"
+        "    if !up { system.notify(message: \"NAS still offline\", level: \"warning\"); }\n"
+        "}\n";
+    ast = pv(RETRY);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  retry: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
 }
 
 static void test_roundtrip(void)
@@ -208,7 +228,12 @@ static void test_validate_errors(void)
         { "version 1;\njob \"x\" { trigger manual; system.log(message: secret(\"t\")); }\n", "cannot take a secret" },
         { "version 1;\njob \"x\" { trigger manual; http.request(method: \"GET\", url: \"u\", bearer_token: \"abc\"); }\n", "needs secret" },
         { "version 1;\njob \"x\" { trigger manual; system.notify(message: \"m\", level: \"loud\"); }\n", "must be one of" },
-        { "version 1;\njob \"x\" { trigger manual; repeat 3 as i { system.log(message: \"x\"); } }\n", "repeat is not supported" },
+        { "version 1;\njob \"x\" { trigger manual; repeat 0 as i { system.log(message: \"x\"); } }\n", "between 1 and 32" },
+        { "version 1;\njob \"x\" { trigger manual; repeat 99 as i { system.log(message: \"x\"); } }\n", "between 1 and 32" },
+        { "version 1;\njob \"x\" { trigger manual; repeat 3 as i { set i = 5; } }\n", "read-only" },
+        { "version 1;\njob \"x\" { trigger manual; repeat 3 as i { repeat 2 as i { system.log(message: \"x\"); } } }\n", "already defined" },
+        { "version 1;\njob \"x\" { trigger manual; run(job: \"other\"); }\n", "job calls" },
+        { "version 1;\njob \"x\" { trigger manual; set v = json_get(\"a\", i); }\n", "literal string" },
         { "version 1;\njob \"x\" { trigger daily \"25:00\"; }\n", "HH:MM" },
         { "version 1;\njob \"x\" { trigger manual; system.log(message: \"a\", message: \"b\"); }\n", "duplicate argument" },
     };
@@ -237,6 +262,36 @@ static void test_validate_errors(void)
     CHECK(ast && ast->diag_count == 0);
     if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  ok-case: %s\n", ast->diag[i].msg);
     jobs_ast_free(ast);
+}
+
+static void test_repeat_json(void)
+{
+    const char *SRC =
+        "version 1;\n"
+        "job \"loops\" {\n"
+        "    trigger manual;\n"
+        "    set body = \"{\\\"temp\\\": 21, \\\"list\\\": [10, 20], \\\"nested\\\": {\\\"ok\\\": true}}\";\n"
+        "    repeat 3 as i {\n"
+        "        set t = json_get(body, \"temp\");\n"
+        "        system.log(message: \"t=${t}\");\n"
+        "    }\n"
+        "}\n";
+    jobs_ast_t *ast = pv(SRC);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  loop: %s\n", ast->diag[i].msg);
+    if (ast) {
+        char out1[1024], out2[1024];
+        size_t n1 = jobs_serialize(ast, out1, sizeof(out1));
+        CHECK(n1 > 0 && strstr(out1, "repeat 3 as i {") != NULL);
+        jobs_ast_t *b = pv(out1);
+        CHECK(b && b->diag_count == 0);
+        if (b) {
+            size_t n2 = jobs_serialize(b, out2, sizeof(out2));
+            CHECK(n2 == n1 && strcmp(out1, out2) == 0);
+            jobs_ast_free(b);
+        }
+        jobs_ast_free(ast);
+    }
 }
 
 static void test_limits(void)
@@ -270,6 +325,7 @@ int main(void)
     test_roundtrip();
     test_parse_errors();
     test_validate_errors();
+    test_repeat_json();
     test_limits();
     test_var_limit();
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);

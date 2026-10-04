@@ -174,6 +174,107 @@ bool devos_json_member_num(const char *obj, const char *end, const char *key, do
     return true;
 }
 
+/* ---- narrow dot-path extraction (Jobs json_get) ---- */
+static bool js_array_nth(const char *p, const char *end, long idx, const char **vstart, const char **vend)
+{
+    if (p >= end || *p != '[') return false;
+    p++;
+    long i = 0;
+    for (;;) {
+        p = js_ws(p, end);
+        if (p >= end || *p == ']') return false;
+        const char *q = value_end(p, end);
+        if (!q) return false;
+        if (i == idx) { *vstart = p; *vend = q; return true; }
+        i++;
+        p = js_ws(q, end);
+        if (p < end && *p == ',') { p++; continue; }
+        return false;
+    }
+}
+
+bool devos_json_path(const char *js, size_t len, const char *path, devos_json_val_t *out)
+{
+    if (!js || !path || !out || len == 0) return false;
+    if (strlen(path) > 128) return false;
+    memset(out, 0, sizeof(*out));
+    const char *end = js + len;
+    const char *p = js_ws(js, end);
+    const char *ps = path;
+    while (*ps) {
+        if (*ps == '[') {
+            while (*ps == '[') {
+                ps++;
+                if (*ps < '0' || *ps > '9') return false;
+                long idx = 0;
+                while (*ps >= '0' && *ps <= '9') {
+                    idx = idx * 10 + (*ps - '0');
+                    if (idx > 100000) return false;
+                    ps++;
+                }
+                if (*ps != ']') return false;
+                ps++;
+                const char *v, *ve;
+                if (!js_array_nth(p, end, idx, &v, &ve)) return false;
+                p = v;
+            }
+            if (*ps == '.') { ps++; continue; }
+            if (*ps) return false;
+        } else {
+            char key[64];
+            size_t kl = 0;
+            while (*ps && *ps != '.' && *ps != '[') {
+                char c = *ps;
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-'))
+                    return false;
+                if (kl + 1 >= sizeof(key)) return false;
+                key[kl++] = c;
+                ps++;
+            }
+            if (kl == 0) return false;
+            key[kl] = '\0';
+            if (p >= end || *p != '{') return false;
+            const char *v = devos_json_member(p, end, key);
+            if (!v) return false;
+            p = v;
+            if (*ps == '.') { ps++; continue; }
+            if (*ps == '[') continue;
+            if (*ps) return false;
+        }
+    }
+    /* classify the resolved value; objects and arrays read as null */
+    if (p >= end) return false;
+    if (*p == '{' || *p == '[') { out->kind = DEVOS_JSON_NULL; return true; }
+    if (*p == '"') {
+        const char *e = value_end(p, end);
+        if (!e) return false;
+        out->kind = DEVOS_JSON_STR;
+        out->s = p;
+        out->len = (uint32_t)(e - p);
+        return true;
+    }
+    size_t rem = (size_t)(end - p);
+    if (rem >= 4 && strncmp(p, "true", 4) == 0)  { out->kind = DEVOS_JSON_BOOL; out->b = true;  return true; }
+    if (rem >= 5 && strncmp(p, "false", 5) == 0) { out->kind = DEVOS_JSON_BOOL; out->b = false; return true; }
+    if (rem >= 4 && strncmp(p, "null", 4) == 0)  { out->kind = DEVOS_JSON_NULL; return true; }
+    {
+        char tmp[48];
+        size_t n = rem < sizeof(tmp) - 1 ? rem : sizeof(tmp) - 1;
+        memcpy(tmp, p, n);
+        tmp[n] = '\0';
+        bool integral = !strchr(tmp, '.') && !strchr(tmp, 'e') && !strchr(tmp, 'E');
+        char *stop = NULL;
+        if (integral) {
+            long long iv = strtoll(tmp, &stop, 10);
+            if (stop != tmp) { out->kind = DEVOS_JSON_INT; out->i = iv; return true; }
+        }
+        double d = strtod(tmp, &stop);
+        if (stop != tmp) { out->kind = DEVOS_JSON_NUM; out->n = d; return true; }
+    }
+    return false;
+}
+
 int devos_json_get_str(const char *js, size_t len, const char *key, char *out,
                        size_t cap)
 {

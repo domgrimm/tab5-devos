@@ -13,6 +13,7 @@ typedef struct {
     char name[40];
     ty_t type;
     bool is_output;
+    bool readonly;      /* loop index: cannot be reassigned */
     const devos_action_descriptor_t *schema;
 } sym_t;
 
@@ -55,6 +56,7 @@ static sym_t *sym_add(V *v, const char *name, ty_t type, bool is_output, const d
     snprintf(s->name, sizeof(s->name), "%s", name);
     s->type = type;
     s->is_output = is_output;
+    s->readonly = false;
     s->schema = schema;
     return s;
 }
@@ -198,7 +200,9 @@ static ty_t call_type(V *v, const jobs_node_t *n, bool *tainted)
         bool t1 = false;
         ty_t a = expr_type(v, n->a, &t1, true);
         if (a != TY_STR && a != TY_ANY) verr(v, n, "json_get() wants a string body, got %s", ty_name(a));
-        if (lit_str(n->a->next) == NULL) verr(v, n, "json_get() path must be a literal string");
+        const char *path = lit_str(n->a->next);
+        if (path == NULL) verr(v, n, "json_get() path must be a literal string");
+        else if (strlen(path) > JOBS_MAX_JSONPATH) verr(v, n, "json_get() path is too long (max %d)", JOBS_MAX_JSONPATH);
         return TY_ANY;
     }
     verr(v, n, "unknown function '%s'", fn);
@@ -320,7 +324,15 @@ static void check_call_args(V *v, const jobs_node_t *action, const devos_action_
 static void check_action(V *v, jobs_node_t *n)
 {
     const devos_action_descriptor_t *d = devos_actions_find(n->u.str.s);
-    if (!d) { verr(v, n, "unknown action '%s'", n->u.str.s); return; }
+    if (!d) {
+        /* Reusable job calls need a cycle/depth/cancel design first; reject them
+         * clearly rather than parsing an unbounded recursion (PLAN.md 9.3). */
+        if (strcmp(n->u.str.s, "run") == 0 || strcmp(n->u.str.s, "call") == 0)
+            verr(v, n, "job calls are not supported in language version %d", JOBS_LANG_VERSION);
+        else
+            verr(v, n, "unknown action '%s'", n->u.str.s);
+        return;
+    }
     check_call_args(v, n, d, true);
     if (n->u.str.s2) {
         if (sym_find(v, n->u.str.s2)) verr(v, n, "'%s' is already defined", n->u.str.s2);
@@ -353,7 +365,8 @@ static void check_stmt(V *v, jobs_node_t *n)
         if (is_numeric(t) || t == TY_BOOL || t == TY_STR || t == TY_ANY) {
             sym_t *ex = sym_find(v, n->u.str.s);
             if (ex) {
-                if (!compatible(t, ex->type)) verr(v, n, "'%s' changes type (%s -> %s)", n->u.str.s, ty_name(ex->type), ty_name(t));
+                if (ex->readonly) verr(v, n, "'%s' is a read-only loop variable", n->u.str.s);
+                else if (!compatible(t, ex->type)) verr(v, n, "'%s' changes type (%s -> %s)", n->u.str.s, ty_name(ex->type), ty_name(t));
             } else if (!sym_add(v, n->u.str.s, t, false, NULL)) {
                 verr(v, n, "too many variables (max %d)", JOBS_MAX_VARS);
             }
@@ -372,10 +385,21 @@ static void check_stmt(V *v, jobs_node_t *n)
         if (n->u.i <= 0 || n->u.i > JOBS_MAX_WAIT_MS)
             verr(v, n, "wait must be between 1 ms and %d ms", JOBS_MAX_WAIT_MS);
         break;
-    case JN_REPEAT:
-        verr(v, n, "repeat is not supported in language version %d", JOBS_LANG_VERSION);
-        check_block(v, n->a);
+    case JN_REPEAT: {
+        if (n->count < 1 || n->count > JOBS_MAX_REPEAT)
+            verr(v, n, "repeat count must be between 1 and %d", JOBS_MAX_REPEAT);
+        if (!n->u.str.s || !n->u.str.s[0]) {
+            verr(v, n, "repeat needs a loop variable");
+        } else {
+            push_scope(v);
+            sym_t *s = sym_add(v, n->u.str.s, TY_INT, false, NULL);
+            if (!s) verr(v, n, "loop variable '%s' is already defined", n->u.str.s);
+            else s->readonly = true;
+            for (jobs_node_t *c = n->a ? n->a->a : NULL; c && !v->failed; c = c->next) check_stmt(v, c);
+            pop_scope(v);
+        }
         break;
+    }
     case JN_BLOCK:
         check_block(v, n);
         break;

@@ -171,6 +171,8 @@ static void step_summary(const jobs_node_t *n, char *out, size_t cap)
         break;
     }
     case JN_IF: snprintf(out, cap, "if %s", jobs_build_expr_text(n->a)); break;
+    case JN_REPEAT: snprintf(out, cap, "repeat %lld as %s { ... }", (long long)n->count,
+                             n->u.str.s ? n->u.str.s : "i"); break;
     case JN_WAIT: { char d[24]; fmt_dur(n->u.i, d, sizeof(d)); snprintf(out, cap, "wait %s", d); break; }
     case JN_SET: snprintf(out, cap, "set %s = %s", n->u.str.s, jobs_build_expr_text(n->a)); break;
     default: snprintf(out, cap, "step");
@@ -316,6 +318,12 @@ static void builder_inspector(void)
         char v[24];
         fmt_dur(node->u.i, v, sizeof(v));
         lv_textarea_set_text(s_ctx.ta_val, v);
+        return;
+    }
+    if (node->kind == JN_REPEAT) {
+        s_ctx.insp = INSP_CUSTOM;
+        devos_w_set_text(s_ctx.lbl_custom, "Repeat block (read-only here) - edit it in Text (Sym+M).");
+        set_visible(s_ctx.lbl_custom, true);
         return;
     }
     if (!d || d->param_count == 0) {

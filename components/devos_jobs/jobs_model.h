@@ -28,6 +28,8 @@ extern "C" {
 #define JOBS_MAX_STRING   4096
 #define JOBS_MAX_DIAGS    16
 #define JOBS_MAX_WAIT_MS  (5 * 60 * 1000)
+#define JOBS_MAX_REPEAT   32     /* bounded literal repeat count (PLAN.md section 10) */
+#define JOBS_MAX_JSONPATH 96     /* json_get() path length */
 
 typedef struct {
     uint32_t max_source, max_nodes, max_depth, max_vars, max_string;
@@ -63,7 +65,6 @@ typedef enum { JOP_NOT = 0, JOP_AND, JOP_OR, JOP_EQ, JOP_NE, JOP_LT, JOP_LE, JOP
 #define JSP_REF     1
 
 /* flags */
-#define JNF_UNSUPPORTED 0x0001   /* parsed but not executable in this version (repeat) */
 #define JNF_TAINTED     0x0002   /* secret-derived; never log/interpolate */
 
 typedef struct jobs_node {
@@ -74,6 +75,7 @@ typedef struct jobs_node {
     uint16_t line, col;
     struct jobs_node *next;      /* sibling in a block/list */
     struct jobs_node *a, *b, *c; /* kind-specific children */
+    int64_t count;               /* JN_REPEAT: literal repeat count */
     union {
         struct { const char *s; uint32_t slen; const char *s2; uint32_t slen2; } str;
         devos_value_t lit;
