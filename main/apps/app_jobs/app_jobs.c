@@ -79,6 +79,10 @@ typedef struct {
     lv_obj_t *form_out_ta;                   /* "Save result as" */
     lv_obj_t *form_out_lbl;
     lv_obj_t *form_hdr;                      /* action title + effect line */
+    /* Job settings dialog (name + policy) */
+    devos_w_dialog_t dlg_job;
+    lv_obj_t *job_ta_name, *job_ta_timeout, *job_dd_overlap, *job_ta_cooldown;
+    devos_focus_t job_focus;
     jobs_build_t build;
     bool build_ok;
     jobs_build_row_t rows[JOBS_BUILD_ROWS];
@@ -104,6 +108,7 @@ static devos_app_descriptor_t s_desc;
 static jobs_ctx_t s_ctx;
 static bool s_syncing;                      /* text set programmatically, not a user edit */
 static bool s_in_list;                      /* the job list has the keyboard (P1 model) */
+static bool s_job_open;                     /* the Job settings dialog has the keyboard */
 
 /* Delete confirmation (P0: never delete a job with one key). */
 static devos_w_dialog_t s_del_dlg;
@@ -126,6 +131,9 @@ static void update_footer(void);
 static void refresh_add_picker(void);
 static void form_build(const jobs_node_t *node, const devos_action_descriptor_t *d);
 static void form_commit(const jobs_node_t *node);
+static void open_job_settings(void);
+static void commit_job_settings(void);
+static void close_job_settings(void);
 
 static const char *NEW_TEMPLATE =
     "version 1;\n"
@@ -1036,6 +1044,66 @@ static void act_delete(void)
 }
 static void del_ok_cb(lv_event_t *e) { LV_UNUSED(e); delete_confirmed(); }
 static void del_cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_delete_dialog(); }
+static void jobset_cb(lv_event_t *e) { LV_UNUSED(e); open_job_settings(); }
+
+/* ---- Job settings dialog (name + policy) ---- */
+static bool ensure_build(void)
+{
+    if (s_ctx.build.ast) return true;
+    return jobs_build_load(&s_ctx.build, cur_source(), strlen(cur_source()));
+}
+
+static void close_job_settings(void)
+{
+    s_job_open = false;
+    devos_w_dialog_show(&s_ctx.dlg_job, false);
+}
+
+static void commit_job_settings(void)
+{
+    if (s_ctx.n == 0) { close_job_settings(); return; }
+    bool had_build = s_ctx.build.ast != NULL;
+    if (!ensure_build()) { close_job_settings(); return; }
+    const char *nm = lv_textarea_get_text(s_ctx.job_ta_name);
+    if (nm[0]) jobs_build_set_job_name(&s_ctx.build, nm);
+    int64_t to = parse_dur(lv_textarea_get_text(s_ctx.job_ta_timeout));
+    int64_t cd = parse_dur(lv_textarea_get_text(s_ctx.job_ta_cooldown));
+    if (to < 0) to = 0;
+    if (cd < 0) cd = 0;
+    jobs_build_set_policy(&s_ctx.build, to, lv_dropdown_get_selected(s_ctx.job_dd_overlap) == 1, cd);
+    builder_sync();                     /* re-serialize to ta_src + mark dirty */
+    if (!had_build && s_ctx.tab != TAB_BUILDER) { jobs_build_free(&s_ctx.build); s_ctx.build.ast = NULL; }
+    if (nm[0]) snprintf(s_ctx.cur_name, sizeof(s_ctx.cur_name), "%s", nm);
+    update_name();
+    if (s_ctx.tab == TAB_OVERVIEW) refresh_overview();
+    refresh_problems();
+    close_job_settings();
+    devos_toast_show("Job settings saved - Sym+A to apply", DEVOS_TOAST_OK, 0);
+}
+
+static void open_job_settings(void)
+{
+    if (s_ctx.n == 0) { say("No job selected."); return; }
+    if (!ensure_build()) { say("This job can't be edited here - fix it in Text first."); return; }
+    jobs_node_t *job = s_ctx.build.ast ? s_ctx.build.ast->root : NULL;
+    s_syncing = true;
+    lv_textarea_set_text(s_ctx.job_ta_name, job && job->u.str.s ? job->u.str.s : s_ctx.cur_name);
+    s_syncing = false;
+    char dv[24];
+    int64_t to = jobs_build_policy_timeout(job);
+    int64_t cd = jobs_build_policy_cooldown(job);
+    fmt_dur(to, dv, sizeof(dv));
+    lv_textarea_set_text(s_ctx.job_ta_timeout, to > 0 ? dv : "");
+    fmt_dur(cd, dv, sizeof(dv));
+    lv_textarea_set_text(s_ctx.job_ta_cooldown, cd > 0 ? dv : "");
+    lv_dropdown_set_selected(s_ctx.job_dd_overlap, (uint32_t)jobs_build_policy_overlap(job));
+    s_job_open = true;
+    devos_w_dialog_show(&s_ctx.dlg_job, true);
+    devos_focus_first(&s_ctx.job_focus);
+}
+
+static void job_ok_cb(lv_event_t *e) { LV_UNUSED(e); commit_job_settings(); }
+static void job_cancel_cb(lv_event_t *e) { LV_UNUSED(e); close_job_settings(); }
 
 /* ---- mode ---- */
 static void set_mode(ui_mode_t m)
@@ -1275,13 +1343,13 @@ static void refresh_problems(void)
 static void update_footer(void)
 {
     if (!s_ctx.lbl_hint) return;
-    const char *h = s_ctx.tab == TAB_TEXT ? "Typing edits the source  Ctrl+S apply  Sym+O overview  Sym+R runs  Esc list"
-                  : s_ctx.tab == TAB_OVERVIEW ? "Sym+B builder  Sym+M text  Sym+R runs  Sym+A apply  Sym+G enable  Esc list"
+    const char *h = s_ctx.tab == TAB_TEXT ? "Typing edits the source  Ctrl+S apply  Sym+O overview  Sym+Y runs  Esc list"
+                  : s_ctx.tab == TAB_OVERVIEW ? "Sym+B builder  Sym+M text  Sym+Y runs  Sym+A apply  Sym+G enable  Sym+E settings  Esc list"
                   : s_ctx.tab == TAB_RUNS ? "Up / Down  pick  Sym+O overview  Sym+B builder  Esc list"
                   : "Up / Down  pick a step  Sym+U add  Del delete  Sym+K/Sym+J move  Sym+O overview  Sym+M text";
     if (!s_ctx.list_visible)
-        h = s_ctx.tab == TAB_OVERVIEW ? "Sym+L jobs  Sym+B builder  Sym+M text  Sym+R runs  Sym+A apply"
-                                      : "Sym+L jobs  Sym+O overview  Sym+R runs  Esc";
+        h = s_ctx.tab == TAB_OVERVIEW ? "Sym+L jobs  Sym+B builder  Sym+M text  Sym+Y runs  Sym+A apply"
+                                      : "Sym+L jobs  Sym+O overview  Sym+Y runs  Esc";
     devos_w_set_text(s_ctx.lbl_hint, h);
 }
 
@@ -1659,6 +1727,8 @@ static void jobs_init(void)
     lv_obj_set_pos(s_ctx.btn_enable, RX + 300, ty);
     s_ctx.btn_run = devos_w_btn(scr, "Run now  [Sym+R]", 140, run_cancel_cb, NULL, NULL);
     lv_obj_set_pos(s_ctx.btn_run, RX + 450, ty);
+    lv_obj_t *btn_jobset = devos_w_btn(scr, "Settings  [Sym+E]", 150, jobset_cb, NULL, NULL);
+    lv_obj_set_pos(btn_jobset, RX + 600, ty);
 
     s_ctx.lbl_hint = devos_w_label(scr, &lv_font_montserrat_12, DEVOS_W_TEXT_MUTED, "");
     lv_obj_set_pos(s_ctx.lbl_hint, RX, ty + 34);
@@ -1679,6 +1749,44 @@ static void jobs_init(void)
     lv_obj_align(dcl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     devos_w_set_text(s_del_dlg.msg, "Enter = delete      Esc = cancel");
     devos_core_add_restart_check(jobs_restart_check);
+
+    /* Job settings dialog: name, timeout, overlap, cooldown */
+    devos_w_dialog(&s_ctx.dlg_job, scr, 560, 360, LV_SYMBOL_SETTINGS "  Job settings");
+    lv_obj_t *jrow = lv_obj_create(s_ctx.dlg_job.box);
+    lv_obj_remove_style_all(jrow);
+    lv_obj_set_pos(jrow, 0, 42);
+    lv_obj_set_size(jrow, 520, 250);
+    lv_obj_remove_flag(jrow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(jrow, 0, 0);
+    mk_label(jrow, "Name", DEVOS_W_TEXT_DIM, 0, 0);
+    s_ctx.job_ta_name = devos_w_ta(jrow, true, 500, 34);
+    lv_obj_set_pos(s_ctx.job_ta_name, 0, 20);
+    lv_textarea_set_max_length(s_ctx.job_ta_name, DEVOS_JOBS_NAME_MAX - 1);
+    mk_label(jrow, "Timeout  (empty = no limit, e.g. 30s)", DEVOS_W_TEXT_DIM, 0, 62);
+    s_ctx.job_ta_timeout = devos_w_ta(jrow, true, 500, 34);
+    lv_obj_set_pos(s_ctx.job_ta_timeout, 0, 82);
+    lv_textarea_set_max_length(s_ctx.job_ta_timeout, 20);
+    mk_label(jrow, "Overlap", DEVOS_W_TEXT_DIM, 0, 124);
+    s_ctx.job_dd_overlap = devos_w_dd(jrow, "skip\nqueue one", 200);
+    lv_obj_set_pos(s_ctx.job_dd_overlap, 0, 144);
+    mk_label(jrow, "Cooldown  (empty = none, e.g. 5m)", DEVOS_W_TEXT_DIM, 0, 186);
+    s_ctx.job_ta_cooldown = devos_w_ta(jrow, true, 500, 34);
+    lv_obj_set_pos(s_ctx.job_ta_cooldown, 0, 206);
+    lv_textarea_set_max_length(s_ctx.job_ta_cooldown, 20);
+    devos_w_set_text(s_ctx.dlg_job.msg, "Enter = save      Esc = cancel");
+    lv_obj_t *jok = devos_w_btn_kind(s_ctx.dlg_job.box, DEVOS_W_BTN_PRIMARY, "Save", 120, job_ok_cb, NULL, NULL);
+    lv_obj_set_size(jok, 120, 36);
+    lv_obj_align(jok, LV_ALIGN_BOTTOM_RIGHT, -132, 0);
+    lv_obj_t *jcl = devos_w_btn(s_ctx.dlg_job.box, "Cancel", 120, job_cancel_cb, NULL, NULL);
+    lv_obj_set_size(jcl, 120, 36);
+    lv_obj_align(jcl, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    devos_focus_init(&s_ctx.job_focus);
+    devos_focus_add(&s_ctx.job_focus, s_ctx.job_ta_name);
+    devos_focus_add(&s_ctx.job_focus, s_ctx.job_ta_timeout);
+    devos_focus_add(&s_ctx.job_focus, s_ctx.job_dd_overlap);
+    devos_focus_add(&s_ctx.job_focus, s_ctx.job_ta_cooldown);
+    devos_focus_add(&s_ctx.job_focus, jok);
+    devos_focus_add(&s_ctx.job_focus, jcl);
 
     lv_obj_t *keys = devos_w_keys(scr);
     devos_w_set_text(keys, "Up/Down jobs  Enter open  Space enable  R run  |  "
@@ -1762,6 +1870,14 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         return true;
     }
 
+    /* The Job settings dialog owns the keyboard: Enter saves, Esc cancels. */
+    if (s_job_open) {
+        if (key == '\r' || key == '\n') { commit_job_settings(); return true; }
+        if (key == LV_KEY_ESC) { close_job_settings(); return true; }
+        if (devos_focus_key(&s_ctx.job_focus, key, mods)) return true;
+        return true;
+    }
+
     /* Step-tree keys while the Builder tab is shown. */
     lv_obj_t *cur = devos_focus_get(&s_ctx.focus);
     if (s_ctx.tab == TAB_BUILDER && cur == s_ctx.step_list &&
@@ -1790,6 +1906,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'm': set_tab(TAB_TEXT); return true;
         case 'o': set_tab(TAB_OVERVIEW); return true;
         case 'y': set_tab(TAB_RUNS); return true;
+        case 'e': open_job_settings(); return true;        /* Sym+P is system sleep */
         case 'l': toggle_list(); return true;
         case 'c': act_validate(); return true;
         case 'a': builder_commit_all(); act_apply(); return true;
@@ -1828,6 +1945,7 @@ static bool jobs_key(uint32_t key, uint8_t mods)
         case 'r': case 'R': act_run(); return true;
         case 'n': case 'N': act_new(); return true;
         case 'd': case 'D': act_delete(); return true;
+        case 'e': case 'E': open_job_settings(); return true;
         case LV_KEY_ESC: return false;              /* Home */
         default: return false;
         }
@@ -1890,10 +2008,12 @@ static const char *jobs_shortcuts(void)
            "Space\tEnable / disable\n"
            "B / M / O / Y\tBuilder / Text / Overview / Runs\n"
            "R / N / D\tRun now / New / Delete (asks first)\n"
+           "E\tJob settings (name, timeout, overlap, cooldown)\n"
            "Sym+L\tShow / hide the job list\n"
            "Anywhere\n"
            "Sym+C / Sym+A\tValidate / Apply (unsaved changes)\n"
            "Sym+G / Sym+R / Sym+X\tEnable / Run now / Cancel\n"
+           "Sym+E\tJob settings (name, timeout, overlap, cooldown)\n"
            "Sym+O / Sym+Y\tOverview / Runs\n"
            "Sym+B / Sym+M\tBuilder / Text\n"
            "Builder\n"
