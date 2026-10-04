@@ -609,10 +609,15 @@ the advanced language (`repeat`, `json_get`, reusable typed job calls), the `net
 `network.dns` actions, and the encrypted credential store. The UI was reworked to the review's
 dashboard-first layout (left job list, Overview / Builder / Text / Runs tabs, Problems strip,
 state-aware toolbar, draft protection, delete confirmation), and P2/P3 added control steps in the
-Builder, run-history records, a per-run trace and failure toasts. The remaining Phase 10 items are
+Builder, run-history records, a per-run trace and failure toasts. Follow-ups since landed the
+per-parameter settings form (with an available-variables hint), the job name + policy card,
+Blank/Duplicate/Example starters, draft dry runs with trace, a Revisions view with diff and
+rollback, trigger time spinners, indent/outdent across bodies, and filter-as-you-type.
+The remaining Phase 10 items are
 on-device measurements, a hardware soak, SD power-loss testing and verified NVS-encryption
 provisioning; they require a Tab5 and are listed as pending, never inferred from host results. The
-review's per-parameter settings form, examples/duplicate, dry run and revisions view are still open.
+review's per-job palette commands are still open (they need a dynamic provider in the palette
+core, a system-overlay change).
 
 ---
 
