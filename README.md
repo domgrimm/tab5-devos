@@ -1,6 +1,6 @@
 # devOS for the M5Stack Tab5
 
-devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin, network and developer work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, network diagnostics (ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN), a Coder's Toolkit (Base64, hashes, JWT, UUID, subnet, cron, regex, …), an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
+devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×720 display) with its **70-key keyboard**. It turns the Tab5 into a small cyberdeck for sysadmin, network and developer work: SSH terminal, Markdown editor, Tailscale and WireGuard VPNs, MQTT, REST, Docker, Proxmox, network diagnostics (ping, DNS, port scan, Wi-Fi survey, mDNS, Wake-on-LAN), a Coder's Toolkit (Base64, hashes, JWT, UUID, subnet, cron, regex, …), an ADS-B radar, a TOTP authenticator, and a web page for getting files on and off the SD card. Each of these is an app that plugs into the core the same way, so you can add your own without touching the Home Screen.
 
 **Install it from your browser:** <https://domgrimm.github.io/tab5-devos/> (Chrome or Edge, USB-C cable). After that the Tab5 updates itself over Wi-Fi.
 
@@ -32,6 +32,7 @@ action with its parameters and outputs, events, credentials, limits and troubles
 | **Network** | Ping, DNS lookup, port scan, Wi-Fi survey, mDNS browser and Wake-on-LAN (magic packets to a sleeping machine, broadcast or routed over the VPN, with a remembered list) |
 | **REST** | REST and webhook client with saved requests and `{{variables}}`; **Sym+J** turns the request on screen into a Jobs job |
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop, plus background Jobs `docker.inspect` / `start` / `stop` / `restart` actions |
+| **Proxmox** | Proxmox VE console: the cluster's VMs and containers with CPU / memory / disk / uptime, start / shutdown / stop / reboot (with confirmation), a console link into REST and SSH into the host, plus background Jobs `proxmox.guest_status` / `guest_start` / `guest_stop` / `guest_shutdown` / `guest_reboot` actions |
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |
 | **Authenticator** | Offline TOTP codes from an encrypted vault; add accounts by scanning a QR code with the camera |
@@ -118,8 +119,10 @@ optional `policy(overlap: "skip" |
 "queue_one", cooldown: 5m)` controls automatic admission; **Run now** bypasses the cooldown.
 
 Actions are `http.request`, `network.ping`, `network.wol`, `network.dns`, `system.log`,
-`system.notify`, `mqtt.publish` and `docker.inspect` / `docker.start` / `docker.stop` /
-`docker.restart`. `system.notify` raises a toast (`level: "info"` by default, or `"success"` for
+`system.notify`, `mqtt.publish`, `docker.inspect` / `docker.start` / `docker.stop` /
+`docker.restart`, and `proxmox.guest_status` / `proxmox.guest_start` / `proxmox.guest_stop` /
+`proxmox.guest_shutdown` / `proxmox.guest_reboot`. `system.notify` raises a toast (`level: "info"`
+by default, or `"success"` for
 the green tick, `"warning"`, `"error"`), shown whatever app is on screen, so a background job can
 tell you something happened. An
 `mqtt.message` trigger declares the broker subscription it needs - `event "mqtt.message"(topic:
@@ -224,6 +227,34 @@ Docker not being configured (or switched off in **Settings > Apps**) blocks the 
 diagnostic. The Docker app's live list, stats and logs keep working while a job acts, and a job's
 commands never overwrite each other.
 
+Proxmox actions work the same way. A guest is addressed by its **vmid alone** - the engine resolves
+its node and type (QEMU VM or LXC container) from the cluster resources, so a job never has to know
+which node a guest lives on. `proxmox.guest_status(vmid: 100)` reads the guest directly (`ok`,
+`status`, `state`, `node`, `name`, `type`, `cpu`, `mem`, `maxmem`, `uptime`, `error`);
+`proxmox.guest_start` / `guest_stop` (hard) / `guest_shutdown` (clean) / `guest_reboot` return
+`status`, `accepted`, `task` (the UPID Proxmox returned) and `outcome_unknown` - `accepted` means
+Proxmox took the task, not that the guest reached the state, so follow a reboot with a `wait` and a
+`guest_status` poll:
+
+```text
+version 1;
+job "Reboot the web VM" {
+    trigger manual;
+    proxmox.guest_reboot(vmid: 100, timeout: 15s) as reboot;
+    if reboot.accepted {
+        wait 30s;
+        proxmox.guest_status(vmid: 100) as after;
+        system.notify(message: "web VM is ${after.state}", level: "success");
+    }
+}
+```
+
+A guest that is not in the cluster is a real failure (nothing was sent); a transport error on a
+mutation is `outcome_unknown`. Proxmox not being configured (or switched off in **Settings > Apps**)
+blocks the run with a diagnostic. Settings live in the Proxmox app (**C**): the server URL, an API
+token id (`user@realm!tokenid`) and its secret (kept in NVS), and "accept any certificate" for
+Proxmox's self-signed one.
+
 **Builder** is the default view (press **Sym+M** for Text). It has a trigger card (Manual / Every /
 Daily / Weekdays / Event, with the event topic and an optional `where` filter), a step tree you
 can tap to select and **drag to reorder**, and a settings inspector generated from each action's
@@ -299,7 +330,7 @@ Apps don't carry their own renderers, parsers or network code. Each of these exi
 | `devos_hashfile` | Streams a file off the SD card through a hash on core 0, with progress and result getters |
 | `devos_vterm` | VT100 / xterm terminal emulator |
 
-The feature engines (`devos_mqtt`, `devos_docker`, `devos_adsb`, `devos_maptiles`, `devos_netdiag`, `devos_hashfile`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
+The feature engines (`devos_mqtt`, `devos_docker`, `devos_proxmox`, `devos_adsb`, `devos_maptiles`, `devos_netdiag`, `devos_hashfile`, `devos_totp`, `devos_wireguard`, `devos_tailnet`, `devos_audio`, `devos_qr`, `devos_fileshare`) follow the same rule: no LVGL, a small C API, and status getters that report "off" if their app is switched off.
 
 ### Keyboard first
 
@@ -560,7 +591,7 @@ components/
   devos_ota/         update check and install
   devos_sysmon/      1 Hz telemetry, clock, time zones
   devos_json/  devos_mdview/  devos_crypto/  devos_vterm/          shared engines
-  devos_mqtt/  devos_docker/  devos_adsb/                          feature engines
+  devos_mqtt/  devos_docker/  devos_proxmox/  devos_adsb/         feature engines
   devos_netdiag/     ping, DNS, port scan, mDNS, Wi-Fi survey, Wake-on-LAN
   devos_maptiles/    OpenStreetMap tiles: fetch one at a time, cache on SD
   devos_hashfile/    stream a file off the SD card through a hash (core 0)

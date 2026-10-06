@@ -9,5 +9,6 @@ void jobs_providers_register_all(void)
     jobs_network_register();    /* network.ping (request-specific probe) */
     jobs_mqtt_register();       /* mqtt.publish (tracked tickets) */
     jobs_docker_register();     /* docker.inspect / start / stop / restart */
+    jobs_proxmox_register();    /* proxmox.guest_status / start / stop / shutdown / reboot */
     jobs_events_register();     /* event topic schemas (boot/Wi-Fi/VPN/battery) */
 }

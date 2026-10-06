@@ -16,6 +16,7 @@ set(APP_SRCS
     "apps/app_netdiag/nd_ui_wol.c"
     "apps/app_rest/app_rest.c"
     "apps/app_docker/app_docker.c"
+    "apps/app_proxmox/app_proxmox.c"
     "apps/app_adsb/app_adsb.c"
     "apps/app_adsb/adsb_map.c"
     "apps/app_cricket/app_cricket.c"
@@ -31,6 +32,7 @@ set(APP_SRCS
     "jobs_providers/jobs_network.c"
     "jobs_providers/jobs_mqtt.c"
     "jobs_providers/jobs_docker.c"
+    "jobs_providers/jobs_proxmox.c"
     "jobs_providers/jobs_events.c"
 )
 
@@ -73,6 +75,7 @@ idf_component_register(
         devos_http
         devos_netdiag
         devos_docker
+        devos_proxmox
         devos_adsb
         devos_maptiles
         devos_cricket

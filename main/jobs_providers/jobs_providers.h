@@ -61,6 +61,7 @@ void jobs_http_register(void);
 void jobs_network_register(void);
 void jobs_mqtt_register(void);
 void jobs_docker_register(void);
+void jobs_proxmox_register(void);
 void jobs_events_register(void);
 
 /* Optional availability gate for the Docker provider (e.g. the Docker app is
@@ -68,6 +69,9 @@ void jobs_events_register(void);
  * result makes every docker.* action unavailable with `reason`. NULL clears
  * the gate. Not needed by host tests, so it lives in the provider. */
 void jobs_docker_set_gate(bool (*gate)(char *reason, size_t cap));
+/* The Proxmox app being switched off makes every proxmox.* action unavailable
+ * with a reason (Jobs never re-enables an app). */
+void jobs_proxmox_set_gate(bool (*gate)(char *reason, size_t cap));
 
 /* ---- system-event producers (Phase 6) -----------------------------------
  * Called from main's boot path / 1 Hz loop, never from an engine. The bridge

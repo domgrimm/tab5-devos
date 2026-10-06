@@ -30,6 +30,7 @@
 #include "apps/app_netdiag/app_netdiag.h"
 #include "apps/app_rest/app_rest.h"
 #include "apps/app_docker/app_docker.h"
+#include "apps/app_proxmox/app_proxmox.h"
 #include "apps/app_adsb/app_adsb.h"
 #include "apps/app_cricket/app_cricket.h"
 #include "apps/app_totp/app_totp.h"
@@ -402,6 +403,14 @@ static bool jobs_docker_gate(char *reason, size_t cap)
     return false;
 }
 
+/* Likewise for proxmox.*. */
+static bool jobs_proxmox_gate(char *reason, size_t cap)
+{
+    if (devos_core_app_enabled("proxmox")) return true;
+    snprintf(reason, cap, "Proxmox is switched off in Settings > Apps");
+    return false;
+}
+
 /* The boot bridge installs the devos_secrets resolver so a credential field
  * written as secret("name") resolves without the engine depending on NVS/SD. */
 static int jobs_secret_resolve(const char *name, char *out, size_t cap, void *user)
@@ -580,6 +589,7 @@ static void devos_system_bringup(void)
     devos_events_init();
     jobs_providers_register_all();
     jobs_docker_set_gate(jobs_docker_gate);
+    jobs_proxmox_set_gate(jobs_proxmox_gate);
 
     /* 6d. Jobs engine: scheduler + durable storage. Started only when the app
      * is on; automatic runs stay paused after a safe/reverted boot, and a
@@ -651,6 +661,11 @@ static void devos_system_bringup(void)
 #endif
     printf("[devOS]   - Registering Docker...\n");
     devos_core_register_app(app_docker_get_descriptor());
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+    printf("[devOS]   - Registering Proxmox...\n");
+    devos_core_register_app(app_proxmox_get_descriptor());
 #ifdef ESP_PLATFORM
     vTaskDelay(pdMS_TO_TICKS(10));
 #endif

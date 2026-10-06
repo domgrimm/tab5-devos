@@ -206,6 +206,19 @@ void devos_icon_docker(lv_layer_t *layer, const lv_area_t *area, lv_color_t colo
     line(&p, 184, 92, 196, 104, 14);
 }
 
+/* Proxmox: a node chassis (a frame) with its guests stacked inside. */
+void devos_icon_proxmox(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
+{
+    pen_t p = pen(layer, area, color);
+    line(&p, 24, 26, 176, 26, 16);                      /* the node */
+    line(&p, 24, 174, 176, 174, 16);
+    line(&p, 24, 26, 24, 174, 16);
+    line(&p, 176, 26, 176, 174, 16);
+    box(&p, 48, 52, 152, 76, 8, LV_OPA_COVER);          /* guests */
+    box(&p, 48, 88, 152, 112, 8, LV_OPA_COVER);
+    box(&p, 48, 124, 152, 148, 8, LV_OPA_COVER);
+}
+
 /* ADS-B: an airliner seen from above. */
 void devos_icon_adsb(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
 {

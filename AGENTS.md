@@ -115,6 +115,7 @@ tab5-devos/
 │   ├── devos_http/                # HTTP/1.1 + HTTPS client (mbedTLS) over devos_net sockets
 │   ├── devos_netdiag/             # ping, DNS, port scan, mDNS engines (no LVGL)
 │   ├── devos_docker/              # Docker Engine / Portainer API client (no LVGL)
+│   ├── devos_proxmox/             # Proxmox VE API client: nodes + guests (no LVGL)
 │   ├── devos_adsb/                # aircraft.json poller for the ADS-B radar (no LVGL)
 │   ├── devos_maptiles/            # OpenStreetMap tile fetch + SD/RAM cache for map underlays (no LVGL)
 │   ├── devos_cricket/             # ESPNcricinfo match lists + scorecards via ESPN's site API (no LVGL)
@@ -147,6 +148,7 @@ tab5-devos/
 │   │   ├── app_netdiag/           # Network: ping, DNS, port scan, Wi-Fi survey, mDNS
 │   │   ├── app_rest/              # REST & webhook client
 │   │   ├── app_docker/            # Docker / Portainer console
+│   │   ├── app_proxmox/           # Proxmox VE nodes and guests
 │   │   ├── app_adsb/              # ADS-B radar (dump1090 / readsb aircraft.json) + OSM underlay (adsb_map.c)
 │   │   ├── app_cricket/           # Cricket: live scores, results by date, scorecards
 │   │   ├── app_totp/              # Authenticator: offline TOTP from an encrypted vault

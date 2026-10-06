@@ -390,8 +390,28 @@ services in the REST client).
     the screen: each carries its own config snapshot and result, so Jobs and the UI never
     overwrite one another. The UI's fire-and-forget wrapper keeps its status note.
 
-### 3.14 ADS-B Radar (`app_adsb`, `devos_adsb`)
+### 3.13b Proxmox VE Console (`app_proxmox`, `devos_proxmox`)
 
+*   Talks to one Proxmox VE host's HTTPS API (`/api2/json`) with an API token
+    (`user@realm!tokenid` + secret, sent as `Authorization: PVEAPIToken=...`). Config in
+    `/.devos/proxmox.json`, token secret in NVS, "accept any certificate" for Proxmox's
+    self-signed one.
+*   The cluster's guests (QEMU VMs and LXC containers, running first) from `/cluster/resources`,
+    with CPU / memory / disk / uptime and the node's own load; the selected guest's detail, a
+    Start / Shutdown (clean) / Stop (hard, asks first) / Reboot (asks first) row, its console in
+    the REST app (**W**) and SSH to the host (**K**). Sym+L hides the 260 px guest list.
+*   One Core 0 worker (started on first use) refreshes the list / nodes / version only while the
+    app is shown. Guest commands run through the same bounded, correlated ticket queue
+    (`devos_proxmox_request` / `poll` / `cancel` / `release`) whether or not the screen is shown,
+    each carrying its own config snapshot, so Jobs and the UI never overwrite one another. A guest
+    is addressed by vmid alone - the node and type are resolved from the cluster resources - so a
+    job never has to know them. A fire-and-forget UI request frees its slot when the worker
+    finishes; Jobs tickets stay readable until their release.
+*   Honest outcomes: HTTP 200 with a UPID means Proxmox *accepted* the task, not that the guest
+    reached the state; a transport error on a mutation is outcome-unknown; a vmid not in the
+    cluster is a real failure with nothing sent.
+
+### 3.14 ADS-B Radar (`app_adsb`, `devos_adsb`)
 *   Polls a local receiver's `aircraft.json` (dump1090-fa, readsb, tar1090, PiAware SkyAware,
     ultrafeeder) once a second while shown; receiver position from the settings or its
     `receiver.json`. Aircraft not heard for 60 s drop off; 48-point trails.
@@ -550,6 +570,19 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     A switched-off Docker app makes every `docker.*` action unavailable with a reason (Jobs never
     re-enables an app). A `docker.container_state_changed` event stays deferred until its
     polling/freshness semantics are defined; jobs poll `docker.inspect` in the meantime.
+*   **Proxmox (`devos_proxmox`, `proxmox.guest_status` / `guest_start` / `guest_stop` /
+    `guest_shutdown` / `guest_reboot`).** The same shape as Docker: correlated tickets on a bounded
+    queue run by the one Core 0 worker whether or not the Proxmox screen is shown, each with its
+    own config snapshot taken at submit. A guest is addressed by **vmid alone** - the engine
+    resolves its node and type from `/cluster/resources` - so a job never has to know which node a
+    guest lives on, and a vmid that is not in the cluster is a real failure with nothing sent.
+    `guest_status` reads the guest directly (`ok`, `status`, `state`, `node`, `name`, `type`,
+    `cpu`, `mem`, `maxmem`, `uptime`, `error`); the four mutations report `status`, `accepted`,
+    `task` (the UPID) and `outcome_unknown`. HTTP 200 with a UPID is accepted, not running, so a
+    job follows a reboot with a `wait` and a `guest_status` poll; a transport error on a mutation
+    is never retried automatically. Verified against a fake Proxmox VE API in
+    `tools/jobs_proxmox_test.c` (68 checks). A switched-off Proxmox app makes every `proxmox.*`
+    action unavailable with a reason.
 *   **Secondary network actions (`network.wol`, `network.dns`).** `network.wol` sends a magic
     packet with a per-call result (`sent`, `target`, `error`); the target may be empty (broadcast),
     a host name, an IPv4 address or a directed broadcast, and the resolution runs on a worker so
@@ -990,6 +1023,20 @@ verified work. Engine headers stay LVGL-free so the parser/validator/serializer 
       example round-trip, inspect success / not-found / transport error, accepted-vs-unknown, two
       commands never overwriting, the config snapshot, queue saturation, the app gate, the UI
       note, cancellation and exact release.
+- [x] **Phase 8b** - Proxmox background operation integration. `devos_proxmox` mirrors the Docker
+       shape: one Core 0 worker, a bounded 8-ticket correlated queue, and a request-specific
+       `guest_status` / `guest_start` / `guest_stop` / `guest_shutdown` / `guest_reboot` contract
+       that runs whether or not the Proxmox screen is shown. Each ticket snapshots the server config
+       at submit; a fire-and-forget UI request frees its slot when the worker finishes while Jobs
+       tickets stay readable until release. A guest is addressed by vmid alone (the node and type
+       are resolved from `/cluster/resources`), so a vmid not in the cluster is a real failure with
+       nothing sent. HTTP 200 with a UPID is `accepted`, not running; a transport error on a
+       mutation is `outcome_unknown`. The `jobs_proxmox` provider registers the five actions with
+       availability, gated on the Proxmox app being switched on. `tools/jobs_proxmox_test.c` (68
+       checks, fake Proxmox VE API) covers the example round-trip, a status read by vmid, an
+       unknown vmid, accepted-vs-unknown, the bad-token path, two commands never overwriting, the
+       config snapshot, queue saturation, the app gate, the UI note, cancellation before and after
+       the command was sent, and exact release. The Proxmox app (`app_proxmox`) is the console.
 - [x] **Phase 9** - advanced language and secondary actions (and the follow-up that closed its
       deferrals). The interpreter runs a bounded `repeat <1..32> as <index> { ... }` on an explicit
       frame (`FRAME_REPEAT`), binding the read-only integer index each pass; the 256-step budget and

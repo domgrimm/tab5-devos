@@ -37,6 +37,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_rest
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_docker
+        ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_proxmox
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_adsb
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_cricket
         ${CMAKE_CURRENT_SOURCE_DIR}/main/apps/app_totp
@@ -66,6 +67,7 @@ else()
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_http
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_netdiag
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_docker
+        ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_proxmox
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_adsb
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_maptiles
         ${CMAKE_CURRENT_SOURCE_DIR}/components/devos_cricket
@@ -100,6 +102,7 @@ else()
         main/apps/app_netdiag/nd_ui_wol.c
         main/apps/app_rest/app_rest.c
         main/apps/app_docker/app_docker.c
+        main/apps/app_proxmox/app_proxmox.c
         main/apps/app_adsb/app_adsb.c
         main/apps/app_adsb/adsb_map.c
         main/apps/app_cricket/app_cricket.c
@@ -156,6 +159,7 @@ else()
         components/devos_netdiag/nd_wol.c
         components/devos_netdiag/nd_probe.c
         components/devos_docker/devos_docker.c
+        components/devos_proxmox/devos_proxmox.c
         components/devos_adsb/devos_adsb.c
         components/devos_maptiles/devos_maptiles.c
         components/devos_cricket/devos_cricket.c
@@ -179,6 +183,7 @@ else()
         main/jobs_providers/jobs_network.c
         main/jobs_providers/jobs_mqtt.c
         main/jobs_providers/jobs_docker.c
+        main/jobs_providers/jobs_proxmox.c
         main/jobs_providers/jobs_events.c
         components/devos_totp/devos_totp.c
         components/devos_audio/devos_audio.c

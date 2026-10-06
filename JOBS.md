@@ -469,6 +469,50 @@ A transport error on a mutation reports `outcome_unknown` and is **never retried
 the command may or may not have reached the daemon. Docker commands run in the background whether
 or not the Docker screen is open, and a job's commands never overwrite each other.
 
+### `proxmox.guest_status` — Read a VM or container
+
+| parameter | type | notes |
+| :-- | :-- | :-- |
+| `vmid` **\*** | int, expression | the guest's id; its node and type are looked up for you |
+| `timeout` | duration, expression | 1 s … 30 s (default 12 s) |
+
+Outputs: `ok`, `status`, `state` (`running` / `stopped` / `paused` / `suspended`), `node`, `name`,
+`type` (`qemu` or `lxc`), `cpu` (0…1 of one core), `mem` (bytes), `maxmem` (bytes), `uptime`
+(seconds), `error`.
+
+### `proxmox.guest_start` / `guest_stop` / `guest_shutdown` / `guest_reboot`
+
+| parameter | type | notes |
+| :-- | :-- | :-- |
+| `vmid` **\*** | int, expression | the guest's id |
+| `timeout` | duration, expression | 1 s … 30 s (default 15 s) |
+
+Outputs: `status`, `accepted`, `task` (the UPID Proxmox returned), `outcome_unknown`, `error`.
+
+A guest is addressed by **vmid alone**: the engine resolves its node and type from the cluster
+resources, so a job never has to know which node a guest lives on. `guest_stop` is a hard stop;
+`guest_shutdown` asks the guest to shut down cleanly. `accepted` means Proxmox took the task
+(HTTP 200 with a UPID), **not** that the guest reached the state — follow it with a `wait` and a
+`guest_status` poll:
+
+```text
+version 1;
+job "Reboot the web VM" {
+    trigger manual;
+    proxmox.guest_reboot(vmid: 100, timeout: 15s) as reboot;
+    if reboot.accepted {
+        wait 30s;
+        proxmox.guest_status(vmid: 100) as after;
+        system.notify(message: "web VM is ${after.state}", level: "success");
+    }
+}
+```
+
+A vmid that is not in the cluster is a real failure and nothing is sent. A transport error on a
+mutation reports `outcome_unknown`. Settings live in the Proxmox app (**C**): the server URL, an API
+token id (`user@realm!tokenid`), its secret (kept in NVS) and "accept any certificate" for Proxmox's
+self-signed one. Proxmox commands run in the background whether or not the Proxmox screen is open.
+
 ---
 
 ## 5. Events

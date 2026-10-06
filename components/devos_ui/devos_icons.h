@@ -21,6 +21,7 @@ void devos_icon_mqtt(lv_layer_t *layer, const lv_area_t *area, lv_color_t color)
 void devos_icon_network(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_rest(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_docker(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
+void devos_icon_proxmox(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_adsb(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_cricket(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
 void devos_icon_totp(lv_layer_t *layer, const lv_area_t *area, lv_color_t color);
