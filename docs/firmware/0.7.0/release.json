@@ -1,8 +1,5 @@
 {
   "version": "0.7.0",
-  "url": "tab5-devos-0.7.0.bin",
-  "size": 2801120,
-  "sha256": "2a34490e6e4731371a7a43c8bc5b77b7a55b04066b4fbbad3cd1bb98ca05f1c2",
-  "build": "78b91a7dc51ffc00971b2459a6bc453e5926f62cbf6b3475b9b61e04ba18fb40",
+  "built": "Oct  6 2026 15:59:28",
   "notes": "Proxmox VE console: cluster VMs and containers with CPU/memory/disk/uptime, start / shutdown / stop / reboot with confirmation, console into REST and SSH to the host. New proxmox.guest_statu"
 }

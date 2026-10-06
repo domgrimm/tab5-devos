@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.7.0",
+    "built": "Oct  6 2026 15:59:28",
+    "notes": "Proxmox VE console: cluster VMs and containers with CPU/memory/disk/uptime, start / shutdown / stop / reboot with confirmation, console into REST and SSH to the host. New proxmox.guest_statu"
+  },
+  {
     "version": "0.6.0",
     "built": "Oct  6 2026 14:27:08",
     "notes": "Jobs automation: reliability pass across the app, engine and providers; system.notify now raises real toasts; and the complete Jobs guide (JOBS.md)."
