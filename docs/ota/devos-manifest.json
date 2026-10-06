@@ -1,8 +1,8 @@
 {
-  "version": "0.5.3",
-  "url": "tab5-devos-0.5.3.bin",
-  "size": 2608624,
-  "sha256": "ccd19cc2c9514edae0db157722a7877a3ff459a9e379d16e99b45db1fcc502c7",
-  "build": "b4b00f2abc656a0e73d6f3f8d6bc590288e00e27893e8d5b5001799e2baced13",
-  "notes": "File Sharing: paste text from the web page onto the Tab5's Universal Clipboard (also saved to /.devos/clipboard.txt), with a read-back button."
+  "version": "0.6.0",
+  "url": "tab5-devos-0.6.0.bin",
+  "size": 2773104,
+  "sha256": "edb19f7f08a03073c7ffe87d615e2e2675bbd5494cdc04a304a6bc3dcd1ed0d7",
+  "build": "a1ebd061a87b6968d0ecba0f3e2dfaf574f0abe499dd35fb0779f19d6951c6ae",
+  "notes": "Jobs automation: reliability pass across the app, engine and providers; system.notify now raises real toasts; and the complete Jobs guide (JOBS.md)."
 }
