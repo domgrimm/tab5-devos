@@ -55,24 +55,46 @@ static int s_port;
 static volatile int s_stop;
 static volatile int s_slow_ms;           /* delay applied to vmid 9999's actions */
 static volatile int s_auth_bad;
+static volatile int s_empty_cluster;     /* /cluster/resources answers 200 with [] */
 static char s_paths[64][160];
 static volatile int s_npaths;
 
+/* What Proxmox actually sends from /cluster/resources?type=vm: the full field
+ * set (including pool/tags/maxcpu and a node entry that must be filtered out),
+ * with whitespace after the separators - a stricter parse than the compact
+ * form pveproxy usually emits. */
 static const char *GUESTS_JSON =
-    "{\"data\":["
-    "{\"id\":\"qemu/100\",\"type\":\"qemu\",\"vmid\":100,\"node\":\"pve\",\"name\":\"web\","
-    "\"status\":\"running\",\"cpu\":0.04,\"mem\":2147483648,\"maxmem\":4294967296,"
-    "\"disk\":10737418240,\"maxdisk\":21474836480,\"uptime\":86400},"
-    "{\"id\":\"lxc/101\",\"type\":\"lxc\",\"vmid\":101,\"node\":\"pve\",\"name\":\"db\","
-    "\"status\":\"stopped\",\"cpu\":0,\"mem\":0,\"maxmem\":1073741824,"
-    "\"disk\":0,\"maxdisk\":8589934592,\"uptime\":0},"
-    "{\"id\":\"qemu/9999\",\"type\":\"qemu\",\"vmid\":9999,\"node\":\"pve\",\"name\":\"slow\","
-    "\"status\":\"running\",\"cpu\":0,\"mem\":0,\"maxmem\":1073741824,"
-    "\"disk\":0,\"maxdisk\":8589934592,\"uptime\":0}]}";
+    "{\n"
+    "  \"data\" : [\n"
+    "    { \"id\" : \"qemu/100\", \"type\" : \"qemu\", \"vmid\" : 100, \"node\" : \"pve\", \"pool\" : \"\",\n"
+    "      \"name\" : \"web\", \"status\" : \"running\", \"template\" : 0, \"tags\" : \"prod\",\n"
+    "      \"cpu\" : 0.04, \"mem\" : 2147483648, \"maxmem\" : 4294967296, \"maxcpu\" : 4,\n"
+    "      \"disk\" : 10737418240, \"maxdisk\" : 21474836480, \"diskread\" : 0, \"diskwrite\" : 0,\n"
+    "      \"netin\" : 0, \"netout\" : 0, \"uptime\" : 86400 },\n"
+    "    { \"id\" : \"lxc/101\", \"type\" : \"lxc\", \"vmid\" : 101, \"node\" : \"pve\", \"pool\" : \"\",\n"
+    "      \"name\" : \"db\", \"status\" : \"stopped\", \"template\" : 0, \"maxcpu\" : 2,\n"
+    "      \"cpu\" : 0, \"mem\" : 0, \"maxmem\" : 1073741824,\n"
+    "      \"disk\" : 0, \"maxdisk\" : 8589934592, \"uptime\" : 0 },\n"
+    "    { \"id\" : \"qemu/9999\", \"type\" : \"qemu\", \"vmid\" : 9999, \"node\" : \"pve\", \"name\" : \"slow\",\n"
+    "      \"status\" : \"running\", \"cpu\" : 0, \"mem\" : 0, \"maxmem\" : 1073741824,\n"
+    "      \"disk\" : 0, \"maxdisk\" : 8589934592, \"uptime\" : 0 },\n"
+    "    { \"id\" : \"node/pve\", \"type\" : \"node\", \"node\" : \"pve\", \"status\" : \"online\" },\n"
+    "    { \"id\" : \"storage/local\", \"type\" : \"storage\", \"node\" : \"pve\", \"storage\" : \"local\" }\n"
+    "  ]\n"
+    "}";
+
+/* /nodes/<node>/qemu and /lxc: the same guests without a "type" field (it is
+ * the endpoint) and without a "node" field. Used by the per-node fallback. */
+static const char *NODE_QEMU_JSON =
+    "{ \"data\" : [ { \"vmid\" : 100, \"name\" : \"web\", \"status\" : \"running\",\n"
+    "                 \"cpu\" : 0.04, \"mem\" : 2147483648, \"maxmem\" : 4294967296, \"uptime\" : 86400 } ] }";
+static const char *NODE_LXC_JSON =
+    "{ \"data\" : [ { \"vmid\" : 101, \"name\" : \"db\", \"status\" : \"stopped\",\n"
+    "                 \"cpu\" : 0, \"mem\" : 0, \"maxmem\" : 1073741824, \"uptime\" : 0 } ] }";
 
 static const char *STATUS_JSON =
-    "{\"data\":{\"status\":\"running\",\"name\":\"web\",\"cpu\":0.04,"
-    "\"mem\":2147483648,\"maxmem\":4294967296,\"uptime\":86400}}";
+    "{ \"data\" : { \"status\" : \"running\", \"name\" : \"web\", \"cpu\" : 0.04,\n"
+    "               \"mem\" : 2147483648, \"maxmem\" : 4294967296, \"uptime\" : 86400 } }";
 
 static void log_path(const char *req)
 {
@@ -118,7 +140,7 @@ static void *server_thread(void *arg)
             code = 401;
             body = "{\"data\":null,\"errors\":{\"auth\":\"no ticket\"}}";
         } else if (strstr(req, "/cluster/resources")) {
-            body = GUESTS_JSON;
+            body = s_empty_cluster ? "{ \"data\" : [] }" : GUESTS_JSON;
         } else if (strstr(req, "/api2/json/nodes HTTP")) {
             body = "{\"data\":[{\"node\":\"pve\",\"status\":\"online\",\"cpu\":0.07,"
                    "\"mem\":9000000000,\"maxmem\":34359738368,\"uptime\":500000}]}";
@@ -128,6 +150,10 @@ static void *server_thread(void *arg)
                    strstr(req, "/status/shutdown") || strstr(req, "/status/reboot")) {
             if (strstr(req, "/9999/") && s_slow_ms) usleep((useconds_t)s_slow_ms * 1000);
             body = "{\"data\":\"UPID:pve:0000ABCD:00000000:00000000:qemu:100:root@pam!devos:start:\"}";
+        } else if (strstr(req, "/nodes/") && strstr(req, "/qemu")) {
+            body = NODE_QEMU_JSON;          /* the per-node fallback list */
+        } else if (strstr(req, "/nodes/") && strstr(req, "/lxc")) {
+            body = NODE_LXC_JSON;
         } else {
             code = 501;
             body = "{\"data\":null,\"errors\":{\"path\":\"not found\"}}";
@@ -235,6 +261,7 @@ int main(void)
     snprintf(cfg.url, sizeof(cfg.url), "http://127.0.0.1:%d", s_port);
     snprintf(cfg.token_id, sizeof(cfg.token_id), "root@pam!devos");
     snprintf(cfg.secret, sizeof(cfg.secret), "11111111-2222-3333-4444-555555555555");
+    cfg.interval_s = 2;                     /* so the fallback test can wait for a refresh */
     devos_proxmox_set_config(&cfg);
     CHECK(devos_actions_available("proxmox.guest_status", why, sizeof(why)));
 
@@ -407,6 +434,25 @@ int main(void)
     int nn = devos_proxmox_nodes(nd, DEVOS_PROXMOX_MAX_NODES);
     CHECK(nn == 1 && strcmp(nd[0].node, "pve") == 0 && strcmp(nd[0].status, "online") == 0);
     devos_proxmox_set_active(false);
+
+    /* A token with Sys.Audit but not VM.Audit: Proxmox answers
+     * /cluster/resources with 200 and an empty list rather than an error, so
+     * the engine asks each node directly. The guests must still appear (and
+     * carry their node and type, which those endpoints do not send). */
+    s_empty_cluster = 1;
+    devos_proxmox_set_active(true);
+    for (int i = 0; i < 40 && devos_proxmox_list(g, DEVOS_PROXMOX_MAX) != 2; i++) usleep(100 * 1000);
+    ng = devos_proxmox_list(g, DEVOS_PROXMOX_MAX);
+    CHECK(ng == 2);
+    bool f_web = false, f_db = false;
+    for (int i = 0; i < ng; i++) {
+        if (g[i].vmid == 100 && g[i].kind == DEVOS_PROXMOX_QEMU && !strcmp(g[i].node, "pve") &&
+            !strcmp(g[i].name, "web")) f_web = true;
+        if (g[i].vmid == 101 && g[i].kind == DEVOS_PROXMOX_LXC && !strcmp(g[i].node, "pve")) f_db = true;
+    }
+    CHECK(f_web && f_db);
+    devos_proxmox_set_active(false);
+    s_empty_cluster = 0;
 
     s_stop = 1;
     pthread_join(srv, NULL);

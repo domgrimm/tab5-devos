@@ -1,8 +1,5 @@
 {
   "version": "0.7.2",
-  "url": "tab5-devos-0.7.2.bin",
-  "size": 2802912,
-  "sha256": "df1898fc08a7e8fb361d5c9e657acf39adc0e1b0fe2daecd85b655748a81cbb3",
-  "build": "1e4c6c9de442bbc570a159f985fe4a55ea225b6ba437b6a54aea8a1a23464ba6",
+  "built": "Oct  6 2026 17:07:27",
   "notes": "Proxmox: the guest list no longer depends on /cluster/resources alone. Proxmox answers that endpoint with an empty list (not an error) when the API token has Sys.Audit but not VM.Audit, whic"
 }

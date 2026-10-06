@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.7.2",
+    "built": "Oct  6 2026 17:07:27",
+    "notes": "Proxmox: the guest list no longer depends on /cluster/resources alone. Proxmox answers that endpoint with an empty list (not an error) when the API token has Sys.Audit but not VM.Audit, whic"
+  },
+  {
     "version": "0.7.1",
     "built": "Oct  6 2026 16:29:14",
     "notes": "Fix: the Proxmox worker task had a 6 KB stack, too small for an HTTPS handshake - it overflowed on the first request and could take the device down at unpredictable moments (a reboot while a"

@@ -353,7 +353,7 @@ static void refresh(bool force)
     devos_w_set_text(lbl_status, b);
     if (s_empty) {
         devos_w_set_text(s_empty, st.configured ? (st.error[0] ? "Nothing to show - see the status above"
-                                                                  : "No guests in the cluster")
+                                                                  : "No guests listed - see the line above")
                                                 : "Set the Proxmox server (C)");
     }
 

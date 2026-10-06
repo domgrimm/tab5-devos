@@ -876,14 +876,24 @@ static void *worker_thread(void *arg)
 static void ensure_worker(void)
 {
     if (s_worker || !s_ct || !s_log) return;
-    s_worker = true;
 #ifdef ESP_PLATFORM
-    xTaskCreatePinnedToCore(worker_task, "docker", 12288, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
+    if (xTaskCreatePinnedToCore(worker_task, "docker", 12288, NULL, 3, NULL,
+                                DEVOS_CORE_NET_CRYPTO) != pdPASS) {
+        /* Out of memory: leave s_worker false so the next command or show
+         * retries, and report it. Setting s_worker here regardless used to
+         * leave the app on "Connecting..." forever with no error at all. */
+        LOCK();
+        snprintf(s_st.error, sizeof(s_st.error), "Couldn't start the Docker worker (out of memory)");
+        s_gen++;
+        UNLOCK();
+        return;
+    }
 #else
     pthread_t t;
     pthread_create(&t, NULL, worker_thread, NULL);
     pthread_detach(t);
 #endif
+    s_worker = true;
 }
 
 /* ------------------------------------------------------------------ requests */

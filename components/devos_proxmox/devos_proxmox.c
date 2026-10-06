@@ -265,25 +265,38 @@ static int guest_cmp(const void *a, const void *b)
 typedef struct {
     devos_proxmox_guest_t *out;
     int n, max;
+    int raw;                        /* array elements seen (diagnostics) */
+    int kind;                       /* devos_proxmox_kind_t, or -1: read "type" */
+    const char *node;               /* node to assume when the entry omits it */
 } guest_ud_t;
 
 static void guest_one(const char *e, size_t len, void *ud)
 {
     guest_ud_t *u = ud;
     if (u->n >= u->max || *e != '{') return;
+    int vmid = 0;
+    /* Every guest has a vmid; nodes and storage in /cluster/resources do not. */
+    if (devos_json_get_int(e, len, "vmid", &vmid) != 0 || vmid <= 0) return;
+    u->raw++;
     devos_proxmox_guest_t *g = &u->out[u->n];
     memset(g, 0, sizeof(*g));
-    int vmid = 0;
-    char type[12] = "";
-    if (devos_json_get_int(e, len, "vmid", &vmid) != 0 || vmid <= 0) return;
-    devos_json_get_str(e, len, "type", type, sizeof(type));
-    /* /cluster/resources lists every guest; only VMs and containers are ours. */
-    if (strcmp(type, "qemu") && strcmp(type, "lxc")) return;
     g->vmid = vmid;
-    g->kind = strcmp(type, "lxc") == 0 ? DEVOS_PROXMOX_LXC : DEVOS_PROXMOX_QEMU;
+    char type[12] = "";
+    if (u->kind >= 0) {
+        /* /nodes/<node>/qemu and /lxc: the type is the endpoint, not a field. */
+        g->kind = (uint8_t)u->kind;
+        snprintf(type, sizeof(type), "%s", u->kind == DEVOS_PROXMOX_LXC ? "lxc" : "qemu");
+    } else {
+        devos_json_get_str(e, len, "type", type, sizeof(type));
+        /* /cluster/resources lists nodes and storage too; only VMs and
+         * containers are ours. */
+        if (strcmp(type, "qemu") && strcmp(type, "lxc")) return;
+        g->kind = strcmp(type, "lxc") == 0 ? DEVOS_PROXMOX_LXC : DEVOS_PROXMOX_QEMU;
+    }
     devos_json_get_str(e, len, "name", g->name, sizeof(g->name));
     if (!g->name[0]) snprintf(g->name, sizeof(g->name), "%s/%d", type, vmid);
     devos_json_get_str(e, len, "node", g->node, sizeof(g->node));
+    if (!g->node[0] && u->node) snprintf(g->node, sizeof(g->node), "%s", u->node);
     devos_json_get_str(e, len, "status", g->status, sizeof(g->status));
     g->mem = get_u64(e, len, "mem");
     g->maxmem = get_u64(e, len, "maxmem");
@@ -297,33 +310,112 @@ static void guest_one(const char *e, size_t len, void *ud)
     u->n++;
 }
 
+/* One node's guests from /nodes/<node>/<qemu|lxc>. Used when
+ * /cluster/resources comes back empty - a token with Sys.Audit but not
+ * VM.Audit still sees the nodes, and Proxmox answers the cluster endpoint
+ * with an empty list rather than an error. */
+static void fetch_nodes(void);
+
+static int fetch_node_guests(const char *node, devos_proxmox_kind_t kind,
+                             devos_proxmox_guest_t *out, int have, int *last_status)
+{
+    char path[96];
+    snprintf(path, sizeof(path), "/nodes/%s/%s", node, kind == DEVOS_PROXMOX_LXC ? "lxc" : "qemu");
+    devos_http_resp_t r;
+    memset(&r, 0, sizeof(r));
+    int st = api("GET", path, &r, BODY_MAX);
+    if (last_status) *last_status = st;
+    int added = 0;
+    if (st == 200 && r.body && !r.truncated && have < DEVOS_PROXMOX_MAX) {
+        guest_ud_t u = { out + have, 0, DEVOS_PROXMOX_MAX - have, 0, (int)kind, node };
+        const char *a = strchr(r.body, '[');
+        if (a) devos_json_array_each(a, r.body_len - (size_t)(a - r.body), guest_one, &u);
+        added = u.n;
+    }
+    devos_http_resp_free(&r);
+    return added;
+}
+
+/* Merge a freshly parsed list into the shared one and publish the counters. */
+static void publish_guests(devos_proxmox_guest_t *tmp, int n)
+{
+    qsort(tmp, (size_t)n, sizeof(*tmp), guest_cmp);
+    LOCK();
+    memcpy(s_guest, tmp, sizeof(*tmp) * (size_t)n);
+    s_nguest = n;
+    s_st.total = n;
+    s_st.running = 0;
+    for (int i = 0; i < n; i++) s_st.running += !strcmp(tmp[i].status, "running");
+    s_st.updated = time(NULL);
+    s_st.error[0] = '\0';
+    if (n) s_st.note[0] = '\0';          /* clear a stale "no guests" hint */
+    s_gen++;
+    UNLOCK();
+}
+
 static bool fetch_guests(void)
 {
     devos_http_resp_t r;
+    memset(&r, 0, sizeof(r));
     bool ok = false;
     LOCK();
     s_st.busy = true;
     UNLOCK();
+    static devos_proxmox_guest_t *tmp;
+    if (!tmp) tmp = big_alloc(sizeof(devos_proxmox_guest_t) * DEVOS_PROXMOX_MAX);
+    if (!tmp) {
+        LOCK();
+        snprintf(s_st.error, sizeof(s_st.error), "Out of memory for the guest list");
+        s_gen++;
+        s_st.busy = false;
+        UNLOCK();
+        return false;
+    }
     if (api("GET", "/cluster/resources?type=vm", &r, BODY_MAX) == 200 && r.body && !r.truncated) {
-        static devos_proxmox_guest_t *tmp;
-        if (!tmp) tmp = big_alloc(sizeof(devos_proxmox_guest_t) * DEVOS_PROXMOX_MAX);
-        if (tmp) {
-            guest_ud_t u = { tmp, 0, DEVOS_PROXMOX_MAX };
-            const char *a = strchr(r.body, '[');
-            if (a) devos_json_array_each(a, r.body_len - (size_t)(a - r.body), guest_one, &u);
-            qsort(tmp, (size_t)u.n, sizeof(*tmp), guest_cmp);
+        guest_ud_t u = { tmp, 0, DEVOS_PROXMOX_MAX, 0, -1, NULL };
+        const char *a = strchr(r.body, '[');
+        if (a) devos_json_array_each(a, r.body_len - (size_t)(a - r.body), guest_one, &u);
+        int n = u.n;
+        if (n == 0) {
+            /* The cluster endpoint lists what the token may see. With Sys.Audit
+             * but no VM.Audit that is the nodes only, and it answers 200 with an
+             * empty list rather than an error - so ask each node directly, which
+             * reports the real permission error per endpoint. */
+            devos_proxmox_node_t nd[DEVOS_PROXMOX_MAX_NODES];
             LOCK();
-            memcpy(s_guest, tmp, sizeof(*tmp) * (size_t)u.n);
-            s_nguest = u.n;
-            s_st.total = u.n;
-            s_st.running = 0;
-            for (int i = 0; i < u.n; i++) s_st.running += !strcmp(tmp[i].status, "running");
-            s_st.updated = time(NULL);
-            s_st.error[0] = '\0';
-            s_gen++;
+            int nn = s_nnode < DEVOS_PROXMOX_MAX_NODES ? s_nnode : DEVOS_PROXMOX_MAX_NODES;
+            if (nn) memcpy(nd, s_node, sizeof(nd[0]) * (size_t)nn);
             UNLOCK();
-            ok = true;
+            if (nn == 0) {
+                /* A command resolved before the first list refresh: we need the
+                 * node names to ask them directly. */
+                fetch_nodes();
+                LOCK();
+                nn = s_nnode < DEVOS_PROXMOX_MAX_NODES ? s_nnode : DEVOS_PROXMOX_MAX_NODES;
+                if (nn) memcpy(nd, s_node, sizeof(nd[0]) * (size_t)nn);
+                UNLOCK();
+            }
+            int node_st = 0;
+            for (int i = 0; i < nn && n < DEVOS_PROXMOX_MAX; i++) {
+                n += fetch_node_guests(nd[i].node, DEVOS_PROXMOX_QEMU, tmp, n, &node_st);
+                n += fetch_node_guests(nd[i].node, DEVOS_PROXMOX_LXC, tmp, n, &node_st);
+            }
+            if (n == 0) {
+                LOCK();
+                if (node_st == 401 || node_st == 403)
+                    snprintf(s_st.note, sizeof(s_st.note),
+                             "Guests: access denied (%d) - the API token needs VM.Audit (PVEAuditor) on /vms",
+                             node_st);
+                else
+                    snprintf(s_st.note, sizeof(s_st.note),
+                             u.raw ? "The cluster listed %d resources, none of them guests" :
+                                     "No guests visible - the API token needs VM.Audit (PVEAuditor) on /vms",
+                             u.raw);
+                UNLOCK();
+            }
         }
+        publish_guests(tmp, n);
+        ok = true;
     } else if (r.truncated) {
         LOCK();
         snprintf(s_st.error, sizeof(s_st.error), "The cluster resource list is too big (over 256 KB)");
@@ -603,17 +695,27 @@ static void ensure_worker(void)
 {
     /* Needs the guest list allocated first: the worker dereferences it. */
     if (s_worker || !s_guest || !s_node) return;
-    s_worker = true;
 #ifdef ESP_PLATFORM
     /* 12 KB, like every other engine that drives devos_http: an mbedTLS
      * handshake needs far more than a plain-TCP engine does (6 KB overflowed
      * the stack and took the whole device down). Priority 3, matching the
      * Docker worker, so it never outranks the Wi-Fi/lwIP tasks on Core 0. */
-    xTaskCreatePinnedToCore(worker_task, "proxmox", 12288, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
+    if (xTaskCreatePinnedToCore(worker_task, "proxmox", 12288, NULL, 3, NULL,
+                                DEVOS_CORE_NET_CRYPTO) != pdPASS) {
+        /* Out of memory. Leave s_worker false so the next command or show
+         * retries, and say so rather than idling silently forever. */
+        LOCK();
+        snprintf(s_st.error, sizeof(s_st.error), "Couldn't start the Proxmox worker (out of memory)");
+        s_gen++;
+        UNLOCK();
+        return;
+    }
 #else
     pthread_t t;
-    if (pthread_create(&t, NULL, worker_thread, NULL) == 0) pthread_detach(t);
+    if (pthread_create(&t, NULL, worker_thread, NULL) != 0) return;
+    pthread_detach(t);
 #endif
+    s_worker = true;
 }
 
 /* ------------------------------------------------------------------ tickets */
