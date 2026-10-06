@@ -1,5 +1,10 @@
 [
   {
+    "version": "0.7.1",
+    "built": "Oct  6 2026 16:29:14",
+    "notes": "Fix: the Proxmox worker task had a 6 KB stack, too small for an HTTPS handshake - it overflowed on the first request and could take the device down at unpredictable moments (a reboot while a"
+  },
+  {
     "version": "0.7.0",
     "built": "Oct  6 2026 15:59:28",
     "notes": "Proxmox VE console: cluster VMs and containers with CPU/memory/disk/uptime, start / shutdown / stop / reboot with confirmation, console into REST and SSH to the host. New proxmox.guest_statu"

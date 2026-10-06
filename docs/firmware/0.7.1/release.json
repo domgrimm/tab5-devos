@@ -1,8 +1,5 @@
 {
   "version": "0.7.1",
-  "url": "tab5-devos-0.7.1.bin",
-  "size": 2801216,
-  "sha256": "ddd6e32acc9f5d55cc4b0bba7cbacd0c08a59db6ac4b16d1c49799c31cd20371",
-  "build": "965bb07ece4ad716e5d855171042ed9a8e0931969d95b6f54dd0e19800a8d971",
+  "built": "Oct  6 2026 16:29:14",
   "notes": "Fix: the Proxmox worker task had a 6 KB stack, too small for an HTTPS handshake - it overflowed on the first request and could take the device down at unpredictable moments (a reboot while a"
 }
