@@ -62,6 +62,7 @@ static int s_nnode;
 static uint32_t s_gen;
 static bool s_worker, s_inited;
 static volatile bool s_active, s_kick;
+static volatile int s_init_lock;                /* devos_proxmox_init() runs once */
 
 typedef struct {
     uint32_t id;                    /* ticket id, 0 = free */
@@ -600,10 +601,15 @@ static void *worker_thread(void *arg)
 
 static void ensure_worker(void)
 {
-    if (s_worker) return;
+    /* Needs the guest list allocated first: the worker dereferences it. */
+    if (s_worker || !s_guest || !s_node) return;
     s_worker = true;
 #ifdef ESP_PLATFORM
-    xTaskCreatePinnedToCore(worker_task, "proxmox", 6144, NULL, 4, NULL, DEVOS_CORE_NET_CRYPTO);
+    /* 12 KB, like every other engine that drives devos_http: an mbedTLS
+     * handshake needs far more than a plain-TCP engine does (6 KB overflowed
+     * the stack and took the whole device down). Priority 3, matching the
+     * Docker worker, so it never outranks the Wi-Fi/lwIP tasks on Core 0. */
+    xTaskCreatePinnedToCore(worker_task, "proxmox", 12288, NULL, 3, NULL, DEVOS_CORE_NET_CRYPTO);
 #else
     pthread_t t;
     if (pthread_create(&t, NULL, worker_thread, NULL) == 0) pthread_detach(t);
@@ -709,22 +715,41 @@ bool devos_proxmox_ready(void) { return s_inited; }
 void devos_proxmox_init(void)
 {
     if (s_inited) return;
+    /* The app (Core 1) owns init today, but a second caller must not allocate
+     * twice; the winner does it once and the loser returns. */
+    while (__sync_lock_test_and_set(&s_init_lock, 1)) { /* spin briefly */ }
+    if (s_inited) { __sync_lock_release(&s_init_lock); return; }
 #ifdef ESP_PLATFORM
     if (!s_mx) s_mx = xSemaphoreCreateMutex();
     if (!s_wake) s_wake = xSemaphoreCreateBinary();
 #endif
     s_guest = big_alloc(sizeof(devos_proxmox_guest_t) * DEVOS_PROXMOX_MAX);
     s_node = big_alloc(sizeof(devos_proxmox_node_t) * DEVOS_PROXMOX_MAX_NODES);
-    if (!s_guest || !s_node) return;
+    if (!s_guest || !s_node) {
+        /* Leave s_inited false: a later init can retry once memory is back. */
+        free(s_guest);
+        free(s_node);
+        s_guest = NULL;
+        s_node = NULL;
+        __sync_lock_release(&s_init_lock);
+        return;
+    }
     load_config();
     s_inited = true;
-    ensure_worker();
+    __sync_lock_release(&s_init_lock);
+    /* The worker is NOT started here: devos_proxmox_init() runs at boot from
+     * the app's init(), and a Core 0 task created before the network is up is
+     * pointless. It starts on the first command or the first time the screen is
+     * shown (like devos_docker). */
 }
 
 void devos_proxmox_set_active(bool active)
 {
     s_active = active;
-    if (active) wake();
+    if (active) {
+        ensure_worker();
+        wake();
+    }
 }
 
 void devos_proxmox_refresh(void) { wake(); }

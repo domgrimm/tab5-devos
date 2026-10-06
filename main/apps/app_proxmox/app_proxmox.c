@@ -20,8 +20,24 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
+
 #define LIST_W  DEVOS_PANE_LEFT_WIDTH
 #define ROW_H   46
+
+/* The guest list is a per-app cache of up to 96 entries; it belongs in PSRAM
+ * (invariant 2) rather than 16 KB of the internal heap taken at boot. */
+static void *guest_alloc(size_t n)
+{
+#ifdef ESP_PLATFORM
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    return p ? p : malloc(n);
+#else
+    return malloc(n);
+#endif
+}
 
 static devos_app_descriptor_t s_desc;
 static lv_obj_t *s_screen, *s_bar, *lbl_status, *btn_refresh, *btn_server;
@@ -419,7 +435,7 @@ static void prox_init(void)
     if (s_inited) return;
     s_inited = true;
     devos_proxmox_init();
-    s_g = calloc(DEVOS_PROXMOX_MAX, sizeof(*s_g));
+    s_g = guest_alloc(sizeof(*s_g) * DEVOS_PROXMOX_MAX);
     if (!s_g) return;
 
     s_screen = devos_w_screen(&s_desc);
