@@ -15,6 +15,9 @@ devOS is a keyboard-first firmware for the **M5Stack Tab5** (ESP32-P4, 5" 1280×
 5. [Releasing](#releasing)
 6. [Repository layout](#repository-layout)
 
+**Jobs has its own guide: [JOBS.md](JOBS.md)** — how it works, the language and its DSL, every
+action with its parameters and outputs, events, credentials, limits and troubleshooting.
+
 ---
 
 ## What's on it
@@ -61,6 +64,9 @@ On first boot with a MicroSD card inserted, devOS creates the folders and starte
 the left, a detail area with **Overview / Builder / Text / Runs** tabs, a Problems strip and a
 state-aware toolbar.
 
+> **Full guide: [JOBS.md](JOBS.md)** — the language and DSL, every action with its parameters and
+> outputs, events, credentials, limits and troubleshooting. What follows is the short version.
+
 ```text
 version 1;
 job "NAS health check" {
@@ -76,12 +82,21 @@ job "NAS health check" {
 
 **Keyboard first:** the job list takes **Up/Down** to pick, **Enter** to open, **Space** to
 enable/disable and **R** to run. **Sym+B / Sym+M / Sym+O / Sym+Y** switch to Builder / Text /
-Overview / Runs, **Sym+L** shows or hides the job list, **Sym+C** validates, **Sym+A** applies
-(transactionally, with a conflict check), **Sym+G** enables, **Sym+R** runs now, **Sym+X** cancels
-and **Sym+D** deletes (after a confirmation). `Esc` steps field → view → list → Home. Unsaved edits
-are kept as a draft (shown as `(unsaved)` in the header), restored on the next visit and protected
-from a restart. The Builder can add actions **and** control steps (`if`, `wait`, `repeat`, `set`,
-`run job`); a half-typed value is committed on Enter, not on every keystroke.
+Overview / Runs, **Sym+L** shows or hides the job list (hiding it reclaims the 260 px), **Sym+C**
+validates, **Sym+A** applies (transactionally, with a conflict check), **Sym+G** enables, **Sym+R**
+runs now, **Sym+X** cancels and **Sym+D** deletes (after a confirmation). **Sym+W** dry-runs the
+draft, **Sym+Shift+Y** shows the last run's step trace, **Sym+Z** opens Revisions (view, diff, roll
+back) and **Sym+Shift+R** reloads the saved revision (discarding unsaved changes, after a prompt) -
+which is the way out of a stale-apply conflict. `Esc` steps field → view → list → Home. Unsaved
+edits are kept as a draft (shown as `(unsaved)` in the header), restored on the next visit and
+protected from a restart; a draft only counts as unsaved when the text actually differs from the
+applied revision. The Builder can add actions **and** control steps (`if`, `wait`, `repeat`, `set`,
+`run job`); **Enter** commits the field being edited.
+
+**Dry run is a real run.** `Sym+W` executes the draft through the same scheduler path as Run now -
+it is not simulated, it just leaves no revision or history behind. Steps with an effect **outside
+the device** are listed in a confirmation first (a publish publishes, a restart restarts); a draft
+whose steps are all read-only or on-device sinks (`system.log`, `system.notify`) starts immediately.
 
 A job is disabled until you enable it, and an interval job first runs one interval after it is
 enabled. The engine keeps running while you are in another app or the screen is off, and is off
@@ -104,7 +119,9 @@ optional `policy(overlap: "skip" |
 
 Actions are `http.request`, `network.ping`, `network.wol`, `network.dns`, `system.log`,
 `system.notify`, `mqtt.publish` and `docker.inspect` / `docker.start` / `docker.stop` /
-`docker.restart`. An
+`docker.restart`. `system.notify` raises a toast (`level: "info"` by default, or `"success"` for
+the green tick, `"warning"`, `"error"`), shown whatever app is on screen, so a background job can
+tell you something happened. An
 `mqtt.message` trigger declares the broker subscription it needs - `event "mqtt.message"(topic:
 "home/doorbell")` - so the broker sends only those topics; retained messages are ignored unless
 `include_retained: true` is set. MQTT is one configured broker over plain TCP (no TLS), and a job
@@ -462,6 +479,24 @@ idf.py set-target esp32p4
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+To hand a build to another machine (or to a MacBook with no toolchain), bundle it:
+
+```bash
+tools/package_fw.sh                       # -> dist/devos-<version>-<build>.zip
+scp dist/devos-*.zip macbook:~/
+# on the MacBook:
+unzip devos-*.zip && cd devos-* && ./install.sh
+```
+
+The zip carries the four flash images, the offsets that build used and a self-contained
+`install.sh` (needs only `python3` + `esptool` — no repo, no ESP-IDF). It picks the Tab5's
+serial port automatically — the P4's USB-Serial/JTAG is a CDC-ACM device (`/dev/cu.usbmodem*`
+on macOS, `/dev/ttyACM*` on Linux), so it can tell it apart from a USB-UART bridge; `--list`
+shows what it found, `-p` overrides it. `install.command` double-clicks on macOS, `--dry-run`
+prints the esptool command instead of running it, and `--erase` wipes the chip first (that
+loses NVS: Wi-Fi, Tailscale state and the secrets device key). For a device already running
+devOS, updating over the air is faster than a cable — see `tools/make_ota_manifest.py`.
 
 Or with the container, without installing IDF:
 

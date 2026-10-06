@@ -103,9 +103,10 @@ static void *server_thread(void *arg)
         if (strstr(req, "/containers/missing/")) {
             code = 404;
             body = "{\"message\":\"No such container: missing\"}";
-        } else if (strstr(req, "GET ") && strstr(req, "/containers/slow/")) {
+        } else if (strstr(req, "/containers/slow/")) {
             if (s_slow_ms) usleep((useconds_t)s_slow_ms * 1000);
-            body = INSPECT_JSON;
+            if (strstr(req, "POST ")) { code = 204; body = NULL; }
+            else body = INSPECT_JSON;
         } else if (strstr(req, "POST ") &&
                    (strstr(req, "/containers/web/restart") || strstr(req, "/containers/web/stop") ||
                     strstr(req, "/containers/web/start") || strstr(req, "/containers/alpha/restart") ||
@@ -317,6 +318,27 @@ int main(void)
     CHECK(strstr(r1.error, "cancelled") != NULL);
     devos_docker_request_release(t1);
     devos_docker_request_release(t1);                       /* safe once */
+
+    /* Cancel a mutation after it was handed to the daemon: the effect may have
+     * landed, so the provider reports UNKNOWN with outcome_unknown readable,
+     * not a clean CANCELLED. */
+    s_slow_ms = 800;
+    a[0] = vstr("slow");
+    CHECK(devos_action_start("docker.restart", &args, NULL, &h) == DEVOS_OK);
+    usleep(200 * 1000);                                     /* let the worker start it */
+    CHECK(devos_action_cancel(h) == DEVOS_OK);
+    {
+        devos_action_state_t st = DEVOS_ACT_PENDING;
+        devos_action_result_t cr;
+        memset(&cr, 0, sizeof(cr));
+        CHECK(devos_action_poll(h, &st, &cr) == DEVOS_OK);
+        CHECK(st == DEVOS_ACT_UNKNOWN);
+        CHECK(cr.out_count == 4 && cr.outs[2].v.b == true);
+        CHECK(cr.outs[3].v.str.len > 0);
+    }
+    devos_action_release(h);
+    s_slow_ms = 0;
+    usleep(800 * 1000);                                     /* let the worker finish */
 
     /* Transport error on a mutation is outcome-unknown, never success. */
     devos_docker_config_t dead = cfg;

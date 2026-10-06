@@ -8,17 +8,36 @@
  *   gcc -O2 -I$REPO/components/devos_secrets -I$REPO/components/devos_crypto \
  *       -I$REPO/components/devos_err -I$REPO/components/devos_config/include \
  *       $REPO/tools/secrets_test.c $REPO/components/devos_secrets/devos_secrets.c \
- *       $REPO/components/devos_crypto/devos_crypto.c -o /tmp/secrets_test && /tmp/secrets_test
+ *       $REPO/components/devos_crypto/devos_crypto.c -lpthread -o /tmp/secrets_test && /tmp/secrets_test
  */
 #include "devos_secrets.h"
 #include "devos_crypto.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
+
+/* Re-entrancy hammer: resolves/counts on worker threads while the main thread
+ * rotates a secret. The store must stay consistent (and not crash) without the
+ * Settings (Core 1) / scheduler (Core 0) lock. */
+static volatile int s_hammer_stop;
+static void *hammer_resolver(void *arg)
+{
+    (void)arg;
+    char buf[DEVOS_SECRET_VALUE_MAX];
+    while (!s_hammer_stop) {
+        (void)devos_secret_resolve("health-token", buf, sizeof(buf));
+        devos_secret_wipe(buf, sizeof(buf));
+        (void)devos_secrets_has("health-token");
+        (void)devos_secrets_count();
+        (void)devos_secrets_at(0);
+    }
+    return NULL;
+}
 
 static bool run_from_isolated_cwd(void)
 {
@@ -106,6 +125,51 @@ int main(void)
         devos_secret_wipe(buf, sizeof(buf));
         struct stat st;
         CHECK(stat("sim_sdcard/.devos/secrets.import", &st) != 0);
+    }
+
+    /* provisioning by file with no trailing newline on the last line: the
+     * plaintext buffer is NUL-terminated, so the line is read fully and never
+     * walks past the allocation */
+    {
+        FILE *f = fopen("sim_sdcard/.devos/secrets.import", "wb");
+        CHECK(f != NULL);
+        if (f) { fputs("noeol=value-no-newline", f); fclose(f); }   /* no '\n' */
+        devos_secrets_deinit();
+        CHECK(devos_secrets_init() == DEVOS_OK);
+        CHECK(devos_secrets_has("noeol"));
+        CHECK(devos_secret_resolve("noeol", buf, sizeof(buf)) == 16 &&
+              strcmp(buf, "value-no-newline") == 0);
+        devos_secret_wipe(buf, sizeof(buf));
+    }
+
+    /* a maximum-size value round-trips through seal + reload */
+    {
+        char bigv[DEVOS_SECRET_VALUE_MAX];
+        memset(bigv, 'q', sizeof(bigv) - 1);
+        bigv[sizeof(bigv) - 1] = '\0';
+        CHECK(devos_secrets_set("big", bigv, NULL) == DEVOS_OK);
+        devos_secrets_deinit();
+        CHECK(devos_secrets_init() == DEVOS_OK);
+        char bigout[DEVOS_SECRET_VALUE_MAX];
+        int n = devos_secret_resolve("big", bigout, sizeof(bigout));
+        CHECK(n == DEVOS_SECRET_VALUE_MAX - 1 && strcmp(bigout, bigv) == 0);
+        devos_secret_wipe(bigout, sizeof(bigout));
+        CHECK(devos_secrets_delete("big") == DEVOS_OK);
+    }
+
+    /* concurrent resolves while a secret is rotated stay consistent */
+    {
+        pthread_t th[4];
+        for (int i = 0; i < 4; i++) CHECK(pthread_create(&th[i], NULL, hammer_resolver, NULL) == 0);
+        for (int i = 0; i < 200; i++) {
+            CHECK(devos_secrets_set("hammer", "v", NULL) == DEVOS_OK);
+            CHECK(devos_secrets_delete("hammer") == DEVOS_OK);
+        }
+        s_hammer_stop = 1;
+        for (int i = 0; i < 4; i++) pthread_join(th[i], NULL);
+        CHECK(devos_secret_resolve("health-token", buf, sizeof(buf)) == 7 &&
+              strcmp(buf, "rotated") == 0);
+        devos_secret_wipe(buf, sizeof(buf));
     }
 
     /* bounds */

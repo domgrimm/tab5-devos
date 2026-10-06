@@ -3,6 +3,7 @@
  * schemas are registered through the same devos_actions API providers use.
  *
  *   gcc -O2 -Icomponents/devos_jobs -Icomponents/devos_actions -Icomponents/devos_err \
+ *       -Icomponents/devos_events \
  *       tools/jobs_parse_test.c \
  *       components/devos_jobs/jobs_model.c components/devos_jobs/jobs_parse.c \
  *       components/devos_jobs/jobs_validate.c components/devos_jobs/jobs_serialize.c \
@@ -11,6 +12,7 @@
  */
 #include "devos_actions.h"
 #include "jobs_model.h"
+#include "jobs_internal.h"   /* JOBS_MAX_ARGS, for the argument-cap test */
 
 #include <stdio.h>
 #include <string.h>
@@ -70,6 +72,29 @@ static const devos_action_descriptor_t LOG = {
     .effect = DEVOS_EFFECT_READ,
 };
 
+/* A descriptor wider than the runtime's JOBS_MAX_ARGS, and one with a declared
+ * duration bound, for the validator's argument-cap and numeric-bounds tests. */
+#define MANY_P_COUNT (JOBS_MAX_ARGS + 1)
+static const devos_action_param_t MANY_P[MANY_P_COUNT] = {
+    { .name = "p0" }, { .name = "p1" }, { .name = "p2" }, { .name = "p3" },
+    { .name = "p4" }, { .name = "p5" }, { .name = "p6" }, { .name = "p7" },
+    { .name = "p8" }, { .name = "p9" }, { .name = "p10" }, { .name = "p11" },
+    { .name = "p12" },
+};
+static const devos_action_descriptor_t MANY = {
+    .id = "test.many", .schema_version = 1, .provider_uid = "test",
+    .params = MANY_P, .param_count = MANY_P_COUNT,
+    .effect = DEVOS_EFFECT_READ,
+};
+static const devos_action_param_t TESTWAIT_P[] = {
+    { .name = "delay", .type = DEVOS_VAL_DURATION, .expression = true, .min = 200, .max = 1000 },
+};
+static const devos_action_descriptor_t TESTWAIT = {
+    .id = "test.wait", .schema_version = 1, .provider_uid = "test",
+    .params = TESTWAIT_P, .param_count = 1,
+    .effect = DEVOS_EFFECT_READ,
+};
+
 static void register_fakes(void)
 {
     devos_actions_reset();
@@ -77,6 +102,8 @@ static void register_fakes(void)
     CHECK(devos_actions_register(&HTTP) == DEVOS_OK);
     CHECK(devos_actions_register(&NOTIFY) == DEVOS_OK);
     CHECK(devos_actions_register(&LOG) == DEVOS_OK);
+    CHECK(devos_actions_register(&MANY) == DEVOS_OK);
+    CHECK(devos_actions_register(&TESTWAIT) == DEVOS_OK);
     CHECK(devos_actions_find("http.request") == &HTTP);
     CHECK(devos_actions_find("nope") == NULL);
 }
@@ -402,6 +429,169 @@ static void test_var_limit(void)
     jobs_ast_free(ast);
 }
 
+/* 1: event.qos validates but the runtime has no such field. */
+static void test_event_fields(void)
+{
+    const char *QOS =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger event \"e\";\n"
+        "    set q = event.qos;\n"
+        "}\n";
+    jobs_ast_t *ast = pv(QOS);
+    CHECK(has_diag(ast, "unknown event field 'qos'"));
+    if (ast && ast->diag_count) CHECK(has_diag(ast, "available:"));
+    jobs_ast_free(ast);
+
+    /* the fields the runtime does resolve still validate */
+    const char *OK =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger event \"e\";\n"
+        "    set r = event.retain;\n"
+        "    set t = event.truncated;\n"
+        "    set s = event.seq;\n"
+        "    system.log(message: \"${event.topic} ${event.source} ${event.payload}\");\n"
+        "}\n";
+    ast = pv(OK);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  ev: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+}
+
+/* 2: a null-seeded variable must resolve when read. */
+static void test_null_variable(void)
+{
+    const char *SRC =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger manual;\n"
+        "    set x = null;\n"
+        "    set y = x;\n"
+        "    set x = 5;\n"           /* the null seed adopts a concrete type */
+        "    set z = x;\n"
+        "    system.log(message: \"${y} ${z}\");\n"
+        "}\n";
+    jobs_ast_t *ast = pv(SRC);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  null: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+
+    /* a change between two real types is still rejected */
+    const char *BAD = "version 1;\njob \"x\" { trigger manual; set x = 1; set x = \"s\"; }\n";
+    ast = pv(BAD);
+    CHECK(has_diag(ast, "changes type"));
+    jobs_ast_free(ast);
+}
+
+/* 3: event-trigger and policy arguments must be literals of the right type. */
+static void test_trigger_policy_args(void)
+{
+    struct { const char *src; const char *needle; } bad[] = {
+        { "version 1;\njob \"x\" { trigger event \"e\"(debounce: \"banana\"); }\n", "wants duration" },
+        { "version 1;\njob \"x\" { trigger event \"e\"(include_retained: 7); }\n", "wants boolean" },
+        { "version 1;\njob \"x\" { trigger event \"e\"(topic: \"home/${event.payload}\"); }\n", "must be a literal" },
+        { "version 1;\njob \"x\" { trigger event \"e\"(debounce: json_get(\"a\", \"b\")); }\n", "must be a literal duration" },
+        { "version 1;\njob \"x\" { trigger manual; policy(timeout: 90); }\n", "wants a duration" },
+        { "version 1;\njob \"x\" { trigger manual; policy(cooldown: \"1m\"); }\n", "wants a duration" },
+        { "version 1;\njob \"x\" { trigger manual; policy(timeout: json_get(\"a\", \"b\")); }\n", "wants a duration" },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        jobs_ast_t *ast = pv(bad[i].src);
+        if (!has_diag(ast, bad[i].needle)) {
+            printf("FAIL trigger/policy %zu: want '%s'\n", i, bad[i].needle);
+            for (int d = 0; d < ast->diag_count; d++) printf("   got: %s\n", ast->diag[d].msg);
+            fails++;
+        }
+        checks++;
+        jobs_ast_free(ast);
+    }
+
+    /* the literal forms still validate */
+    const char *OK =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger event \"e\"(topic: \"home/door\", include_retained: false, debounce: 5s);\n"
+        "    policy(timeout: 90s, overlap: \"queue_one\", cooldown: 1m);\n"
+        "    system.log(message: \"hi\");\n"
+        "}\n";
+    jobs_ast_t *ast = pv(OK);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  tp: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+}
+
+/* 4: a duration parameter given a bare number still enforces its bounds. */
+static void test_duration_bounds(void)
+{
+    const char *LOW = "version 1;\njob \"x\" { trigger manual; test.wait(delay: 50); }\n";
+    jobs_ast_t *ast = pv(LOW);
+    CHECK(has_diag(ast, "between 200 and 1000 ms"));
+    jobs_ast_free(ast);
+
+    const char *HIGH = "version 1;\njob \"x\" { trigger manual; test.wait(delay: 1500); }\n";
+    ast = pv(HIGH);
+    CHECK(has_diag(ast, "between 200 and 1000 ms"));
+    jobs_ast_free(ast);
+
+    /* an in-range bare integer is accepted (the runtime reads it as ms) */
+    const char *OK = "version 1;\njob \"x\" { trigger manual; test.wait(delay: 500); }\n";
+    ast = pv(OK);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  db: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+
+    /* an INT parameter given a duration is bounded too */
+    const char *INT =
+        "version 1;\njob \"x\" { trigger manual; http.request(method: \"GET\", url: \"u\", max_body: 70000); }\n";
+    ast = pv(INT);
+    CHECK(has_diag(ast, "must be between"));
+    jobs_ast_free(ast);
+}
+
+/* 5: an action wider than the runtime's argument cap is refused up front. */
+static void test_arg_cap(void)
+{
+    const char *SRC = "version 1;\njob \"x\" { trigger manual; test.many(); }\n";
+    jobs_ast_t *ast = pv(SRC);
+    char needle[48];
+    snprintf(needle, sizeof(needle), "more than the %d", JOBS_MAX_ARGS);
+    CHECK(has_diag(ast, needle));
+    if (!has_diag(ast, needle)) for (int i = 0; i < ast->diag_count; i++) printf("  cap: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+}
+
+/* 6: a worst case that cannot fit the 256-step run budget is refused. */
+static void test_step_budget(void)
+{
+    const char *OVER =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger manual;\n"
+        "    repeat 32 as i {\n"
+        "        repeat 32 as j { system.log(message: \"x\"); }\n"
+        "    }\n"
+        "}\n";
+    jobs_ast_t *ast = pv(OVER);
+    char needle[48];
+    snprintf(needle, sizeof(needle), "exceeds the %d-step", JOBS_MAX_STEPS);
+    CHECK(has_diag(ast, needle));
+    if (!has_diag(ast, needle)) for (int i = 0; i < ast->diag_count; i++) printf("  steps: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+
+    /* a bounded repeat that fits is still accepted */
+    const char *FIT =
+        "version 1;\n"
+        "job \"x\" {\n"
+        "    trigger manual;\n"
+        "    repeat 32 as i { system.log(message: \"x\"); }\n"
+        "}\n";
+    ast = pv(FIT);
+    CHECK(ast && ast->diag_count == 0);
+    if (ast && ast->diag_count) for (int i = 0; i < ast->diag_count; i++) printf("  fit: %s\n", ast->diag[i].msg);
+    jobs_ast_free(ast);
+}
+
 int main(void)
 {
     register_fakes();
@@ -413,6 +603,12 @@ int main(void)
     test_calls();
     test_limits();
     test_var_limit();
+    test_event_fields();
+    test_null_variable();
+    test_trigger_policy_args();
+    test_duration_bounds();
+    test_arg_cap();
+    test_step_budget();
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

@@ -119,9 +119,16 @@ static void next(P *p)
                 if (nl < sizeof(numbuf)) {
                     memcpy(numbuf, p->src + start, nl);
                     numbuf[nl] = '\0';
+                    long long v = strtoll(numbuf, NULL, 10);
+                    /* Saturated values overflow the run deadline (now + tmo) into
+                     * the past, so the job would fail instantly as "timed out". */
+                    if (v < 0 || v > INT64_MAX / unit_ms) {
+                        perr(p, t, "duration is too large");
+                        return;
+                    }
                     for (size_t k = 0; k < adv; k++) gch(p);
                     t->kind = T_DURATION;
-                    t->i = strtoll(numbuf, NULL, 10) * unit_ms;
+                    t->i = v * unit_ms;
                     t->len = (uint32_t)p->pos - start;
                     return;
                 }

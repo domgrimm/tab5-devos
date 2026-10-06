@@ -57,6 +57,7 @@ typedef struct {
     int64_t last_run_wall_s; /* unix seconds of the last run, 0 = unknown */
     bool last_ok;            /* the last finished run's result */
     char last_cause[12];     /* "manual" / "schedule" / "event" / "queued" / "-" */
+    int64_t run_elapsed_ms;  /* a running job's elapsed time, 0 when not running */
 } devos_job_summary_t;
 
 typedef struct {
@@ -211,6 +212,23 @@ devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_
 devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, size_t cap);
 bool devos_jobs_dry_poll(devos_dryrun_t *out, uint32_t timeout_ms);
 void devos_jobs_dry_cancel(void);
+
+/* A dry run really executes every step (the same scheduler path as Run now),
+ * so a job that publishes, restarts or sends will do so for real. Before
+ * starting one, the UI asks for a human-readable list of the steps that are
+ * not read-only, so it can warn the user (AGENTS.md invariant 10: never claim
+ * a side effect did not happen). Fills `out` with e.g.
+ * "http.request (sends data), docker.restart (changes state)"; leaves it empty
+ * when every step is read-only. Returns OK when `source` is a valid job,
+ * INVALID_ARG with the diagnostic in `out` when it is not. */
+devos_err_t devos_jobs_dry_effects(const char *source, size_t len, char *out, size_t cap);
+
+/* Durable-store health for the Problems strip. `jobs/<id>.job` is a
+ * projection of an append-only revision log; with no SD card (or a write
+ * failure) an apply still succeeds in RAM but is lost on reboot, and history
+ * writes are dropped. Returns true when storage is durable and healthy; fills
+ * `note` with a short reason otherwise ("" when durable). */
+bool devos_jobs_store_healthy(char *note, size_t cap);
 /* Revision generations for the Revisions view: newest-first numbers, and
  * one generation's source. Rollback is an ordinary apply of old source. */
 int devos_jobs_revisions(const char *id, uint32_t *out, int max);

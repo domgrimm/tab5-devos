@@ -236,12 +236,16 @@ static void event_cb(const devos_event_t *ev, void *user)
     j->ev.pending = true;
     j->ev.valid = true;
     j->ev.seq = ev->seq;
-    j->ev.truncated = ev->truncated;
     j->ev.retain = ev->retain;
     snprintf(j->ev.topic, sizeof(j->ev.topic), "%s", ev->topic);
     snprintf(j->ev.source, sizeof(j->ev.source), "%s", ev->source);
     uint32_t n = ev->payload_len;
     if (n > JOBS_EV_PAYLOAD_MAX) n = JOBS_EV_PAYLOAD_MAX;
+    /* event.truncated must reflect what the *job* can see: the bounded 256-byte
+     * copy here is smaller than the producer's 4 KiB payload cap, so an event
+     * whose payload this drops is marked truncated even when the producer's own
+     * flag was clear. */
+    j->ev.truncated = ev->truncated || n < ev->payload_len;
     if (ev->payload && n) memcpy(j->ev.payload, ev->payload, n);
     j->ev.payload_len = n;
     j->ev.payload[n < sizeof(j->ev.payload) ? n : sizeof(j->ev.payload) - 1] = '\0';
@@ -377,13 +381,18 @@ bool devos_jobs_init(void)
 void devos_jobs_shutdown(void)
 {
     jobs_store_worker_stop();
+    jobs_lock();
+    int64_t now = jobs_now_ms();
     for (int i = 0; i < g_jobs.count; i++) {
         jobs_job_t *j = &g_jobs.jobs[i];
         if (!j->used) continue;
-        if (j->run.active) jobs_run_cancel(j);
+        /* Finish an active run through the tick so its action handles are
+         * cancelled and released before the table is cleared. */
+        if (j->run.active) { jobs_run_cancel(j); jobs_run_tick(j, now); }
         jobs_event_unsubscribe(j);
         if (j->ast) { jobs_ast_release(j->ast); j->ast = NULL; }
     }
+    jobs_unlock();
     memset(&g_jobs, 0, sizeof(g_jobs));
     g_jobs.state = DEVOS_JOBS_OFF;
 }
@@ -430,20 +439,31 @@ void devos_jobs_memory(devos_jobs_memory_t *out)
 }
 
 /* ---- snapshots ---- */
+/* A slot the UI should list: the in-memory dry-run probe ("~dry") is a real
+ * table slot but is not a job the user owns, so it is never listed, counted or
+ * reported as the active run. */
+static bool job_listed(const jobs_job_t *j)
+{
+    return j->used && j->id[0] != '~';
+}
+
 int devos_jobs_count(void)
 {
+    jobs_lock();
     int n = 0;
-    for (int i = 0; i < g_jobs.count; i++) n += g_jobs.jobs[i].used;
+    for (int i = 0; i < g_jobs.count; i++) n += job_listed(&g_jobs.jobs[i]);
+    jobs_unlock();
     return n;
 }
 
 bool devos_jobs_summary_at(int index, devos_job_summary_t *out)
 {
     if (!out || index < 0) return false;
+    jobs_lock();
     int k = 0;
     for (int i = 0; i < g_jobs.count; i++) {
         jobs_job_t *j = &g_jobs.jobs[i];
-        if (!j->used) continue;
+        if (!job_listed(j)) continue;
         if (k++ != index) continue;
         memset(out, 0, sizeof(*out));
         snprintf(out->id, sizeof(out->id), "%s", j->id);
@@ -452,6 +472,10 @@ bool devos_jobs_summary_at(int index, devos_job_summary_t *out)
         fmt_trigger(j, out->trigger, sizeof(out->trigger));
         snprintf(out->last_result, sizeof(out->last_result), "%s", j->last_result);
         out->running = j->run.active;
+        if (j->run.active) {
+            int64_t e = jobs_now_ms() - j->run.started_ms;
+            out->run_elapsed_ms = e > 0 ? e : 0;
+        }
         out->revision = j->revision;
         out->last_run_wall_s = j->last_run_wall_s;
         out->last_ok = j->last_ok;
@@ -465,17 +489,20 @@ bool devos_jobs_summary_at(int index, devos_job_summary_t *out)
             if (g_jobs.sys.time_valid && j->next_wall_s > g_jobs.sys.wall_unix_s)
                 out->next_run_in_ms = (j->next_wall_s - g_jobs.sys.wall_unix_s) * 1000;
         }
+        jobs_unlock();
         return true;
     }
+    jobs_unlock();
     return false;
 }
 
 bool devos_jobs_run(devos_jobs_run_t *out)
 {
     if (!out) return false;
+    jobs_lock();
     for (int i = 0; i < g_jobs.count; i++) {
         jobs_job_t *j = &g_jobs.jobs[i];
-        if (!j->used || !j->run.active) continue;
+        if (!job_listed(j) || !j->run.active) continue;
         memset(out, 0, sizeof(*out));
         out->active = true;
         snprintf(out->job_id, sizeof(out->job_id), "%s", j->id);
@@ -483,8 +510,10 @@ bool devos_jobs_run(devos_jobs_run_t *out)
         out->elapsed_ms = jobs_now_ms() - j->run.started_ms;
         out->node_id = j->run.cur ? (int)j->run.cur->off : -1;
         out->cancelling = j->run.cancelling;
+        jobs_unlock();
         return true;
     }
+    jobs_unlock();
     return false;
 }
 
@@ -504,56 +533,93 @@ devos_err_t devos_jobs_apply_base(const char *id, const char *source, size_t len
     if (!ast) return DEVOS_ERR_NO_MEM;
     if (!jobs_validate(ast)) { jobs_ast_free(ast); return DEVOS_ERR_INVALID_ARG; }
 
+    jobs_lock();
     jobs_job_t *j = jobs_find(id);
     bool existed = j != NULL;
     /* Stale editor: the active revision moved on. Preserve its draft elsewhere
      * (the UI offers Reload / Save as new); here the apply is refused. */
     if (base_known && (existed ? j->revision : 0) != base_revision) {
+        jobs_unlock();
         jobs_ast_free(ast);
         return DEVOS_ERR_INVALID_STATE;
     }
     if (!j) {
         j = job_alloc();
-        if (!j) { jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
+        if (!j) { jobs_unlock(); jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
         memset(j, 0, sizeof(*j));
         j->used = true;
         snprintf(j->id, sizeof(j->id), "%s", id);
     }
-
-    /* An active run retains its own reference to the revision it started with,
-     * so replacing j->ast here is safe (PLAN.md 5.3). Commit to durable storage
-     * first: if that fails, the previous revision stays authoritative. */
     uint32_t new_rev = j->revision + 1;
     bool new_enabled = existed ? j->enabled : false;
+    /* Snapshot the schedule so an edit that changes nothing does not re-anchor
+     * an `every` job or re-open today's calendar occurrence. */
+    bool had_next = j->has_next;
+    int64_t prev_due = j->next_due_ms;
+    int64_t prev_iv = j->interval_ms;
+    int prev_hh = j->trig_hh, prev_mm = j->trig_mm;
+    uint8_t prev_days = j->trig_days;
+    int prev_kind = j->trigger_kind;
+    jobs_unlock();
+
+    /* Commit to durable storage first: if that fails, the previous revision
+     * stays authoritative. Never hold the lock across SD I/O (invariant 1). */
     if (jobs_store_available()) {
         devos_err_t rc = jobs_store_commit(id, source, len, new_rev, new_enabled);
         if (rc != DEVOS_OK) {
+            jobs_lock();
+            if (!existed) j->used = false;      /* release the reserved slot */
+            jobs_unlock();
             jobs_ast_free(ast);
-            if (!existed) j->used = false;
             return rc;
         }
     }
 
+    jobs_lock();
     if (j->ast) jobs_ast_release(j->ast);
     j->ast = ast;
     j->revision = new_rev;
     snprintf(j->name, sizeof(j->name), "%s", ast->root->u.str.s ? ast->root->u.str.s : id);
     read_trigger(j, ast);
-    jobs_event_subscribe(j);
     if (!existed) j->enabled = false;
+    jobs_unlock();
+
+    /* Event/broker subscription is I/O; keep it out of the lock. */
+    jobs_event_subscribe(j);
+
+    jobs_lock();
+    /* An explicit reschedule re-opens today's calendar occurrence, so a
+     * changed time can still fire today. A no-op edit leaves the claim alone. */
+    bool rescheduled = (j->trigger_kind == JTRIG_DAILY || j->trigger_kind == JTRIG_WEEKDAYS) &&
+                       (prev_kind != j->trigger_kind || prev_hh != j->trig_hh ||
+                        prev_mm != j->trig_mm || prev_days != j->trig_days);
+    if (rescheduled) j->claim_date = 0;
     job_arm(j);
+    /* An edit that did not change an `every` interval keeps the existing phase,
+     * so saving a job does not push its next run out by a whole period. */
+    if (existed && j->trigger_kind == JTRIG_EVERY && j->interval_ms > 0 &&
+        had_next && prev_kind == JTRIG_EVERY && prev_iv == j->interval_ms &&
+        prev_due > jobs_now_ms()) {
+        j->has_next = true;
+        j->next_due_ms = prev_due;
+    }
     if (out_revision) *out_revision = j->revision;
+    jobs_unlock();
     return DEVOS_OK;
 }
 
 devos_err_t devos_jobs_set_enabled(const char *id, bool enabled)
 {
-    jobs_job_t *j = jobs_find(id);
-    if (!j) return DEVOS_ERR_NOT_FOUND;
+    char eid[DEVOS_JOBS_ID_MAX];
+    snprintf(eid, sizeof(eid), "%.*s", DEVOS_JOBS_ID_MAX - 1, id ? id : "");
+    jobs_lock();
+    jobs_job_t *j = jobs_find(eid);
+    if (!j) { jobs_unlock(); return DEVOS_ERR_NOT_FOUND; }
     j->enabled = enabled;
     job_arm(j);
+    jobs_unlock();
     if (jobs_store_available()) {
-        devos_err_t rc = jobs_store_set_enabled(id, enabled);
+        devos_err_t rc = jobs_store_set_enabled(eid, enabled);
         if (rc != DEVOS_OK && rc != DEVOS_ERR_INVALID_STATE) return rc;
     }
     return DEVOS_OK;
@@ -561,32 +627,56 @@ devos_err_t devos_jobs_set_enabled(const char *id, bool enabled)
 
 devos_err_t devos_jobs_run_now(const char *id)
 {
+    jobs_lock();
     jobs_job_t *j = jobs_find(id);
-    if (!j) return DEVOS_ERR_NOT_FOUND;
-    if (!j->ast) return DEVOS_ERR_INVALID_STATE;
-    if (j->run.active) return DEVOS_ERR_INVALID_STATE;      /* overlap: skip */
-    start_run(j, jobs_now_ms(), JOBS_CAUSE_MANUAL);
-    return DEVOS_OK;
+    devos_err_t rc = DEVOS_OK;
+    if (!j) rc = DEVOS_ERR_NOT_FOUND;
+    else if (!j->ast) rc = DEVOS_ERR_INVALID_STATE;
+    else if (j->run.active) rc = DEVOS_ERR_INVALID_STATE;   /* overlap: skip */
+    else start_run(j, jobs_now_ms(), JOBS_CAUSE_MANUAL);
+    jobs_unlock();
+    return rc;
 }
 
 devos_err_t devos_jobs_cancel(const char *id)
 {
+    jobs_lock();
     jobs_job_t *j = jobs_find(id);
-    if (!j) return DEVOS_ERR_NOT_FOUND;
-    if (!j->run.active) return DEVOS_ERR_INVALID_STATE;
-    jobs_run_cancel(j);
-    return DEVOS_OK;
+    devos_err_t rc = DEVOS_OK;
+    if (!j) rc = DEVOS_ERR_NOT_FOUND;
+    else if (!j->run.active) rc = DEVOS_ERR_INVALID_STATE;
+    else jobs_run_cancel(j);
+    jobs_unlock();
+    return rc;
 }
 
 devos_err_t devos_jobs_delete(const char *id)
 {
-    jobs_job_t *j = jobs_find(id);
-    if (!j) return DEVOS_ERR_NOT_FOUND;
-    if (j->run.active) return DEVOS_ERR_INVALID_STATE;      /* cancel/finish first */
-    if (jobs_store_available()) jobs_store_remove(id);
+    char del_id[DEVOS_JOBS_ID_MAX];
+    snprintf(del_id, sizeof(del_id), "%.*s", DEVOS_JOBS_ID_MAX - 1, id ? id : "");
+
+    jobs_lock();
+    jobs_job_t *j = jobs_find(del_id);
+    if (!j) { jobs_unlock(); return DEVOS_ERR_NOT_FOUND; }
+    if (j->run.active) { jobs_unlock(); return DEVOS_ERR_INVALID_STATE; }
+    jobs_unlock();
+
+    /* Drop the subscriptions first (this may touch the broker / event bus),
+     * then free the slot under the lock. Never hold the lock across that I/O. */
     jobs_event_unsubscribe(j);
-    if (j->ast) jobs_ast_release(j->ast);
-    memset(j, 0, sizeof(*j));
+
+    bool removed = false;
+    jobs_lock();
+    j = jobs_find(del_id);
+    if (j && !j->run.active) {
+        if (j->ast) jobs_ast_release(j->ast);
+        memset(j, 0, sizeof(*j));
+        removed = true;
+    }
+    jobs_unlock();
+    if (!removed) return DEVOS_ERR_INVALID_STATE;   /* a run started in the window */
+
+    if (jobs_store_available()) jobs_store_remove(del_id);
     return DEVOS_OK;
 }
 
@@ -639,9 +729,11 @@ devos_err_t devos_jobs_check(const char *source, size_t len, char *diag, size_t 
 
 devos_err_t devos_jobs_source(const char *id, char *out, size_t cap, size_t *out_len)
 {
+    jobs_lock();
     jobs_job_t *j = jobs_find(id);
-    if (!j || !j->ast) return DEVOS_ERR_NOT_FOUND;
+    if (!j || !j->ast) { jobs_unlock(); return DEVOS_ERR_NOT_FOUND; }
     size_t n = jobs_serialize(j->ast, out, cap);
+    jobs_unlock();
     if (out_len) *out_len = n;
     return DEVOS_OK;
 }
@@ -671,6 +763,102 @@ int devos_jobs_revision_source(const char *id, uint32_t rev, char *out, size_t c
 static int64_t s_dry_t0;
 static uint32_t s_dry_timeout_ms;
 
+/* Release the dry-run's slot. The run must already be finished: an active run
+ * still holds action handles that only jobs_run_tick() cancels and releases. */
+static void dry_slot_release(jobs_job_t *j)
+{
+    if (j->ast) { jobs_ast_release(j->ast); j->ast = NULL; }
+    memset(j, 0, sizeof(*j));
+}
+
+/* Stop the dry run's active run and release its action handles. jobs_run_cancel
+ * only sets a flag; the pending handles are cancelled and released by the next
+ * jobs_run_tick(), so pump it here. Without this, every aborted dry run (screen
+ * hidden mid-run, or the poll timeout) leaks one action slot and the provider's
+ * admission counter, and later actions fail with "unavailable or busy". */
+static void dry_stop_run(jobs_job_t *j, int64_t now)
+{
+    if (!j->run.active) return;
+    jobs_run_cancel(j);
+    jobs_run_tick(j, now);
+    for (int i = 0; i < 4 && j->run.active; i++) jobs_run_tick(j, now + i + 1);
+}
+
+/* Human-readable list of the non-read-only steps in a draft. */
+static void effects_append(char *out, size_t cap, size_t *o, const char *what, const char *effect)
+{
+    if (!out || cap == 0) return;
+    if (*o >= cap - 1) return;
+    /* dedupe: the same action repeated is one warning */
+    if (strstr(out, what)) return;
+    int n = snprintf(out + *o, cap - *o, "%s%s (%s)", *o ? ", " : "", what, effect);
+    if (n > 0) *o += (size_t)n;
+    if (*o >= cap) *o = cap - 1;
+}
+
+static void effects_walk(const jobs_node_t *n, char *out, size_t cap, size_t *o)
+{
+    for (; n; n = n->next) {
+        switch (n->kind) {
+        case JN_ACTION: {
+            const devos_action_descriptor_t *d = devos_actions_find(n->u.str.s);
+            /* A local sink (system.log / system.notify) is a real effect but not
+             * one to warn about: it reaches nothing outside the device. */
+            if (d && d->effect != DEVOS_EFFECT_READ && !d->local_only)
+                effects_append(out, cap, o, d->label ? d->label : d->id,
+                               d->effect == DEVOS_EFFECT_MUTATE ? "changes state" : "sends data");
+            break;
+        }
+        case JN_RUN:
+            /* A call runs whatever the callee does, and the callee may not be
+             * resolvable while the draft is unapplied, so warn conservatively. */
+            effects_append(out, cap, o, n->u.str.s ? n->u.str.s : "run", "runs another job");
+            break;
+        case JN_IF:     effects_walk(n->b, out, cap, o); effects_walk(n->c, out, cap, o); break;
+        case JN_REPEAT: effects_walk(n->a, out, cap, o); break;
+        case JN_BLOCK:  effects_walk(n->a, out, cap, o); break;
+        case JN_JOB:    effects_walk(n->c, out, cap, o); break;
+        default: break;
+        }
+    }
+}
+
+devos_err_t devos_jobs_dry_effects(const char *source, size_t len, char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+    if (!source) return DEVOS_ERR_INVALID_ARG;
+    jobs_ast_t *ast = jobs_parse(source, len, NULL);
+    if (!ast) return DEVOS_ERR_NO_MEM;
+    if (!jobs_validate(ast)) {
+        if (out && cap)
+            snprintf(out, cap, "%s", ast->diag_count ? ast->diag[0].msg : "invalid definition");
+        jobs_ast_free(ast);
+        return DEVOS_ERR_INVALID_ARG;
+    }
+    size_t o = 0;
+    effects_walk(ast->root, out, cap, &o);
+    if (out && o == 0) out[0] = '\0';
+    jobs_ast_free(ast);
+    return DEVOS_OK;
+}
+
+bool devos_jobs_store_healthy(char *note, size_t cap)
+{
+    if (note && cap) note[0] = '\0';
+    jobs_store_status_t st;
+    jobs_store_status(&st);
+    if (st.available && !st.degraded) return true;
+    if (note && cap) {
+        if (!st.available)
+            snprintf(note, cap, "no MicroSD card - changes are lost on reboot");
+        else if (st.error[0])
+            snprintf(note, cap, "storage error: %.60s", st.error);
+        else
+            snprintf(note, cap, "storage degraded - running from memory");
+    }
+    return false;
+}
+
 devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, size_t cap)
 {
     if (diag && cap) diag[0] = '\0';
@@ -683,9 +871,10 @@ devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, siz
         jobs_ast_free(ast);
         return DEVOS_ERR_INVALID_ARG;
     }
-    if (jobs_find(DRY_ID)) { jobs_ast_free(ast); return DEVOS_ERR_INVALID_STATE; }
+    jobs_lock();
+    if (jobs_find(DRY_ID)) { jobs_unlock(); jobs_ast_free(ast); return DEVOS_ERR_INVALID_STATE; }
     jobs_job_t *j = job_alloc();
-    if (!j) { jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
+    if (!j) { jobs_unlock(); jobs_ast_free(ast); return DEVOS_ERR_NO_MEM; }
     memset(j, 0, sizeof(*j));
     j->used = true;
     snprintf(j->id, sizeof(j->id), "%s", DRY_ID);
@@ -697,21 +886,23 @@ devos_err_t devos_jobs_dry_start(const char *source, size_t len, char *diag, siz
     s_dry_t0 = jobs_now_ms();
     s_dry_timeout_ms = 0;                       /* set by the first poll */
     start_run(j, s_dry_t0, JOBS_CAUSE_MANUAL);
+    jobs_unlock();
     return DEVOS_OK;
 }
 
 /* Harvest a finished (or timed-out) dry run and free its slot. */
 static devos_err_t dry_harvest(jobs_job_t *j, devos_dryrun_t *out, bool timed_out)
 {
+    int64_t now = jobs_now_ms();
     if (timed_out) {
-        jobs_run_cancel(j);
+        dry_stop_run(j, now);                   /* releases the pending handles */
         out->timed_out = true;
         snprintf(out->message, sizeof(out->message), "timed out after %u ms", (unsigned)s_dry_timeout_ms);
     } else {
         out->ok = j->last_ok;
         snprintf(out->message, sizeof(out->message), "%.95s", j->last_result);
     }
-    out->duration_ms = (int32_t)(jobs_now_ms() - s_dry_t0);
+    out->duration_ms = (int32_t)(now - s_dry_t0);
     out->steps = j->run.steps;
     out->trace_n = j->run.trace_n < DEVOS_DRYRUN_TRACE ? j->run.trace_n : DEVOS_DRYRUN_TRACE;
     for (int i = 0; i < out->trace_n; i++) {
@@ -721,9 +912,7 @@ static devos_err_t dry_harvest(jobs_job_t *j, devos_dryrun_t *out, bool timed_ou
         out->trace[i].result = j->run.trace[i].result;
     }
     devos_err_t rc = out->timed_out ? DEVOS_ERR_TIMEOUT : DEVOS_OK;
-    jobs_event_unsubscribe(j);
-    jobs_ast_release(j->ast);
-    memset(j, 0, sizeof(*j));
+    dry_slot_release(j);
     return rc;
 }
 
@@ -734,25 +923,32 @@ bool devos_jobs_dry_poll(devos_dryrun_t *out, uint32_t timeout_ms)
 {
     if (!out) return true;
     memset(out, 0, sizeof(*out));
-    jobs_job_t *j = jobs_find(DRY_ID);
-    if (!j) return true;                         /* none active */
     if (timeout_ms == 0) timeout_ms = 30000;
     if (timeout_ms < 1000) timeout_ms = 1000;
     if (timeout_ms > 120000) timeout_ms = 120000;
+    jobs_lock();
+    jobs_job_t *j = jobs_find(DRY_ID);
+    if (!j) { jobs_unlock(); return true; }      /* none active */
     s_dry_timeout_ms = timeout_ms;
-    if (!j->run.active) { dry_harvest(j, out, false); return true; }
-    if (jobs_now_ms() - s_dry_t0 >= (int64_t)timeout_ms) { dry_harvest(j, out, true); return true; }
+    if (!j->run.active) { dry_harvest(j, out, false); jobs_unlock(); return true; }
+    if (jobs_now_ms() - s_dry_t0 >= (int64_t)timeout_ms) {
+        dry_harvest(j, out, true);
+        jobs_unlock();
+        return true;
+    }
+    jobs_unlock();
     return false;
 }
 
 void devos_jobs_dry_cancel(void)
 {
+    jobs_lock();
     jobs_job_t *j = jobs_find(DRY_ID);
-    if (!j) return;
-    if (j->run.active) jobs_run_cancel(j);
-    jobs_event_unsubscribe(j);
-    if (j->ast) jobs_ast_release(j->ast);
-    memset(j, 0, sizeof(*j));
+    if (j) {
+        dry_stop_run(j, jobs_now_ms());          /* release handles before the slot is freed */
+        dry_slot_release(j);
+    }
+    jobs_unlock();
 }
 
 devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_ms,
@@ -774,10 +970,13 @@ devos_err_t devos_jobs_dry_run(const char *source, size_t len, uint32_t timeout_
     bool fake = jobs_platform_clock_overridden();
     int max_iter = (int)(timeout_ms / 20);
     for (int i = 0; i < max_iter; i++) {
+        jobs_lock();
         jobs_job_t *j = jobs_find(DRY_ID);
-        if (!j || !j->run.active) break;
-        if (fake) jobs_run_tick(j, jobs_now_ms());
-        else jobs_platform_sleep_ms(20);
+        bool active = j && j->run.active;
+        if (active && fake) jobs_run_tick(j, jobs_now_ms());
+        jobs_unlock();
+        if (!active) break;
+        if (!fake) jobs_platform_sleep_ms(20);
     }
     if (devos_jobs_dry_poll(out, timeout_ms)) return out->timed_out ? DEVOS_ERR_TIMEOUT : DEVOS_OK;
     devos_jobs_dry_cancel();
@@ -824,8 +1023,10 @@ int devos_jobs_history_recent(const char *id, devos_run_record_t *out, int max)
 
 int devos_jobs_trace(const char *id, devos_jobs_step_t *out, int max)
 {
+    if (!out || max <= 0) return 0;
+    jobs_lock();
     jobs_job_t *j = jobs_find(id);
-    if (!j || !out || max <= 0) return 0;
+    if (!j) { jobs_unlock(); return 0; }
     int n = j->run.trace_n < max ? j->run.trace_n : max;
     for (int i = 0; i < n; i++) {
         out[i].line = j->run.trace[i].line;
@@ -833,6 +1034,7 @@ int devos_jobs_trace(const char *id, devos_jobs_step_t *out, int max)
         out[i].kind = j->run.trace[i].kind;
         out[i].result = j->run.trace[i].result;
     }
+    jobs_unlock();
     return n;
 }
 
@@ -901,6 +1103,14 @@ void devos_jobs_tick(void)
     if (g_jobs.state != DEVOS_JOBS_READY) return;
     int64_t now = jobs_now_ms();
 
+    /* Serialize the whole tick against the UI's commands (invariant 1: the
+     * scheduler is Core 0, the UI is Core 1). The tick does no blocking I/O -
+     * history appends are queued to the Core 1 store worker - so holding the
+     * lock here cannot stall the UI on SD or the network. Commands below take
+     * the same lock only around structural changes and never across a
+     * jobs_store_* call. */
+    jobs_lock();
+
     /* Fill per-job pending slots from the bounded event queue (callbacks run
      * on this task, outside the events lock). */
     devos_events_drain(0);
@@ -939,4 +1149,5 @@ void devos_jobs_tick(void)
         }
         g_jobs.cur_event_valid = false;      /* the run (if any) holds its own copy */
     }
+    jobs_unlock();
 }

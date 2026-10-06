@@ -98,3 +98,25 @@ int nd_wait_readable(int fd, int timeout_ms)
     if (n < 0) return errno == EINTR ? 0 : -1;
     return n > 0 ? 1 : 0;
 }
+
+/* ------------------------------------------------------------------ init */
+void nd_ping_init(void);
+void nd_dns_init(void);
+void nd_scan_init(void);
+void nd_probe_init(void);
+void nd_wol_init(void);
+
+static volatile bool s_nd_ready;
+
+bool devos_netdiag_ready(void) { return s_nd_ready; }
+
+void devos_netdiag_init(void)
+{
+    if (s_nd_ready) return;
+    nd_ping_init();
+    nd_dns_init();
+    nd_scan_init();
+    nd_probe_init();
+    nd_wol_init();
+    s_nd_ready = true;
+}

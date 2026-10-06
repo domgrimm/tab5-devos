@@ -77,6 +77,12 @@ static const devos_action_descriptor_t CHECK_D = {
 };
 static const devos_action_descriptor_t SLOW_D = {
     .id = "test.slow", .schema_version = 1, .outs = BOOL_O, .out_count = 1, .ops = &SLOW_OPS,
+    .effect = DEVOS_EFFECT_MUTATE,          /* for the dry-run effect-list test */
+};
+/* A local-only sink: a real effect that a dry run must not warn about. */
+static const devos_action_descriptor_t LOCAL_D = {
+    .id = "test.local", .schema_version = 1, .outs = BOOL_O, .out_count = 1, .ops = &CHECK_OPS,
+    .effect = DEVOS_EFFECT_MUTATE, .local_only = true,
 };
 
 /* A credential-capable provider: records the token it was handed. */
@@ -142,6 +148,7 @@ int main(void)
     jobs_system_register();
     CHECK(devos_actions_register(&CHECK_D) == DEVOS_OK);
     CHECK(devos_actions_register(&SLOW_D) == DEVOS_OK);
+    CHECK(devos_actions_register(&LOCAL_D) == DEVOS_OK);
     CHECK(devos_actions_register(&AUTH_D) == DEVOS_OK);
     devos_jobs_set_secret_hooks(fake_secret_resolve, fake_secret_wipe, NULL);
 
@@ -373,7 +380,10 @@ int main(void)
         CHECK(found && strstr(as.last_result, "not available") != NULL);
     }
 
-    /* the step budget caps an oversized repeat body instead of hanging */
+    /* an oversized repeat body is rejected at *validation*, so a job can never
+     * execute part of it and only then die "step budget exceeded" - the old
+     * behaviour, which left side effects behind (Phase: validator/runtime
+     * step-budget agreement) */
     static char big[2048];
     size_t bo = (size_t)snprintf(big, sizeof(big),
                                  "version 1;\njob \"big\" {\n trigger manual;\n repeat 32 as i {\n");
@@ -381,22 +391,32 @@ int main(void)
         bo += (size_t)snprintf(big + bo, sizeof(big) - bo, "  system.log(message: \"x\");\n");
     bo += (size_t)snprintf(big + bo, sizeof(big) - bo, " }\n}\n");
     uint32_t brev = 0;
-    CHECK(devos_jobs_apply("big", big, bo, &brev) == DEVOS_OK);
-    CHECK(devos_jobs_run_now("big") == DEVOS_OK);
+    CHECK(devos_jobs_apply("big", big, bo, &brev) == DEVOS_ERR_INVALID_ARG);
+    {
+        char bdiag[160];
+        CHECK(devos_jobs_check(big, bo, bdiag, sizeof(bdiag)) == DEVOS_ERR_INVALID_ARG);
+        CHECK(strstr(bdiag, "budget") != NULL);
+    }
+
+    /* a repeat that fits the budget still runs to completion */
+    apply_ok("small", "version 1;\njob \"small\" {\n trigger manual;\n"
+                      " repeat 3 as i { system.log(message: \"y\"); }\n}\n");
+    CHECK(devos_jobs_run_now("small") == DEVOS_OK);
     devos_jobs_tick();
     {
         bool found = false;
-        devos_job_summary_t bs;
+        devos_job_summary_t ss;
         for (int i = 0; i < devos_jobs_count(); i++)
-            if (devos_jobs_summary_at(i, &bs) && strcmp(bs.id, "big") == 0) { found = true; break; }
-        CHECK(found && strstr(bs.last_result, "step budget") != NULL);
+            if (devos_jobs_summary_at(i, &ss) && strcmp(ss.id, "small") == 0) { found = true; break; }
+        CHECK(found && ss.last_ok);
     }
     usleep(60 * 1000);                               /* the history worker flushes */
     {
+        /* the successful repeat left a clean history row */
         devos_run_record_t rec[2];
-        int hr = devos_jobs_history_recent("big", rec, 2);
-        CHECK(hr >= 1 && !rec[0].ok);
-        CHECK(strstr(rec[0].error, "step budget") != NULL);   /* failures keep the message */
+        int hr = devos_jobs_history_recent("small", rec, 2);
+        CHECK(hr >= 1 && rec[0].ok);
+        CHECK(rec[0].error[0] == '\0');              /* the error column stays blank on success */
     }
 
     /* dashboard fields + structured history + trace (P1 engine additions) */
@@ -450,6 +470,61 @@ int main(void)
             if (devos_jobs_summary_at(i, &s) && s.id[0] == '~') ghost = true;
         }
         CHECK(!ghost);                           /* no catalog entry, no trace left */
+        /* a dry run must not appear as a job the user owns */
+        CHECK(devos_jobs_count() >= 1);
+        for (int i = 0; i < devos_jobs_count(); i++) {
+            devos_job_summary_t s;
+            if (devos_jobs_summary_at(i, &s)) CHECK(s.id[0] != '~');
+        }
+    }
+
+    /* the pre-flight effect list: a dry run really executes every step, so the
+     * UI must be able to warn about the ones that are not read-only */
+    {
+        char eff[256];
+        const char *ro = "version 1;\njob \"ro\" {\n trigger manual;\n test.check() as c;\n}\n";
+        CHECK(devos_jobs_dry_effects(ro, strlen(ro), eff, sizeof(eff)) == DEVOS_OK);
+        CHECK(eff[0] == '\0');                   /* read-only: nothing to warn about */
+        const char *mu = "version 1;\njob \"mu\" {\n trigger manual;\n test.slow() as s;\n}\n";
+        CHECK(devos_jobs_dry_effects(mu, strlen(mu), eff, sizeof(eff)) == DEVOS_OK);
+        CHECK(strstr(eff, "test.slow") != NULL && strstr(eff, "changes state") != NULL);
+        /* a local-only sink is a real effect but reaches nothing outside the
+         * device, so a dry run must not warn about it */
+        const char *lo = "version 1;\njob \"lo\" {\n trigger manual;\n test.local() as l;\n}\n";
+        CHECK(devos_jobs_dry_effects(lo, strlen(lo), eff, sizeof(eff)) == DEVOS_OK);
+        CHECK(eff[0] == '\0');
+        /* a local sink alongside a network send lists only the send */
+        const char *mix = "version 1;\njob \"mix\" {\n trigger manual;\n"
+                          " test.local() as l;\n test.slow() as s;\n}\n";
+        CHECK(devos_jobs_dry_effects(mix, strlen(mix), eff, sizeof(eff)) == DEVOS_OK);
+        CHECK(strstr(eff, "test.slow") != NULL && strstr(eff, "test.local") == NULL);
+        CHECK(devos_jobs_dry_effects("version 1;\njob", 14, eff, sizeof(eff)) == DEVOS_ERR_INVALID_ARG);
+    }
+
+    /* cancelling a dry run must cancel and *release* the pending action handle.
+     * jobs_run_cancel only sets a flag; without pumping the tick the handle (and
+     * the provider's admission counter) leaks and later actions fail. */
+    {
+        devos_dryrun_t dr;
+        const char *ssrc = "version 1;\njob \"Slow\" {\n trigger manual;\n test.slow() as s;\n}\n";
+        CHECK(devos_jobs_dry_start(ssrc, strlen(ssrc), NULL, 0) == DEVOS_OK);
+        devos_jobs_tick();                       /* start the action; it stays pending */
+        CHECK(devos_actions_outstanding() == 1);
+        devos_jobs_dry_cancel();
+        CHECK(devos_actions_outstanding() == 0); /* released, not leaked */
+        CHECK(devos_jobs_dry_start(ssrc, strlen(ssrc), NULL, 0) == DEVOS_OK);
+        /* and the same start still works (the leak used to make actions busy) */
+        for (int i = 0; i < 6; i++) devos_jobs_tick();
+        CHECK(devos_jobs_dry_poll(&dr, 5000));
+        CHECK(dr.ok && !dr.timed_out);
+        CHECK(devos_actions_outstanding() == 0);
+    }
+
+    /* durable-store health is reported consistently */
+    {
+        char note[96];
+        bool ok = devos_jobs_store_healthy(note, sizeof(note));
+        CHECK(ok ? note[0] == '\0' : note[0] != '\0');
     }
 
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);

@@ -457,6 +457,8 @@ static void ctx_task(void *arg)
 int devos_dns_ctx_start(const char *server, const char *name, uint16_t type)
 {
     if (!name || !name[0]) return 0;
+    if (strlen(name) >= 128) return 0;                  /* would truncate to the wrong name */
+    if (server && strlen(server) >= 48) return 0;
     char nm[128];
     snprintf(nm, sizeof(nm), "%s", name);
     size_t l = strlen(nm);
@@ -553,6 +555,8 @@ void devos_dns_ctx_release(int ticket)
 int devos_dns_lookup_start(const char *server, const char *name, uint16_t type)
 {
     if (!name || !name[0] || D.task) return -1;
+    if (strlen(name) >= 128) return -1;
+    if (server && strlen(server) >= 48) return -1;
     char nm[128];
     snprintf(nm, sizeof(nm), "%s", name);
     size_t l = strlen(nm);

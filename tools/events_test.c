@@ -1,13 +1,20 @@
 /* Host test for devos_events (components/devos_events): topic schemas, the
- * bounded queue, wildcard matching, truncation, drops and unsubscribe.
+ * bounded queue, wildcard matching, truncation, drops and unsubscribe. Also
+ * drives the jobs_events bridge (main/jobs_providers/jobs_events.c) so its
+ * persisted boot_id and drop counter are covered.
  *
- *   gcc -O2 -Icomponents/devos_events -Icomponents/devos_err tools/events_test.c \
- *       components/devos_events/devos_events.c -lpthread -o /tmp/events_test && /tmp/events_test
+ *   gcc -O2 -Icomponents/devos_events -Icomponents/devos_err \
+ *       -Icomponents/devos_config/include tools/events_test.c \
+ *       components/devos_events/devos_events.c main/jobs_providers/jobs_events.c \
+ *       -lpthread -o /tmp/events_test && /tmp/events_test
  */
 #include "devos_events.h"
+#include "jobs_providers.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
@@ -21,6 +28,15 @@ static void cb(const devos_event_t *ev, void *user)
     s_hits++;
     snprintf(s_last, sizeof(s_last), "%s", ev->topic);
     s_last_truncated = ev->truncated;
+}
+
+static char s_boot_payload[128];
+static void boot_cb(const devos_event_t *ev, void *user)
+{
+    (void)user;
+    uint32_t n = ev->payload_len < sizeof(s_boot_payload) - 1 ? ev->payload_len : sizeof(s_boot_payload) - 1;
+    if (ev->payload) memcpy(s_boot_payload, ev->payload, n);
+    s_boot_payload[n] = '\0';
 }
 
 int main(void)
@@ -80,6 +96,40 @@ int main(void)
     devos_events_drain(0);
     devos_events_stats(&st);
     CHECK(st.queued == 0);
+
+    /* jobs_events bridge: a real, persisted boot_id (not a hardcoded 0) */
+    {
+        mkdir("sim_sdcard", 0755);
+        mkdir("sim_sdcard/.devos", 0755);
+        FILE *f = fopen("sim_sdcard/.devos/boot_id", "wb");
+        if (f) { fputs("41\n", f); fclose(f); }
+        int bsub = devos_events_subscribe("system.boot", boot_cb, NULL);
+        CHECK(bsub > 0);
+        jobs_events_register();                          /* topic schema (idempotent) */
+        s_boot_payload[0] = '\0';
+        jobs_events_publish_boot(false);
+        CHECK(jobs_events_boot_id() == 42);              /* read, incremented */
+        devos_events_drain(0);
+        CHECK(strstr(s_boot_payload, "\"boot_id\":42") != NULL);
+        CHECK(strstr(s_boot_payload, "\"recovery\":false") != NULL);
+        char buf[16] = "";
+        f = fopen("sim_sdcard/.devos/boot_id", "rb");
+        if (f) { if (fgets(buf, sizeof(buf), f)) {} fclose(f); }
+        CHECK(atoi(buf) == 42);                          /* persisted for the next boot */
+
+        /* a publish the bounded queue rejects is counted, never silent */
+        unsigned before = devos_jobs_events_dropped();
+        for (int i = 0; i < DEVOS_EVENTS_QUEUE + 2; i++) {
+            devos_event_t e;
+            memset(&e, 0, sizeof(e));
+            snprintf(e.topic, sizeof(e.topic), "fill/%d", i);
+            devos_events_publish(&e, NULL, 0);
+        }
+        jobs_events_publish_boot(false);
+        CHECK(devos_jobs_events_dropped() == before + 1);
+        devos_events_drain(0);
+        devos_events_unsubscribe(bsub);
+    }
 
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;

@@ -8,12 +8,61 @@
 #include "devos_jobs.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* The SD mount point normally comes from devos_config.h; fall back to the same
+ * values so this bridge also links into tests that don't carry that include
+ * path (the boot counter is only read at runtime). */
+#if defined(__has_include)
+#  if __has_include("devos_config.h")
+#    include "devos_config.h"
+#  endif
+#endif
+#ifndef TAB5_SD_MOUNT_POINT
+#  ifdef ESP_PLATFORM
+#    define TAB5_SD_MOUNT_POINT "/sdcard"
+#  else
+#    define TAB5_SD_MOUNT_POINT "./sim_sdcard"
+#  endif
+#endif
 
 /* Threshold crossing with hysteresis, so a battery hovering at the boundary
  * does not fire repeatedly. */
 #define JOBS_BATT_LOW_PCT   20
 #define JOBS_BATT_REARM_PCT 25
+
+/* The boot counter is persisted (<SD>/.devos/boot_id) so a job can tell two
+ * boots apart; on a card that isn't writable it falls back to 1 for the run. */
+static unsigned s_boot_id;
+static bool s_boot_id_loaded;
+static unsigned s_events_dropped;
+
+static unsigned load_next_boot_id(void)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "%s/.devos/boot_id", TAB5_SD_MOUNT_POINT);
+    unsigned prev = 0;
+    FILE *f = fopen(path, "rb");
+    if (f) {
+        char buf[32];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        prev = (unsigned)strtoul(buf, NULL, 10);
+    }
+    unsigned next = prev + 1;
+    if (!next) next = 1;
+    f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "%u\n", next);
+        fclose(f);
+    }
+    return next;
+}
+
+unsigned jobs_events_boot_id(void) { return s_boot_id; }
+unsigned devos_jobs_events_dropped(void) { return s_events_dropped; }
 
 static bool s_wifi_seen;         /* the first snapshot is not a transition */
 static bool s_wifi_conn;
@@ -86,14 +135,19 @@ static void publish(const char *topic, const char *provider, const char *payload
     memset(&ev, 0, sizeof(ev));
     snprintf(ev.topic, sizeof(ev.topic), "%s", topic);
     snprintf(ev.provider, sizeof(ev.provider), "%s", provider);
-    devos_events_publish(&ev, payload, payload ? (uint32_t)strlen(payload) : 0);
+    if (devos_events_publish(&ev, payload, payload ? (uint32_t)strlen(payload) : 0) != DEVOS_OK)
+        s_events_dropped++;                 /* bounded queue full: never silent */
 }
 
 void jobs_events_publish_boot(bool recovery)
 {
+    if (!s_boot_id_loaded) {
+        s_boot_id_loaded = true;
+        s_boot_id = load_next_boot_id();
+    }
     char payload[64];
     snprintf(payload, sizeof(payload), "{\"boot_id\":%u,\"recovery\":%s}",
-             0u, recovery ? "true" : "false");
+             s_boot_id, recovery ? "true" : "false");
     publish("system.boot", "system", payload);
 }
 

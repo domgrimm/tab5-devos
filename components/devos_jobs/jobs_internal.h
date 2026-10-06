@@ -16,9 +16,24 @@ extern "C" {
 #define JOBS_MAX_STEPS    256
 #define JOBS_RUN_ID_MAX   20
 #define JOBS_VAR_NAME_MAX 40
-#define JOBS_RUN_STRPOOL  1024
+/* Per-run pool for bound string outputs. `http.request`'s `body` output
+ * defaults to 16 KiB (schema max 64 KiB), so the pool must hold a real API
+ * response; 1 KiB made `http.request(...) as r` fail with "run string pool
+ * full" as soon as the body was more than a few hundred bytes. Runs are
+ * bounded (1/job, 4 active), and this lives in PSRAM BSS (EXT_RAM_BSS_ATTR),
+ * so the cost is bounded. */
+#define JOBS_RUN_STRPOOL  (20 * 1024)
+/* Largest interpolated string built on the stack in one expression. This is a
+ * *stack* ceiling, deliberately separate from the pool: one 20 KiB frame on the
+ * 8 KiB scheduler task would overflow. A reference longer than this in a
+ * `${...}` is truncated (use json_get to pull fields out of a large body). */
+#define JOBS_INTERP_MAX   1024
 #define JOBS_SECRET_SCRATCH 1024   /* resolved credential copies, wiped after use */
 #define JOBS_TRACE_MAX    128      /* executed steps kept per run, for the trace view */
+/* Most named arguments one action call may carry; the runtime stack-allocates
+ * this many values, and the validator rejects a call that declares more so a
+ * definition cannot validate and then fail as "unknown action" at run time. */
+#define JOBS_MAX_ARGS     12
 
 /* Why a run started (shown in the history and the run detail). */
 typedef enum {

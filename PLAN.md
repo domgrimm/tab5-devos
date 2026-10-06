@@ -513,11 +513,13 @@ them be built either from a schema-driven GUI Builder or as text - both over one
     grammar, diagnostics, limits, repeat, calls and the canonical round trip.
 *   **Action contract (`devos_actions`).** Static immutable schemas (id, version, provider,
     typed parameters with required/default/bounds/enum/credential capability, typed outputs,
-    effect class, retry safety) registered from a boot provider hook, not from an app's LVGL
-    init(). Long operations use request-specific handles with start / poll / cancel / release and
-    a documented ownership transition; results distinguish pending / done / failed / cancelled /
-    outcome-unknown. The Builder and the validator read the same schemas - there is no hand-coded
-    GUI parameter table.
+    effect class, retry safety, and whether the effect stays on-device) registered from a boot
+    provider hook, not from an app's LVGL init(). Long operations use request-specific handles with
+    start / poll / cancel / release and a documented ownership transition; results distinguish
+    pending / done / failed / cancelled / outcome-unknown. The Builder and the validator read the
+    same schemas - there is no hand-coded GUI parameter table. A dry run warns about every
+    non-read-only action except a `local_only` one (a log line or a notice), so the warning names
+    real outside effects.
 *   **Events (`devos_events`).** Bounded typed topics (`system.boot`, Wi-Fi connect/disconnect,
     Tailscale connect/disconnect, WireGuard up/down, battery-below, `mqtt.message`, ...) with
     sequence, timestamps, provider and correlation id; publish is nonblocking, drops are counted,
@@ -617,7 +619,38 @@ The remaining Phase 10 items are
 on-device measurements, a hardware soak, SD power-loss testing and verified NVS-encryption
 provisioning; they require a Tab5 and are listed as pending, never inferred from host results. The
 review's per-job palette commands are still open (they need a dynamic provider in the palette
-core, a system-overlay change).
+core, a system-overlay change). A global "Reload saved job" palette command did land.
+
+**Review follow-up (reliability pass).** A review of the app/engine seam landed a set of fixes
+that the host suites now guard:
+*   Dry run is documented and gated as a **real** run: the UI lists the non-read-only steps
+    (`devos_jobs_dry_effects`) and confirms before starting, and an aborted dry run cancels and
+    **releases** its pending action handle (it used to leak an action slot and the provider's
+    admission counter, so two aborts made `http.request` permanently "busy").
+*   The Builder edits **in place** and gets a large scratch arena, so the per-defocus form commit
+    no longer exhausts the node arena and silently stops accepting input
+    (`tools/jobs_build_test.c` commits 400 times).
+*   `jobs_lock()` is actually taken: the Core 0 tick and the Core 1 commands/snapshots are
+    serialized (an apply/delete racing the scheduler could dereference a freed AST), with no
+    blocking SD/broker I/O held under the lock.
+*   Validator and runtime agree on the step budget, argument caps, duration/int coercion and
+    trigger/policy argument types, so a definition cannot validate and then fail mid-run after
+    partial side effects.
+*   Transport failures bind their declared outputs, `DEVOS_ACT_UNKNOWN` is emitted for a mutation
+    cancelled after it was sent, and unavailable providers report a reason instead of racing an
+    uninitialised engine.
+*   The app commits the Builder before Validate / Dry run / Revisions / Apply, preserves drafts
+    across job switches and reloads, offers Reload (`Sym+Shift+R`, palette) as the documented way
+    out of a stale-apply conflict, shows the retained last-run trace (`Sym+Shift+Y`), adds a `run`
+    step inspector plus event `debounce` / `include_retained` controls, and reports a non-durable
+    store in the Problems strip and the telemetry tile.
+*   `system.notify`'s notice ring is actually drained: `jobs_watch_notices()` in main's 1 Hz loop
+    turns a queued notice into a toast (error / warning / info), so a background job's notice is
+    seen whatever app is on screen. The provider API (`jobs_system_take_notice`) existed and was
+    host-tested, but nothing consumed it, so the action did nothing visible.
+*   A choice parameter (`system.notify`'s `level`) is committed from its dropdown: the Builder's
+    commit path tested the text field's visibility the wrong way round, so every choice/bool
+    parameter was written from the hidden, stale text field instead of the dropdown.
 
 ---
 

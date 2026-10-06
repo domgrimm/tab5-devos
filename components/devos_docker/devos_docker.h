@@ -66,6 +66,10 @@ typedef struct {
 } devos_docker_status_t;
 
 void devos_docker_init(void);
+/* True once devos_docker_init() has run (the app owns it). A non-blocking
+ * readiness query for Jobs, so availability never triggers init on the Core 0
+ * scheduler. */
+bool devos_docker_ready(void);
 void devos_docker_get_config(devos_docker_config_t *out);
 void devos_docker_set_config(const devos_docker_config_t *c);
 bool devos_docker_configured(void);
@@ -127,6 +131,10 @@ uint32_t devos_docker_inspect(const char *id, int timeout_ms);
 /* Snapshot a ticket's state/result. False once released. Terminal states stay
  * readable until release. */
 bool devos_docker_request_poll(uint32_t ticket, devos_docker_req_result_t *out);
+/* Whether the request has been handed to the daemon already (the worker picked
+ * it up). After this point a mutation's outcome may be unknown if it is
+ * cancelled. Safe before cancel/release. */
+bool devos_docker_request_started(uint32_t ticket);
 /* Stop treating a request's (possibly in-flight) result as wanted. The worker
  * discards a running result it no longer owns; a mutation already sent keeps an
  * unknown outcome. Safe to call once before release. */

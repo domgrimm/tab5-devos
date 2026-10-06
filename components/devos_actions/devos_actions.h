@@ -137,6 +137,12 @@ typedef struct {
     int out_count;
     devos_effect_t effect;
     bool retry_safe;
+    /* The effect stays on this device (a log line, a notice) and reaches
+     * nothing outside it. `effect` still describes it truthfully for retry
+     * purposes, but a dry run need not warn about it - and by default
+     * (local_only == false) an action IS warned about, so a new provider is
+     * conservative until it declares itself local. */
+    bool local_only;
     int recommended_timeout_ms;
     const devos_action_ops_t *ops;   /* NULL = schema only (no runtime) */
 } devos_action_descriptor_t;

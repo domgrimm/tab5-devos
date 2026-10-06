@@ -74,6 +74,7 @@ static int s_ep_resolved;                   /* Portainer endpoint in use */
 typedef struct {
     bool used;
     bool busy;                  /* the worker copied it and is running it */
+    bool sent;                  /* handed to the daemon (result may be unknown) */
     bool cancelled;
     bool ui_note;               /* UI-originated: update s_st.note, auto-free */
     bool inspect;
@@ -727,6 +728,7 @@ static void process_requests(void)
         if (idx >= 0) {
             local = s_req[idx];
             s_req[idx].busy = true;
+            s_req[idx].sent = true;      /* from here the daemon may act on it */
         }
         UNLOCK();
         if (idx < 0) return;
@@ -948,6 +950,17 @@ bool devos_docker_request_poll(uint32_t ticket, devos_docker_req_result_t *out)
     return ok;
 }
 
+bool devos_docker_request_started(uint32_t ticket)
+{
+    if (!ticket) return false;
+    bool started = false;
+    LOCK();
+    for (int i = 0; i < DEVOS_DOCKER_REQS; i++)
+        if (s_req[i].used && s_req[i].id == ticket) { started = s_req[i].sent; break; }
+    UNLOCK();
+    return started;
+}
+
 void devos_docker_request_cancel(uint32_t ticket)
 {
     if (!ticket) return;
@@ -976,6 +989,8 @@ void devos_docker_request_release(uint32_t ticket)
 }
 
 /* ------------------------------------------------------------------ api */
+bool devos_docker_ready(void) { return s_inited; }
+
 void devos_docker_init(void)
 {
     if (s_inited) return;

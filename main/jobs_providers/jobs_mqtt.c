@@ -16,8 +16,10 @@
 typedef struct {
     uint32_t ticket;
     bool done;
+    bool cancelled;
+    bool stopped;                   /* the queued copy was removed before sending */
     uint8_t qos;
-    devos_value_t outs[2];
+    devos_value_t outs[3];
 } mqtt_op_t;
 
 static const char *arg_str(const devos_action_args_t *args, int i)
@@ -26,39 +28,19 @@ static const char *arg_str(const devos_action_args_t *args, int i)
     const devos_value_t *v = &args->args[i];
     return v->type == DEVOS_VAL_STR && v->v.str.s ? v->v.str.s : NULL;
 }
-static int64_t arg_int(const devos_action_args_t *args, int i, int64_t def)
-{
-    if (!args || i >= args->arg_count) return def;
-    const devos_value_t *v = &args->args[i];
-    if (v->type == DEVOS_VAL_INT) return v->v.i;
-    if (v->type == DEVOS_VAL_NUM) return (int64_t)v->v.n;
-    return def;
-}
-static int64_t arg_ms(const devos_action_args_t *args, int i, int64_t def)
-{
-    if (!args || i >= args->arg_count) return def;
-    const devos_value_t *v = &args->args[i];
-    return v->type == DEVOS_VAL_DURATION ? v->v.ms : def;
-}
-static bool arg_bool(const devos_action_args_t *args, int i, bool def)
-{
-    if (!args || i >= args->arg_count) return def;
-    const devos_value_t *v = &args->args[i];
-    return v->type == DEVOS_VAL_BOOL ? v->v.b : def;
-}
 
 static devos_err_t mqtt_start(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op)
 {
     (void)ctx;
     const char *topic = arg_str(args, 0);
     if (!topic || !topic[0]) return DEVOS_ERR_INVALID_ARG;
-    int64_t qos = arg_int(args, 3, 0);
+    int64_t qos = jobs_arg_int(args, 3, 0);
     if (qos < 0 || qos > 1) return DEVOS_ERR_INVALID_ARG;      /* reject QoS 2 */
     const char *payload = arg_str(args, 1);
     uint32_t id = devos_mqtt_publish_ticket(topic, payload ? payload : "",
                                             payload ? strlen(payload) : 0,
-                                            (int)qos, arg_bool(args, 2, false),
-                                            (int)arg_ms(args, 4, 10000));
+                                            (int)qos, jobs_arg_bool(args, 2, false),
+                                            (int)jobs_arg_ms(args, 4, 10000));
     if (!id) return DEVOS_ERR_INVALID_STATE;                   /* not connected / no ticket */
     mqtt_op_t *o = calloc(1, sizeof(*o));
     if (!o) { devos_mqtt_ticket_release(id); return DEVOS_ERR_NO_MEM; }
@@ -71,9 +53,49 @@ static devos_err_t mqtt_start(const devos_action_args_t *args, const devos_actio
 static devos_err_t mqtt_poll(void *op, devos_action_state_t *state, devos_action_result_t *result)
 {
     mqtt_op_t *o = op;
-    if (o->done) { *state = DEVOS_ACT_DONE; return DEVOS_OK; }
+    if (o->done) {
+        result->outs = o->outs;
+        result->out_count = 3;
+        *state = DEVOS_ACT_DONE;
+        return DEVOS_OK;
+    }
+    if (o->cancelled) {
+        /* Genuinely stopped before the worker took it -> CANCELLED. Once it is
+         * on the wire -> UNKNOWN: the broker may receive it (retry_safe=false),
+         * so never claim a cancellation. */
+        o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = !o->stopped;
+        o->outs[1].type = DEVOS_VAL_BOOL; o->outs[1].v.b = false;
+        o->outs[2].type = DEVOS_VAL_STR;
+        if (o->stopped) {
+            o->outs[2].v.str.s = "";
+            o->outs[2].v.str.len = 0;
+            *state = DEVOS_ACT_CANCELLED;
+        } else {
+            const char *m = "cancel requested after the publish was sent; the broker may have received it";
+            o->outs[2].v.str.s = m;
+            o->outs[2].v.str.len = (uint32_t)strlen(m);
+            snprintf(result->error, sizeof(result->error), "%s", m);
+            *state = DEVOS_ACT_UNKNOWN;
+        }
+        o->done = true;
+        result->outs = o->outs;
+        result->out_count = 3;
+        return DEVOS_OK;
+    }
     devos_mqtt_ticket_state_t st;
-    if (!devos_mqtt_ticket_poll(o->ticket, &st)) { *state = DEVOS_ACT_FAILED; return DEVOS_OK; }
+    if (!devos_mqtt_ticket_poll(o->ticket, &st)) {
+        /* The ticket vanished: bind the declared outputs with a real error. */
+        snprintf(result->error, sizeof(result->error), "the publish ticket vanished");
+        o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = false;
+        o->outs[1].type = DEVOS_VAL_BOOL; o->outs[1].v.b = false;
+        o->outs[2].type = DEVOS_VAL_STR;  o->outs[2].v.str.s = result->error;
+        o->outs[2].v.str.len = (uint32_t)strlen(result->error);
+        result->outs = o->outs;
+        result->out_count = 3;
+        *state = DEVOS_ACT_FAILED;
+        return DEVOS_OK;
+    }
+    const char *emsg = "";
     switch (st) {
     case DEVOS_MQTT_TICKET_QUEUED:
         *state = DEVOS_ACT_PENDING;
@@ -90,28 +112,39 @@ static devos_err_t mqtt_poll(void *op, devos_action_state_t *state, devos_action
     case DEVOS_MQTT_TICKET_TIMEOUT:
         o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = true;           /* sent, not acknowledged */
         o->outs[1].type = DEVOS_VAL_BOOL; o->outs[1].v.b = false;
-        snprintf(result->error, sizeof(result->error), "no acknowledgement");
+        emsg = "no acknowledgement";
         break;
     case DEVOS_MQTT_TICKET_LOST:
         o->outs[0].type = DEVOS_VAL_BOOL; o->outs[0].v.b = false;          /* never claim delivery */
         o->outs[1].type = DEVOS_VAL_BOOL; o->outs[1].v.b = false;
-        snprintf(result->error, sizeof(result->error), "session lost before completion");
+        emsg = "session lost before completion";
         break;
     default: /* FAILED */
         *state = DEVOS_ACT_FAILED;
         snprintf(result->error, sizeof(result->error), "publish failed");
         return DEVOS_OK;
     }
+    /* Bind the diagnostic into the declared `error` output too: the runtime
+     * ignores result->error on DONE, so this is how history/trace see a
+     * withheld acknowledgement (never a silent success). */
+    o->outs[2].type = DEVOS_VAL_STR;
+    o->outs[2].v.str.s = emsg;
+    o->outs[2].v.str.len = (uint32_t)strlen(emsg);
+    if (emsg[0]) snprintf(result->error, sizeof(result->error), "%s", emsg);
     o->done = true;
     result->outs = o->outs;
-    result->out_count = 2;
+    result->out_count = 3;
     *state = DEVOS_ACT_DONE;
     return DEVOS_OK;
 }
 
 static devos_err_t mqtt_cancel(void *op)
 {
-    (void)op;                       /* a sent mutation is not undone; release frees the ticket */
+    mqtt_op_t *o = op;
+    if (o->done) return DEVOS_OK;
+    o->cancelled = true;
+    /* Removes a not-yet-sent publish; false once it is already on the wire. */
+    o->stopped = devos_mqtt_ticket_cancel(o->ticket);
     return DEVOS_OK;
 }
 static void mqtt_release(void *op)
@@ -138,11 +171,12 @@ static const devos_action_param_t MQTT_P[] = {
 static const devos_action_out_t MQTT_O[] = {
     { .name = "sent", .type = DEVOS_VAL_BOOL },
     { .name = "acknowledged", .type = DEVOS_VAL_BOOL },
+    { .name = "error", .type = DEVOS_VAL_STR, .help = "why an acknowledgement is missing, \"\" when none" },
 };
 static const devos_action_descriptor_t MQTT_D = {
     .id = "mqtt.publish", .schema_version = 1, .provider_uid = "mqtt", .category = "network",
     .label = "MQTT publish", .description = "Publish to the configured broker (QoS 0 or 1)",
-    .params = MQTT_P, .param_count = 5, .outs = MQTT_O, .out_count = 2,
+    .params = MQTT_P, .param_count = 5, .outs = MQTT_O, .out_count = 3,
     .effect = DEVOS_EFFECT_NET_SEND, .retry_safe = false, .recommended_timeout_ms = 15000,
     .ops = &MQTT_OPS,
 };

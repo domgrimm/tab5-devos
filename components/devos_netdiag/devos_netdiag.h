@@ -23,6 +23,10 @@ extern "C" {
 #endif
 
 void devos_netdiag_init(void);
+/* True once devos_netdiag_init() has run. The Network app owns initialisation;
+ * Jobs asks before using the request-specific engines so a switched-off app
+ * never leaves one half-built (AGENTS.md invariant 10). */
+bool devos_netdiag_ready(void);
 
 /* ------------------------------------------------------------------ ping */
 #define DEVOS_PING_HIST 240

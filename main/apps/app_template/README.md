@@ -201,6 +201,10 @@ static const devos_action_descriptor_t SCAN = {
 void myapp_register_actions(void) { devos_actions_register(&SCAN); }   /* called from a boot hook */
 ```
 
+`effect` describes retry/replay safety; add `.local_only = true` only when the effect stays on the
+device (a log line, a local notice) and reaches nothing outside it. A dry run warns about every
+non-read-only action except a local-only one, so the default (false) is the conservative choice.
+
 A long or network operation returns a **request-specific handle** and supports
 `start`/`poll`/`cancel`/`release` with bounded queues and one explicit ownership transition. Never
 keep a shared "last result" or a single overwriteable command slot; distinguish pending, sent,

@@ -8,7 +8,7 @@ typedef struct {
     nd_mutex_t mx;
     uint32_t gen;                    /* handle; bumped on each submit */
     int state;                       /* 0 idle, 1 running, 2 done, 3 failed */
-    char host[64];
+    char host[256];
     int timeout_ms;
     devos_probe_result_t res;
     volatile bool stop;
@@ -79,6 +79,7 @@ done:
 int devos_probe_submit(const char *host, int timeout_ms)
 {
     if (!host || !host[0]) return -1;
+    if (strlen(host) >= sizeof(PB.host)) return -1;     /* would truncate to the wrong host */
     nd_lock(&PB.mx);
     if (PB.task) { nd_unlock(&PB.mx); return -2; }
     memset(&PB.res, 0, sizeof(PB.res));

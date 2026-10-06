@@ -37,6 +37,28 @@
 #define EXT_RAM_BSS_ATTR
 #endif
 
+/* Settings edits secrets on Core 1 while the Core 0 scheduler resolves them
+ * through the hook in main.c, so every entry point takes this lock. */
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+static SemaphoreHandle_t s_mx;
+#define SEC_LOCK()   do { if (s_mx) xSemaphoreTake(s_mx, portMAX_DELAY); } while (0)
+#define SEC_UNLOCK() do { if (s_mx) xSemaphoreGive(s_mx); } while (0)
+#else
+#include <pthread.h>
+static pthread_mutex_t s_mx = PTHREAD_MUTEX_INITIALIZER;
+#define SEC_LOCK()   pthread_mutex_lock(&s_mx)
+#define SEC_UNLOCK() pthread_mutex_unlock(&s_mx)
+#endif
+
+static void sec_mutex_init(void)
+{
+#ifdef ESP_PLATFORM
+    if (!s_mx) s_mx = xSemaphoreCreateMutex();
+#endif
+}
+
 #define SEC_MAGIC    "DVS1"
 #define SEC_NONCE    12
 #define SEC_TAG      16
@@ -65,6 +87,19 @@ static bool s_loaded;
 static bool s_corrupt;
 static devos_secret_info_t s_info;
 
+/* Wipe everything; the caller holds SEC_LOCK. */
+static void secrets_reset_locked(void)
+{
+    for (int i = 0; i < s_count; i++) {
+        devos_wipe(s_sec[i].value, sizeof(s_sec[i].value));
+        memset(&s_sec[i], 0, sizeof(s_sec[i]));
+    }
+    s_count = 0;
+    devos_wipe(s_key, sizeof(s_key));
+    s_key_ok = false;
+    s_loaded = false;
+}
+
 /* ------------------------------------------------------------------ files */
 static bool file_read(const char *path, uint8_t **out, size_t *out_len)
 {
@@ -74,11 +109,14 @@ static bool file_read(const char *path, uint8_t **out, size_t *out_len)
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (n <= 0 || n > SEC_MAX_PLAIN + SEC_HEADER) { fclose(f); return false; }
-    uint8_t *b = malloc((size_t)n);
+    /* One extra byte so a text caller (secrets.import) can treat the buffer as
+     * a NUL-terminated string even when the file's last line has no newline. */
+    uint8_t *b = malloc((size_t)n + 1);
     if (!b) { fclose(f); return false; }
     size_t got = fread(b, 1, (size_t)n, f);
     fclose(f);
     if (got != (size_t)n) { free(b); return false; }
+    b[n] = '\0';
     *out = b;
     *out_len = (size_t)n;
     return true;
@@ -187,7 +225,7 @@ static bool blob_load(void)
     devos_wipe(pt, clen);
     free(pt);
     free(raw);
-    if (!ok) { devos_secrets_deinit(); s_corrupt = true; return false; }
+    if (!ok) { secrets_reset_locked(); s_corrupt = true; return false; }
     return true;
 }
 
@@ -289,7 +327,9 @@ static void import_file(void)
     remove(SEC_IMPORT_PATH);
 }
 
-static void ensure_loaded(void)
+/* Load once; the caller holds SEC_LOCK, so the check-then-act is atomic and
+ * cannot run twice from two cores. */
+static void ensure_loaded_locked(void)
 {
     if (s_loaded) return;
     s_loaded = true;
@@ -300,20 +340,19 @@ static void ensure_loaded(void)
 
 devos_err_t devos_secrets_init(void)
 {
-    ensure_loaded();
-    return s_key_ok ? DEVOS_OK : DEVOS_ERR_FAIL;
+    sec_mutex_init();
+    SEC_LOCK();
+    ensure_loaded_locked();
+    bool ok = s_key_ok;
+    SEC_UNLOCK();
+    return ok ? DEVOS_OK : DEVOS_ERR_FAIL;
 }
 
 void devos_secrets_deinit(void)
 {
-    for (int i = 0; i < s_count; i++) {
-        devos_wipe(s_sec[i].value, sizeof(s_sec[i].value));
-        memset(&s_sec[i], 0, sizeof(s_sec[i]));
-    }
-    s_count = 0;
-    devos_wipe(s_key, sizeof(s_key));
-    s_key_ok = false;
-    s_loaded = false;
+    SEC_LOCK();
+    secrets_reset_locked();
+    SEC_UNLOCK();
 }
 
 static secret_t *find(const char *name)
@@ -325,38 +364,57 @@ static secret_t *find(const char *name)
 
 int devos_secrets_count(void)
 {
-    ensure_loaded();
-    return s_count;
+    SEC_LOCK();
+    ensure_loaded_locked();
+    int n = s_count;
+    SEC_UNLOCK();
+    return n;
 }
 
 const devos_secret_info_t *devos_secrets_at(int index)
 {
-    ensure_loaded();
-    if (index < 0 || index >= s_count) return NULL;
-    snprintf(s_info.name, sizeof(s_info.name), "%s", s_sec[index].name);
-    snprintf(s_info.label, sizeof(s_info.label), "%s",
-             s_sec[index].label[0] ? s_sec[index].label : s_sec[index].name);
-    s_info.version = s_sec[index].version;
-    return &s_info;
+    const devos_secret_info_t *out = NULL;
+    SEC_LOCK();
+    ensure_loaded_locked();
+    if (index >= 0 && index < s_count) {
+        snprintf(s_info.name, sizeof(s_info.name), "%s", s_sec[index].name);
+        snprintf(s_info.label, sizeof(s_info.label), "%s",
+                 s_sec[index].label[0] ? s_sec[index].label : s_sec[index].name);
+        s_info.version = s_sec[index].version;
+        out = &s_info;
+    }
+    SEC_UNLOCK();
+    return out;
 }
 
 bool devos_secrets_has(const char *name)
 {
     if (!name || !name[0]) return false;
-    ensure_loaded();
-    return find(name) != NULL;
+    SEC_LOCK();
+    ensure_loaded_locked();
+    bool has = find(name) != NULL;
+    SEC_UNLOCK();
+    return has;
 }
 
 int devos_secret_resolve(const char *name, char *out, size_t cap)
 {
     if (!name || !out || cap == 0) return -1;
-    ensure_loaded();
+    SEC_LOCK();
+    ensure_loaded_locked();
     secret_t *s = s_key_ok ? find(name) : NULL;
-    if (!s) { out[0] = '\0'; return -1; }
-    if ((size_t)s->value_len + 1 > cap) { devos_wipe(out, cap); return -1; }
-    memcpy(out, s->value, s->value_len);
-    out[s->value_len] = '\0';
-    return s->value_len;
+    int n = -1;
+    if (!s) {
+        out[0] = '\0';
+    } else if ((size_t)s->value_len + 1 > cap) {
+        devos_wipe(out, cap);
+    } else {
+        memcpy(out, s->value, s->value_len);
+        out[s->value_len] = '\0';
+        n = s->value_len;
+    }
+    SEC_UNLOCK();
+    return n;
 }
 
 void devos_secret_wipe(char *buf, size_t len)
@@ -369,61 +427,87 @@ devos_err_t devos_secrets_set(const char *name, const char *value, const char *l
     if (!name || !name[0] || !value) return DEVOS_ERR_INVALID_ARG;
     if (strlen(name) >= DEVOS_SECRET_NAME_MAX) return DEVOS_ERR_INVALID_ARG;
     if (strlen(value) >= DEVOS_SECRET_VALUE_MAX) return DEVOS_ERR_INVALID_SIZE;
-    ensure_loaded();
+    SEC_LOCK();
+    ensure_loaded_locked();
     secret_t *s = find(name);
+    devos_err_t rc;
     if (!s) {
-        if (s_count >= DEVOS_SECRETS_MAX) return DEVOS_ERR_NO_MEM;
-        s = &s_sec[s_count++];
-        memset(s, 0, sizeof(*s));
-        snprintf(s->name, sizeof(s->name), "%s", name);
-        s->version = 1;
+        if (s_count >= DEVOS_SECRETS_MAX) {
+            rc = DEVOS_ERR_NO_MEM;
+        } else {
+            s = &s_sec[s_count++];
+            memset(s, 0, sizeof(*s));
+            snprintf(s->name, sizeof(s->name), "%s", name);
+            s->version = 1;
+            rc = DEVOS_OK;
+        }
     } else {
         s->version++;
+        rc = DEVOS_OK;
     }
-    size_t vl = strlen(value);
-    memcpy(s->value, value, vl);
-    s->value[vl] = '\0';
-    s->value_len = (uint16_t)vl;
-    snprintf(s->label, sizeof(s->label), "%s", label ? label : name);
-    return blob_save();
+    if (rc == DEVOS_OK) {
+        size_t vl = strlen(value);
+        memcpy(s->value, value, vl);
+        s->value[vl] = '\0';
+        s->value_len = (uint16_t)vl;
+        snprintf(s->label, sizeof(s->label), "%s", label ? label : name);
+        rc = blob_save();
+    }
+    SEC_UNLOCK();
+    return rc;
 }
 
 devos_err_t devos_secrets_delete(const char *name)
 {
     if (!name || !name[0]) return DEVOS_ERR_INVALID_ARG;
-    ensure_loaded();
+    SEC_LOCK();
+    ensure_loaded_locked();
     secret_t *s = find(name);
-    if (!s) return DEVOS_ERR_NOT_FOUND;
+    if (!s) {
+        SEC_UNLOCK();
+        return DEVOS_ERR_NOT_FOUND;
+    }
     int idx = (int)(s - s_sec);
     devos_wipe(s->value, sizeof(s->value));
     for (int i = idx; i < s_count - 1; i++) s_sec[i] = s_sec[i + 1];
     memset(&s_sec[--s_count], 0, sizeof(s_sec[0]));
-    return blob_save();
+    devos_err_t rc = blob_save();
+    SEC_UNLOCK();
+    return rc;
 }
 
 devos_err_t devos_secrets_save(void)
 {
-    ensure_loaded();
-    return blob_save();
+    SEC_LOCK();
+    ensure_loaded_locked();
+    devos_err_t rc = blob_save();
+    SEC_UNLOCK();
+    return rc;
 }
 
 devos_err_t devos_secrets_set_device_key(const uint8_t key[32])
 {
     if (!key) return DEVOS_ERR_INVALID_ARG;
-    for (int i = 0; i < s_count; i++) devos_wipe(s_sec[i].value, sizeof(s_sec[i].value));
-    memset(s_sec, 0, sizeof(s_sec));
-    s_count = 0;
-    if (!key_write(key)) return DEVOS_ERR_FAIL;
-    memcpy(s_key, key, 32);
-    s_key_ok = true;
-    s_loaded = true;
-    bool ok = blob_load();
+    sec_mutex_init();
+    SEC_LOCK();
+    secrets_reset_locked();
+    bool ok = key_write(key);
+    if (ok) {
+        memcpy(s_key, key, 32);
+        s_key_ok = true;
+        s_loaded = true;
+        ok = blob_load();
+    }
+    SEC_UNLOCK();
     return ok ? DEVOS_OK : DEVOS_ERR_FAIL;
 }
 
 bool devos_secrets_corrupt(void)
 {
-    return s_corrupt;
+    SEC_LOCK();
+    bool c = s_corrupt;
+    SEC_UNLOCK();
+    return c;
 }
 
 const char *devos_secrets_security_note(void)

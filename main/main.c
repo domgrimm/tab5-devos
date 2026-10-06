@@ -414,6 +414,21 @@ static void jobs_secret_wipe(void *p, size_t len)
     devos_secret_wipe((char *)p, len);
 }
 
+/* system.notify queues a notice in a bounded RAM ring (the provider has no
+ * LVGL - see jobs_system.c); surface them here, in the 1 Hz loop, so a
+ * background job's notice is seen whatever app is on screen. One per second:
+ * the toast has a single request slot, so draining the whole ring at once
+ * would only ever show the last one. */
+static void jobs_watch_notices(void)
+{
+    char msg[JOBS_SYSTEM_NOTICE_LEN];
+    int level = 0;
+    if (!jobs_system_take_notice(msg, sizeof(msg), &level)) return;
+    devos_toast_show(msg, level == 3 ? DEVOS_TOAST_OK :
+                          level == 2 ? DEVOS_TOAST_ERROR :
+                          level == 1 ? DEVOS_TOAST_WARN : DEVOS_TOAST_INFO, 0);
+}
+
 /* Copy the compact sysmon snapshot into the Jobs engine (no LVGL, no I2C from
  * the engine). Called from the 1 Hz GUI tick. */
 /* P3: one rate-limited toast when a job's last run turns to failed. Polls the
@@ -494,6 +509,7 @@ static void jobs_sync_system(void)
     devos_jobs_set_system(&j);
     jobs_events_poll(&j);     /* Wi-Fi/battery transitions -> typed events */
     jobs_watch_failures();    /* rate-limited "Job X failed: ..." notice */
+    jobs_watch_notices();     /* system.notify: the provider queues, we toast */
 }
 
 static void devos_system_bringup(void)

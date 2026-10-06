@@ -101,6 +101,12 @@ bool devos_mqtt_ticket_poll(uint32_t id, devos_mqtt_ticket_state_t *state);
 /* Free a ticket slot (safe once; other ids are unaffected). */
 void devos_mqtt_ticket_release(uint32_t id);
 
+/* Stop a publish accepted locally but not yet on the wire. Returns true when a
+ * queued copy was removed (a genuine cancellation); false once the worker has
+ * taken it (the broker may receive it), which the caller must report as an
+ * unknown outcome rather than a cancellation. */
+bool devos_mqtt_ticket_cancel(uint32_t id);
+
 /* ---- subscription ownership (Jobs must not clobber the user's subs) ----
  * Acquire an extra subscription (e.g. an mqtt.message trigger). The user's
  * four configured subscriptions are never replaced; the combined effective

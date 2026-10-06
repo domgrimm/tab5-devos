@@ -110,9 +110,11 @@ static devos_err_t log_start(const devos_action_args_t *args, const devos_action
     size_t k = n < sizeof(line) - 1 ? n : sizeof(line) - 1;
     memcpy(line, msg, k);
     line[k] = '\0';
-    log_push(line);
+    /* Allocate before the side effect: a failed allocation must not report
+     * "could not start" after the line was already recorded. */
     sys_op_t *o = calloc(1, sizeof(*o));
     if (!o) return DEVOS_ERR_NO_MEM;
+    log_push(line);
     o->out[0].type = DEVOS_VAL_BOOL;
     o->out[0].v.b = true;
     *op = o;
@@ -125,14 +127,17 @@ static devos_err_t notify_start(const devos_action_args_t *args, const devos_act
     size_t n = 0;
     const char *msg = arg_str(args, 0, &n);
     const char *lvl = arg_str(args, 1, NULL);
-    int level = strcmp(lvl, "error") == 0 ? 2 : strcmp(lvl, "warning") == 0 ? 1 : 0;
+    int level = strcmp(lvl, "error") == 0 ? 2 :
+                strcmp(lvl, "warning") == 0 ? 1 :
+                strcmp(lvl, "success") == 0 ? 3 : 0;
     char line[JOBS_SYSTEM_NOTICE_LEN];
     size_t k = n < sizeof(line) - 1 ? n : sizeof(line) - 1;
     memcpy(line, msg, k);
     line[k] = '\0';
-    notice_push(line, level);
+    /* Allocate before the side effect (see log_start). */
     sys_op_t *o = calloc(1, sizeof(*o));
     if (!o) return DEVOS_ERR_NO_MEM;
+    notice_push(line, level);
     o->out[0].type = DEVOS_VAL_BOOL;
     o->out[0].v.b = true;
     *op = o;
@@ -159,18 +164,21 @@ static const devos_action_out_t LOG_O[] = { { .name = "recorded", .type = DEVOS_
 static const devos_action_descriptor_t LOG_D = {
     .id = "system.log", .schema_version = 1, .provider_uid = "jobs", .category = "system",
     .label = "Log a message", .params = LOG_P, .param_count = 1, .outs = LOG_O, .out_count = 1,
-    .effect = DEVOS_EFFECT_READ, .retry_safe = true, .ops = &SYS_OPS,
+    .effect = DEVOS_EFFECT_MUTATE, .retry_safe = true, .local_only = true, .ops = &SYS_OPS,
 };
 
 static const devos_action_param_t NOTIFY_P[] = {
     { .name = "message", .type = DEVOS_VAL_STR, .required = true, .expression = true, .max_len = 512 },
-    { .name = "level", .type = DEVOS_VAL_STR, .choices = "info|warning|error" },
+    /* `info` stays first so it remains the default: an unset level is a plain
+     * notice, not a green tick. */
+    { .name = "level", .type = DEVOS_VAL_STR, .choices = "info|success|warning|error",
+      .help = "info, success (green tick), warning or error" },
 };
 static const devos_action_out_t NOTIFY_O[] = { { .name = "queued", .type = DEVOS_VAL_BOOL } };
 static const devos_action_descriptor_t NOTIFY_D = {
     .id = "system.notify", .schema_version = 1, .provider_uid = "jobs", .category = "system",
     .label = "Show a notice", .params = NOTIFY_P, .param_count = 2, .outs = NOTIFY_O, .out_count = 1,
-    .effect = DEVOS_EFFECT_MUTATE, .ops = &NOTIFY_OPS,
+    .effect = DEVOS_EFFECT_MUTATE, .local_only = true, .ops = &NOTIFY_OPS,
 };
 
 void jobs_system_register(void)

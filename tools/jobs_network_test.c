@@ -40,8 +40,11 @@ int devos_probe_poll(int handle, int *state, devos_probe_result_t *out) { (void)
 void devos_probe_cancel(int handle) { (void)handle; }
 void devos_probe_release(int handle) { (void)handle; }
 
-void nd_dns_init(void);      /* internal init; avoids the whole netdiag stack */
-void nd_wol_init(void);
+/* devos_netdiag_init() aggregates these; the real DNS/WoL engines are linked,
+ * the ping/scan/probe engines are not. */
+void nd_ping_init(void) {}
+void nd_scan_init(void) {}
+void nd_probe_init(void) {}
 
 static int fails, checks;
 #define CHECK(c) do { checks++; if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
@@ -127,11 +130,25 @@ int main(void)
     pthread_create(&srv, NULL, dns_server, NULL);
     while (!s_dns_port) usleep(5 * 1000);
 
-    nd_dns_init();
-    nd_wol_init();
     jobs_network_register();
     CHECK(devos_actions_find("network.wol") != NULL);
     CHECK(devos_actions_find("network.dns") != NULL);
+
+    /* The request-specific engines are only initialised by the Network app.
+     * Before that, every network action reports unavailable with a reason;
+     * after, it is available. Jobs never enables the app itself. */
+    char why[80];
+    CHECK(!devos_netdiag_ready());
+    CHECK(!devos_actions_available("network.ping", why, sizeof(why)));
+    CHECK(why[0] != '\0');
+    CHECK(!devos_actions_available("network.wol", why, sizeof(why)));
+    CHECK(!devos_actions_available("network.dns", why, sizeof(why)));
+
+    devos_netdiag_init();
+    CHECK(devos_netdiag_ready());
+    CHECK(devos_actions_available("network.ping", why, sizeof(why)));
+    CHECK(devos_actions_available("network.wol", why, sizeof(why)));
+    CHECK(devos_actions_available("network.dns", why, sizeof(why)));
 
     devos_action_args_t args;
     devos_action_handle_t h;
@@ -159,9 +176,56 @@ int main(void)
     CHECK(run(h, &res) == DEVOS_ACT_DONE);        /* sent depends on the resolver */
     devos_action_release(h);
 
+    /* Cancel a WoL: the ticket must reach a terminal state (not hang at
+     * "running" until the run deadline), and a packet that may have gone out
+     * is reported as not-sent. A .local target keeps the worker in resolution
+     * so cancel deterministically wins. */
+    {
+        uint8_t mac[6] = { 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff };
+        int t = devos_wol_submit(mac, "cancel-test.local");
+        CHECK(t > 0);
+        devos_wol_cancel(t);
+        bool wok = true;
+        char wtgt[64] = "", werr[96] = "";
+        int rc = devos_wol_poll(t, &wok, wtgt, sizeof(wtgt), werr, sizeof(werr));
+        CHECK(rc == 1);                                /* terminal, not stuck */
+        CHECK(!wok && strstr(werr, "cancel") != NULL);
+        devos_wol_release(t);
+    }
+
+    /* Targets that would truncate an engine buffer are refused, never resolved
+     * as a different host. */
+    {
+        char longhost[300];
+        memset(longhost, 'a', sizeof(longhost) - 1);
+        longhost[sizeof(longhost) - 1] = '\0';
+        devos_value_t lh[2] = { vstr(longhost), vstr("") };
+        args.args = lh; args.arg_count = 2;
+        CHECK(devos_action_start("network.ping", &args, NULL, &h) == DEVOS_ERR_INVALID_ARG);
+
+        char longtgt[80];
+        memset(longtgt, 'b', sizeof(longtgt) - 1);
+        longtgt[sizeof(longtgt) - 1] = '\0';
+        devos_value_t lt[2] = { vstr("aa:bb:cc:dd:ee:ff"), vstr(longtgt) };
+        args.args = lt;
+        CHECK(devos_action_start("network.wol", &args, NULL, &h) == DEVOS_ERR_INVALID_ARG);
+    }
+
     /* DNS A query against the fake server */
     char srvip[48];
     snprintf(srvip, sizeof(srvip), "127.0.0.1:%d", s_dns_port);
+
+    /* An over-long DNS name is refused at the provider and by the engine. */
+    {
+        char longname[140];
+        memset(longname, 'c', sizeof(longname) - 1);
+        longname[sizeof(longname) - 1] = '\0';
+        devos_value_t ln[3] = { vstr(longname), vstr(srvip), vstr("A") };
+        args.args = ln; args.arg_count = 3;
+        CHECK(devos_action_start("network.dns", &args, NULL, &h) == DEVOS_ERR_INVALID_ARG);
+        CHECK(devos_dns_ctx_start(srvip, longname, DEVOS_DNS_A) == 0);
+    }
+
     devos_value_t d[3] = { vstr("example.test"), vstr(srvip), vstr("A") };
     args.args = d;
     CHECK(devos_action_start("network.dns", &args, NULL, &h) == DEVOS_OK);

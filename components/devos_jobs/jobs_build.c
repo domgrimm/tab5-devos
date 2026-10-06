@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The Builder's scratch AST budget (see jobs_build_load). */
+#define JOBS_BUILD_MAX_NODES  4096
+#define JOBS_BUILD_MAX_SOURCE (64 * 1024)
+
 static bool set_arg_lit(jobs_build_t *b, const jobs_node_t *action, const char *param, jobs_node_t *lit);
 
 static const jobs_node_t *find_arg(const jobs_node_t *action, const char *param)
@@ -34,19 +38,52 @@ static jobs_node_t *new_lit(jobs_ast_t *ast, devos_val_type_t type)
     return n;
 }
 
-/* A plain string literal, as JN_EXPR_STR with one literal part (the same shape
- * the parser builds), so the validator's literal checks see it. */
-static jobs_node_t *new_str_lit(jobs_ast_t *ast, const char *text)
+/* Replace a pool string in place when the new text fits the existing slot,
+ * otherwise allocate a fresh slot. The Builder re-commits the whole form on
+ * every field defocus (app_jobs form_commit), so without in-place reuse the
+ * AST's fixed node arena and string pool fill up after a handful of edits and
+ * the next setter fails - and the app then showed no error at all. */
+static const char *pool_replace(jobs_ast_t *ast, const char *old, const char *s)
 {
+    size_t n = s ? strlen(s) : 0;
+    if (old && n <= strlen(old)) {
+        char *w = (char *)old;                  /* the slot is exactly strlen(old)+1 */
+        if (n) memcpy(w, s, n);
+        w[n] = '\0';
+        return old;
+    }
+    return jobs_pool_str(ast, s ? s : "", (uint32_t)n);
+}
+
+/* Make (or update in place) a plain single-literal string node. `reuse` is an
+ * existing JN_EXPR_STR node to mutate, or NULL to allocate. */
+static jobs_node_t *str_lit_make(jobs_ast_t *ast, jobs_node_t *reuse, const char *text)
+{
+    const char *s = text ? text : "";
+    jobs_node_t *e = reuse;
+    if (e && e->kind == JN_EXPR_STR && e->a && e->a->kind == JN_STRPART &&
+        e->a->sub == JSP_LITERAL && !e->a->next && e->a->u.str.s) {
+        e->a->u.str.s = pool_replace(ast, e->a->u.str.s, s);
+        if (!e->a->u.str.s) return NULL;
+        return e;
+    }
+    const char *ns = jobs_pool_str(ast, s, (uint32_t)strlen(s));
+    if (!ns) return NULL;
     jobs_node_t *n = jobs_node_new(ast, JN_EXPR_STR, 0, 0, 0, 0);
     if (!n) return NULL;
     jobs_node_t *part = jobs_node_new(ast, JN_STRPART, 0, 0, 0, 0);
     if (!part) return NULL;
     part->sub = JSP_LITERAL;
-    part->u.str.s = jobs_pool_str(ast, text ? text : "", (uint32_t)strlen(text ? text : ""));
-    if (!part->u.str.s) return NULL;
+    part->u.str.s = ns;
     n->a = part;
     return n;
+}
+
+/* A plain string literal, as JN_EXPR_STR with one literal part (the same shape
+ * the parser builds), so the validator's literal checks see it. */
+static jobs_node_t *new_str_lit(jobs_ast_t *ast, const char *text)
+{
+    return str_lit_make(ast, NULL, text);
 }
 
 /* ---- load / serialize ---- */
@@ -55,7 +92,18 @@ bool jobs_build_load(jobs_build_t *b, const char *source, size_t len)
     if (!b) return false;
     if (b->ast) { jobs_ast_free(b->ast); b->ast = NULL; }
     b->diag[0] = '\0';
-    b->ast = jobs_parse(source, len, NULL);
+    /* The Builder is a *scratch* editing structure. Incremental editing orphans
+     * nodes/strings, so give it a generous arena and pool: with the default
+     * 128-node budget the setter started failing after roughly a dozen field
+     * commits and the app silently kept the old value. The applied job is still
+     * re-parsed by devos_jobs_apply against the conservative defaults, so an
+     * oversized definition is reported rather than silently accepted. */
+    jobs_limits_t lim;
+    jobs_limits_default(&lim);
+    lim.max_nodes = JOBS_BUILD_MAX_NODES;
+    lim.max_source = JOBS_BUILD_MAX_SOURCE;
+    lim.max_string = JOBS_BUILD_MAX_SOURCE;
+    b->ast = jobs_parse(source, len, &lim);
     if (!b->ast) { snprintf(b->diag, sizeof(b->diag), "out of memory"); return false; }
     if (!jobs_validate(b->ast)) {
         snprintf(b->diag, sizeof(b->diag), "%s", b->ast->diag_count ? b->ast->diag[0].msg : "invalid definition");
@@ -147,7 +195,7 @@ bool jobs_build_set_trigger_event(jobs_build_t *b, const char *topic)
 {
     jobs_node_t *t = jobs_build_trigger(b);
     if (!t || t->sub != JTRIG_EVENT || !topic || !topic[0]) return false;
-    const char *copy = jobs_pool_str(b->ast, topic, (uint32_t)strlen(topic));
+    const char *copy = pool_replace(b->ast, t->u.str.s, topic);
     if (!copy) return false;
     t->u.str.s = copy;
     return true;
@@ -200,7 +248,7 @@ bool jobs_build_set_trigger_days(jobs_build_t *b, const char *days)
     }
     char canon[32];
     jobs_days_format(m, canon, sizeof(canon));
-    t->u.str.s2 = jobs_pool_str(b->ast, canon, (uint32_t)strlen(canon));
+    t->u.str.s2 = pool_replace(b->ast, t->u.str.s2, canon);
     return t->u.str.s2 != NULL;
 }
 
@@ -220,11 +268,105 @@ bool jobs_build_set_trigger_duration(jobs_build_t *b, int64_t ms)
     return true;
 }
 
+/* Event-trigger arguments (debounce, include_retained). The scheduler reads
+ * them as typed literals (jobs_schedule.c read_trigger), so they are edited as
+ * named arguments on the trigger node. Each setter removes its argument when
+ * the value is the default, keeping the serialized source clean. */
+static jobs_node_t *trigger_arg_add(jobs_ast_t *ast, jobs_node_t *t, const char *name)
+{
+    jobs_node_t *a = jobs_node_new(ast, JN_ARG, 0, 0, 0, 0);
+    if (!a) return NULL;
+    a->u.str.s = jobs_pool_str(ast, name, (uint32_t)strlen(name));
+    if (!a->u.str.s) return NULL;
+    jobs_node_t *tail = t->a;
+    while (tail && tail->next) tail = tail->next;
+    if (tail) tail->next = a; else t->a = a;
+    return a;
+}
+
+static void trigger_arg_remove(jobs_node_t *t, const char *name)
+{
+    jobs_node_t *prev = NULL;
+    for (jobs_node_t *a = t->a; a; prev = a, a = a->next) {
+        if (a->u.str.s && strcmp(a->u.str.s, name) == 0) {
+            if (prev) prev->next = a->next; else t->a = a->next;
+            return;
+        }
+    }
+}
+
+static jobs_node_t *trigger_arg_find(jobs_node_t *t, const char *name)
+{
+    for (jobs_node_t *a = t->a; a; a = a->next)
+        if (a->u.str.s && strcmp(a->u.str.s, name) == 0) return a;
+    return NULL;
+}
+
+bool jobs_build_set_trigger_debounce(jobs_build_t *b, int64_t ms)
+{
+    jobs_node_t *t = jobs_build_trigger(b);
+    if (!t || t->sub != JTRIG_EVENT) return false;
+    if (ms <= 0) { trigger_arg_remove(t, "debounce"); return true; }
+    jobs_node_t *a = trigger_arg_find(t, "debounce");
+    if (!a) a = trigger_arg_add(b->ast, t, "debounce");
+    if (!a) return false;
+    if (a->a && a->a->kind == JN_EXPR_LIT) {
+        a->a->u.lit.type = DEVOS_VAL_DURATION;
+        a->a->u.lit.v.ms = ms;
+        return true;
+    }
+    jobs_node_t *lit = new_lit(b->ast, DEVOS_VAL_DURATION);
+    if (!lit) return false;
+    lit->u.lit.v.ms = ms;
+    a->a = lit;
+    return true;
+}
+
+int64_t jobs_build_trigger_debounce(const jobs_node_t *t)
+{
+    if (!t || t->sub != JTRIG_EVENT) return 0;
+    for (const jobs_node_t *a = t->a; a; a = a->next)
+        if (a->u.str.s && strcmp(a->u.str.s, "debounce") == 0 && a->a &&
+            a->a->kind == JN_EXPR_LIT && a->a->u.lit.type == DEVOS_VAL_DURATION)
+            return a->a->u.lit.v.ms;
+    return 0;
+}
+
+bool jobs_build_set_trigger_retained(jobs_build_t *b, bool on)
+{
+    jobs_node_t *t = jobs_build_trigger(b);
+    if (!t || t->sub != JTRIG_EVENT) return false;
+    if (!on) { trigger_arg_remove(t, "include_retained"); return true; }
+    jobs_node_t *a = trigger_arg_find(t, "include_retained");
+    if (!a) a = trigger_arg_add(b->ast, t, "include_retained");
+    if (!a) return false;
+    if (a->a && a->a->kind == JN_EXPR_LIT) {
+        a->a->u.lit.type = DEVOS_VAL_BOOL;
+        a->a->u.lit.v.b = true;
+        return true;
+    }
+    jobs_node_t *lit = new_lit(b->ast, DEVOS_VAL_BOOL);
+    if (!lit) return false;
+    lit->u.lit.v.b = true;
+    a->a = lit;
+    return true;
+}
+
+bool jobs_build_trigger_retained(const jobs_node_t *t)
+{
+    if (!t || t->sub != JTRIG_EVENT) return false;
+    for (const jobs_node_t *a = t->a; a; a = a->next)
+        if (a->u.str.s && strcmp(a->u.str.s, "include_retained") == 0 && a->a &&
+            a->a->kind == JN_EXPR_LIT && a->a->u.lit.type == DEVOS_VAL_BOOL)
+            return a->a->u.lit.v.b;
+    return false;
+}
+
 bool jobs_build_set_trigger_time(jobs_build_t *b, const char *hhmm)
 {
     jobs_node_t *t = jobs_build_trigger(b);
     if (!t || (t->sub != JTRIG_DAILY && t->sub != JTRIG_WEEKDAYS) || !hhmm) return false;
-    const char *copy = jobs_pool_str(b->ast, hhmm, (uint32_t)strlen(hhmm));
+    const char *copy = pool_replace(b->ast, t->u.str.s, hhmm);
     if (!copy) return false;
     t->u.str.s = copy;
     return true;
@@ -352,13 +494,23 @@ bool jobs_build_add_run(jobs_build_t *b, const jobs_node_t *block, const char *n
 }
 
 /* "Save result as" for an action/run statement ("" clears it). */
+/* The job to call in a `run` step (name or id). */
+bool jobs_build_set_run(jobs_build_t *b, const jobs_node_t *stmt, const char *name)
+{
+    if (!b || !b->ast || !stmt || stmt->kind != JN_RUN || !name || !name[0]) return false;
+    jobs_node_t *n = (jobs_node_t *)stmt;
+    n->u.str.s = pool_replace(b->ast, n->u.str.s, name);
+    return n->u.str.s != NULL;
+}
+
 bool jobs_build_set_output(jobs_build_t *b, const jobs_node_t *stmt, const char *name)
 {
     if (!b || !b->ast || !stmt) return false;
     if (stmt->kind != JN_ACTION && stmt->kind != JN_RUN) return false;
     jobs_node_t *s = (jobs_node_t *)stmt;
-    s->u.str.s2 = (name && name[0]) ? jobs_pool_str(b->ast, name, (uint32_t)strlen(name)) : NULL;
-    return true;
+    /* Committed on every form defocus: reuse the existing slot when it fits. */
+    s->u.str.s2 = (name && name[0]) ? pool_replace(b->ast, s->u.str.s2, name) : NULL;
+    return !(name && name[0]) || s->u.str.s2 != NULL;
 }
 const char *jobs_build_output(const jobs_node_t *stmt)
 {
@@ -371,25 +523,61 @@ bool jobs_build_set_job_name(jobs_build_t *b, const char *name)
 {
     if (!b || !b->ast || !b->ast->root || b->ast->root->kind != JN_JOB) return false;
     if (!name || !name[0]) return false;
-    b->ast->root->u.str.s = jobs_pool_str(b->ast, name, (uint32_t)strlen(name));
+    b->ast->root->u.str.s = pool_replace(b->ast, b->ast->root->u.str.s, name);
     return b->ast->root->u.str.s != NULL;
 }
 
-/* ---- policy card: timeout / overlap / cooldown (creates the node if absent) ---- */
-static jobs_node_t *policy_arg(jobs_ast_t *ast, const char *name, devos_val_type_t type,
-                               int64_t ms, const char *str)
+/* ---- policy card: timeout / overlap / cooldown (reuses the existing node) ---- */
+static jobs_node_t *policy_find_arg(jobs_node_t *pol, const char *name)
 {
-    jobs_node_t *a = jobs_node_new(ast, JN_ARG, 0, 0, 0, 0);
-    if (!a) return NULL;
-    a->u.str.s = jobs_pool_str(ast, name, (uint32_t)strlen(name));
-    if (!a->u.str.s) return NULL;
+    for (jobs_node_t *a = pol ? pol->a : NULL; a; a = a->next)
+        if (a->u.str.s && strcmp(a->u.str.s, name) == 0) return a;
+    return NULL;
+}
+
+/* Drop a policy argument (its node becomes arena garbage, as with other edits). */
+static void policy_unlink(jobs_node_t *pol, const char *name)
+{
+    jobs_node_t *prev = NULL;
+    for (jobs_node_t *a = pol->a; a; prev = a, a = a->next) {
+        if (a->u.str.s && strcmp(a->u.str.s, name) == 0) {
+            if (prev) prev->next = a->next; else pol->a = a->next;
+            return;
+        }
+    }
+}
+
+/* Find (or append) a policy argument and write its value in place, so the Job
+ * settings dialog - which re-commits the whole policy on every save - does not
+ * allocate a fresh subtree each time. */
+static jobs_node_t *policy_set(jobs_ast_t *ast, jobs_node_t *pol, const char *name,
+                               devos_val_type_t type, int64_t ms, const char *str)
+{
+    jobs_node_t *a = policy_find_arg(pol, name);
+    if (!a) {
+        a = jobs_node_new(ast, JN_ARG, 0, 0, 0, 0);
+        if (!a) return NULL;
+        a->u.str.s = jobs_pool_str(ast, name, (uint32_t)strlen(name));
+        if (!a->u.str.s) return NULL;
+        jobs_node_t *tail = pol->a;
+        while (tail && tail->next) tail = tail->next;
+        if (tail) tail->next = a; else pol->a = a;
+    }
     if (type == DEVOS_VAL_DURATION) {
-        a->a = new_lit(ast, DEVOS_VAL_DURATION);
-        if (!a->a) return NULL;
-        a->a->u.lit.v.ms = ms;
+        if (a->a && a->a->kind == JN_EXPR_LIT) {
+            a->a->u.lit.type = DEVOS_VAL_DURATION;
+            a->a->u.lit.v.ms = ms;
+        } else {
+            jobs_node_t *lit = new_lit(ast, DEVOS_VAL_DURATION);
+            if (!lit) return NULL;
+            lit->u.lit.v.ms = ms;
+            a->a = lit;
+        }
     } else {
-        a->a = new_str_lit(ast, str ? str : "");
-        if (!a->a) return NULL;
+        jobs_node_t *n = str_lit_make(ast, a->a && a->a->kind == JN_EXPR_STR ? a->a : NULL,
+                                      str ? str : "");
+        if (!n) return NULL;
+        a->a = n;
     }
     return a;
 }
@@ -398,25 +586,20 @@ bool jobs_build_set_policy(jobs_build_t *b, int64_t timeout_ms, int overlap, int
 {
     if (!b || !b->ast || !b->ast->root || b->ast->root->kind != JN_JOB) return false;
     jobs_ast_t *ast = b->ast;
-    jobs_node_t *pol = jobs_node_new(ast, JN_POLICY, 0, 0, 0, 0);
-    if (!pol) return false;
-    jobs_node_t *tail = NULL;
+    jobs_node_t *pol = ast->root->b;
+    if (pol && pol->kind != JN_POLICY) pol = NULL;
+    if (!pol) {
+        pol = jobs_node_new(ast, JN_POLICY, 0, 0, 0, 0);
+        if (!pol) return false;
+        ast->root->b = pol;
+    }
     if (timeout_ms > 0) {
-        jobs_node_t *a = policy_arg(ast, "timeout", DEVOS_VAL_DURATION, timeout_ms, NULL);
-        if (!a) return false;
-        pol->a = a; tail = a;
-    }
+        if (!policy_set(ast, pol, "timeout", DEVOS_VAL_DURATION, timeout_ms, NULL)) return false;
+    } else policy_unlink(pol, "timeout");
     if (cooldown_ms > 0) {
-        jobs_node_t *a = policy_arg(ast, "cooldown", DEVOS_VAL_DURATION, cooldown_ms, NULL);
-        if (!a) return false;
-        if (tail) tail->next = a; else pol->a = a;
-        tail = a;
-    }
-    jobs_node_t *a = policy_arg(ast, "overlap", DEVOS_VAL_STR, 0, overlap ? "queue_one" : "skip");
-    if (!a) return false;
-    if (tail) tail->next = a; else pol->a = a;
-    b->ast->root->b = pol;
-    return true;
+        if (!policy_set(ast, pol, "cooldown", DEVOS_VAL_DURATION, cooldown_ms, NULL)) return false;
+    } else policy_unlink(pol, "cooldown");
+    return policy_set(ast, pol, "overlap", DEVOS_VAL_STR, 0, overlap ? "queue_one" : "skip") != NULL;
 }
 /* Read one policy argument back (0/"" when absent). */
 static jobs_node_t *policy_find(const jobs_node_t *t, const char *name)
@@ -500,7 +683,7 @@ bool jobs_build_set_repeat(jobs_build_t *b, const jobs_node_t *stmt, int64_t cou
 {
     if (!b || !b->ast || !stmt || stmt->kind != JN_REPEAT) return false;
     if (count < 1 || count > JOBS_MAX_REPEAT || !index || !index[0]) return false;
-    const char *copy = jobs_pool_str(b->ast, index, (uint32_t)strlen(index));
+    const char *copy = pool_replace(b->ast, stmt->u.str.s, index);
     if (!copy) return false;
     jobs_node_t *n = (jobs_node_t *)stmt;
     n->count = count;
@@ -726,46 +909,78 @@ static bool set_arg_lit(jobs_build_t *b, const jobs_node_t *action, const char *
     return true;
 }
 
+/* Write a scalar literal, reusing an existing JN_EXPR_LIT *in place*. The app
+ * re-commits every parameter on each field defocus (app_jobs form_commit), so
+ * allocating fresh nodes per commit filled the AST arena and the setter then
+ * failed with the value silently unchanged. */
+static bool set_arg_scalar(jobs_build_t *b, const jobs_node_t *action, const char *param,
+                           devos_val_type_t type, int64_t i, bool boolean, double num)
+{
+    if (!b || !b->ast || !action) return false;
+    jobs_node_t *arg = arg_get_or_add(b->ast, action, param);
+    if (!arg) return false;
+    jobs_node_t *n = arg->a;
+    if (!n || n->kind != JN_EXPR_LIT) {
+        n = new_lit(b->ast, type);
+        if (!n) return false;
+        arg->a = n;
+    }
+    memset(&n->u.lit, 0, sizeof(n->u.lit));
+    n->u.lit.type = type;
+    switch (type) {
+    case DEVOS_VAL_BOOL:     n->u.lit.v.b = boolean; break;
+    case DEVOS_VAL_INT:      n->u.lit.v.i = i; break;
+    case DEVOS_VAL_NUM:      n->u.lit.v.n = num; break;
+    case DEVOS_VAL_DURATION: n->u.lit.v.ms = i; break;
+    default: break;
+    }
+    return true;
+}
+
 bool jobs_build_set_arg_str(jobs_build_t *b, const jobs_node_t *action, const char *param, const char *text)
 {
-    jobs_node_t *lit = new_str_lit(b->ast, text);
-    if (!lit) return false;
-    return set_arg_lit(b, action, param, lit);
+    if (!b || !b->ast || !action) return false;
+    jobs_node_t *arg = arg_get_or_add(b->ast, action, param);
+    if (!arg) return false;
+    jobs_node_t *n = str_lit_make(b->ast, arg->a && arg->a->kind == JN_EXPR_STR ? arg->a : NULL, text);
+    if (!n) return false;
+    arg->a = n;
+    return true;
 }
 
 bool jobs_build_set_arg_bool(jobs_build_t *b, const jobs_node_t *action, const char *param, bool v)
 {
-    jobs_node_t *lit = new_lit(b->ast, DEVOS_VAL_BOOL);
-    if (!lit) return false;
-    lit->u.lit.v.b = v;
-    return set_arg_lit(b, action, param, lit);
+    return set_arg_scalar(b, action, param, DEVOS_VAL_BOOL, 0, v, 0);
 }
 
 bool jobs_build_set_arg_int(jobs_build_t *b, const jobs_node_t *action, const char *param, int64_t v)
 {
-    jobs_node_t *lit = new_lit(b->ast, DEVOS_VAL_INT);
-    if (!lit) return false;
-    lit->u.lit.v.i = v;
-    return set_arg_lit(b, action, param, lit);
+    return set_arg_scalar(b, action, param, DEVOS_VAL_INT, v, false, 0);
 }
 
 bool jobs_build_set_arg_duration(jobs_build_t *b, const jobs_node_t *action, const char *param, int64_t ms)
 {
-    jobs_node_t *lit = new_lit(b->ast, DEVOS_VAL_DURATION);
-    if (!lit) return false;
-    lit->u.lit.v.ms = ms;
-    return set_arg_lit(b, action, param, lit);
+    return set_arg_scalar(b, action, param, DEVOS_VAL_DURATION, ms, false, 0);
 }
 
 bool jobs_build_set_arg_secret(jobs_build_t *b, const jobs_node_t *action, const char *param, const char *name)
 {
-    jobs_node_t *call = jobs_node_new(b->ast, JN_EXPR_CALL, 0, 0, 0, 0);
-    if (!call) return false;
-    call->u.str.s = jobs_pool_str(b->ast, "secret", 6);
-    jobs_node_t *lit = new_str_lit(b->ast, name);
-    if (!lit) return false;
-    call->a = lit;
-    return set_arg_lit(b, action, param, call);
+    if (!b || !b->ast || !action) return false;
+    jobs_node_t *arg = arg_get_or_add(b->ast, action, param);
+    if (!arg) return false;
+    jobs_node_t *call = arg->a;
+    const char *fn = (call && call->kind == JN_EXPR_CALL) ? call->u.str.s : NULL;
+    if (!fn || strcmp(fn, "secret") != 0) {
+        call = jobs_node_new(b->ast, JN_EXPR_CALL, 0, 0, 0, 0);
+        if (!call) return false;
+        call->u.str.s = jobs_pool_str(b->ast, "secret", 6);
+        if (!call->u.str.s) return false;      /* was unchecked: pool overflow -> NULL deref */
+        arg->a = call;
+    }
+    jobs_node_t *n = str_lit_make(b->ast, call->a, name);
+    if (!n) return false;
+    call->a = n;
+    return true;
 }
 
 const char *jobs_build_arg_secret_name(const jobs_node_t *action, const char *param)

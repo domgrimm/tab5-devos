@@ -176,6 +176,7 @@ static void wol_task(void *arg)
 
 int devos_wol_submit(const uint8_t mac[6], const char *addr)
 {
+    if (addr && strlen(addr) >= sizeof(W[0].addr)) return 0;   /* would truncate */
     int slot = -1;
     for (int i = 0; i < DEVOS_WOL_MAX; i++) {
         nd_lock(&W[i].mx);
@@ -233,7 +234,22 @@ void devos_wol_cancel(int ticket)
 {
     for (int i = 0; i < DEVOS_WOL_MAX; i++) {
         nd_lock(&W[i].mx);
-        if (W[i].used && W[i].id == (uint32_t)ticket) { W[i].stop = true; nd_unlock(&W[i].mx); return; }
+        if (W[i].used && W[i].id == (uint32_t)ticket) {
+            W[i].stop = true;
+            if (W[i].busy) {
+                /* Finish it here: the worker skips a stopped ticket, so without
+                 * this poll() would return "running" forever. The magic packet
+                 * may still have gone out, so `ok` stays false and the error
+                 * says the outcome is unknown. */
+                W[i].busy = false;
+                W[i].ok = false;
+                W[i].target[0] = '\0';
+                snprintf(W[i].error, sizeof(W[i].error),
+                         "cancelled; the packet may still have been sent");
+            }
+            nd_unlock(&W[i].mx);
+            return;
+        }
         nd_unlock(&W[i].mx);
     }
 }

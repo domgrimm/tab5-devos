@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define JOBS_MAX_ARGS 12
 #define JOBS_DEFAULT_RUN_MS 60000
 
 /* ---- variables ---- */
@@ -63,7 +62,8 @@ static bool var_set(jobs_run_t *r, const char *name, const devos_value_t *v, cha
     slot->v = *v;
     if (v->type == DEVOS_VAL_STR) {
         const char *copy = pool_dup(r, v->v.str.s ? v->v.str.s : "", v->v.str.len);
-        if (!copy) { snprintf(err, errcap, "run string pool full"); return false; }
+        if (!copy) { snprintf(err, errcap, "run ran out of string space (%d KiB cap)",
+                              (int)(sizeof(r->strpool) / 1024)); return false; }
         slot->v.v.str.s = copy;
         slot->v.v.str.len = (uint32_t)strlen(copy);
     }
@@ -148,7 +148,7 @@ static bool eval(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *
 
 static bool eval_str(jobs_run_t *r, const jobs_node_t *e, devos_value_t *out, char *err, size_t errcap)
 {
-    char buf[JOBS_RUN_STRPOOL];
+    char buf[JOBS_INTERP_MAX];
     size_t o = 0;
     buf[0] = '\0';
     for (const jobs_node_t *part = e->a; part; part = part->next) {
@@ -372,7 +372,20 @@ static bool bind_outputs(jobs_job_t *j, const jobs_node_t *action, const devos_a
     for (int i = 0; i < d->out_count && i < res->out_count; i++) {
         char name[JOBS_VAR_NAME_MAX];
         snprintf(name, sizeof(name), "%s.%s", action->u.str.s2, d->outs[i].name);
-        if (!var_set(&j->run, name, &res->outs[i], err, errcap)) return false;
+        if (!var_set(&j->run, name, &res->outs[i], err, errcap)) {
+            /* Name the offending output so a large body is diagnosable
+             * ("r.body: run ran out of string space") instead of a bare pool error. */
+            if (err && errcap) {
+                char m[128];
+                int n = snprintf(m, sizeof(m), "%s: %s", name, err);
+                if (n < 0) n = 0;
+                size_t len = (size_t)n;
+                if (len >= errcap) len = errcap - 1;   /* errcap varies (64, or 0) */
+                memmove(err, m, len);
+                err[len] = '\0';
+            }
+            return false;
+        }
     }
     return true;
 }
@@ -411,6 +424,27 @@ void jobs_policy_read(const jobs_ast_t *ast, int64_t *timeout_ms, int64_t *coold
     }
 }
 
+/* Reset the live state of a run struct without clearing the whole thing.
+ * `jobs_run_t` embeds the (now 20 KiB) string pool; `jobs_trigger_where_matches`
+ * reuses one scratch run per job per event, so memsetting the struct there was
+ * both a large per-event cost and pointless. Any secret residue is wiped first. */
+static void run_scratch_reset(jobs_run_t *r)
+{
+    wipe_run_secrets(r);
+    r->nvars = 0;
+    r->strpool_used = 0;
+    r->nframes = 0;
+    r->trace_n = 0;
+    r->trace_over = 0;
+    r->call_depth = 0;
+    r->call_value_valid = false;
+    r->ev_valid = false;
+    r->active = false;
+    r->cancelling = false;
+    r->finished = false;
+    r->cur = NULL;
+}
+
 /* Evaluate a trigger's optional `where` against the copied triggering event.
  * `j` is the job; g_jobs.cur_event must hold the event. Returns true when it
  * matches (or there is no `where`). On evaluation error the trigger is
@@ -420,10 +454,12 @@ bool jobs_trigger_where_matches(jobs_job_t *j)
     const jobs_node_t *where = j->ast && j->ast->root && j->ast->root->a ? j->ast->root->a->b : NULL;
     if (!where) return true;
     jobs_run_t *r = &g_jobs.trig_run;
-    memset(r, 0, sizeof(*r));
+    run_scratch_reset(r);
     char err[64];
     devos_value_t v;
-    if (!eval(r, where, &v, err, sizeof(err))) return false;
+    if (!eval(r, where, &v, err, sizeof(err))) { wipe_run_secrets(r); return false; }
+    /* A `where` may resolve secret("name"); never leave the copy behind. */
+    wipe_run_secrets(r);
     bool b;
     if (!as_bool(&v, &b)) return false;
     return b;
@@ -632,6 +668,17 @@ void jobs_run_tick(jobs_job_t *j, int64_t now_ms)
                 r->nframes--;
                 r->steps++;
                 continue;
+            }
+            /* A mutating action that was cancelled or timed out after it had
+             * been sent: the effect may or may not have landed. Bind whatever
+             * the provider produced (so `outcome_unknown` is readable) and fail
+             * with a message that says so, rather than "action failed". */
+            if (st == DEVOS_ACT_UNKNOWN) {
+                (void)bind_outputs(j, f->action, &res, NULL, 0);
+                devos_action_release(f->op);
+                finish_run(j, false, res.error[0] ? res.error
+                                                  : "sent, but the outcome is unknown", now_ms);
+                return;
             }
             devos_action_release(f->op);
             finish_run(j, false, res.error[0] ? res.error : "action failed", now_ms);

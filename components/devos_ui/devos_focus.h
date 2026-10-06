@@ -33,7 +33,11 @@
 extern "C" {
 #endif
 
-#define DEVOS_FOCUS_MAX 48
+/* Controls one focus ring can hold. The Jobs Builder registers a widget per
+ * parameter row (12 rows x field + dropdown + Literal/Expr toggle) plus its
+ * toolbar, which came to 72 and silently lost the tail - the toolbar buttons
+ * and the Text view - making them unreachable by keyboard (invariant 9). */
+#define DEVOS_FOCUS_MAX 96
 
 typedef struct {
     lv_obj_t *items[DEVOS_FOCUS_MAX];

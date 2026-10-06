@@ -359,6 +359,92 @@ int main(void)
         jobs_build_free(&wb);
     }
 
+    /* event trigger: debounce + include_retained are Builder-editable and
+     * survive serialize -> parse (the scheduler reads them as literals) */
+    {
+        const char *CE = "version 1;\njob \"E\" {\n trigger event \"system.boot\";\n"
+                         " system.log(message: \"x\");\n}\n";
+        jobs_build_t eb;
+        memset(&eb, 0, sizeof(eb));
+        CHECK(jobs_build_load(&eb, CE, strlen(CE)));
+        CHECK(jobs_build_trigger_debounce(jobs_build_trigger(&eb)) == 0);
+        CHECK(!jobs_build_trigger_retained(jobs_build_trigger(&eb)));
+        CHECK(jobs_build_set_trigger_debounce(&eb, 5000));
+        CHECK(jobs_build_set_trigger_retained(&eb, true));
+        CHECK(jobs_build_trigger_debounce(jobs_build_trigger(&eb)) == 5000);
+        CHECK(jobs_build_trigger_retained(jobs_build_trigger(&eb)));
+        char eo[512];
+        CHECK(jobs_build_source(&eb, eo, sizeof(eo)) > 0);
+        CHECK(strstr(eo, "debounce") != NULL && strstr(eo, "include_retained") != NULL);
+        CHECK(jobs_build_revalidate(&eb));
+        /* clearing removes the argument again, keeping the source clean */
+        CHECK(jobs_build_set_trigger_debounce(&eb, 0));
+        CHECK(jobs_build_set_trigger_retained(&eb, false));
+        CHECK(jobs_build_source(&eb, eo, sizeof(eo)) > 0);
+        CHECK(strstr(eo, "debounce") == NULL && strstr(eo, "include_retained") == NULL);
+        /* and the setter refuses on a non-event trigger */
+        CHECK(jobs_build_set_trigger_kind(&eb, JTRIG_MANUAL));
+        CHECK(!jobs_build_set_trigger_debounce(&eb, 1000));
+        jobs_build_free(&eb);
+    }
+
+    /* a `run` step's callee and output are settable from the Builder (the run
+     * inspector), and the output survives serialize -> parse */
+    {
+        const char *CR = "version 1;\njob \"R\" {\n trigger manual;\n"
+                         " run \"other\" as out;\n}\n";
+        jobs_build_t rb;
+        memset(&rb, 0, sizeof(rb));
+        CHECK(jobs_build_load(&rb, CR, strlen(CR)));
+        jobs_build_row_t rr[JOBS_BUILD_ROWS];
+        int rn = jobs_build_rows(&rb, rr, JOBS_BUILD_ROWS);
+        CHECK(rn == 1 && rr[0].node->kind == JN_RUN);
+        const jobs_node_t *run = rr[0].node;
+        CHECK(strcmp(jobs_build_output(run), "out") == 0);
+        CHECK(jobs_build_set_run(&rb, run, "second job"));
+        CHECK(jobs_build_set_output(&rb, run, "r2"));
+        char ro[512];
+        CHECK(jobs_build_source(&rb, ro, sizeof(ro)) > 0);
+        CHECK(strstr(ro, "run \"second job\" as r2") != NULL);
+        CHECK(jobs_build_revalidate(&rb));
+        jobs_build_free(&rb);
+    }
+
+    /* the form re-commits every field on each defocus; the arena and string
+     * pool must not fill up, or the setter starts failing and the value
+     * silently stops changing after a handful of edits */
+    {
+        static char big[4096];
+        snprintf(big, sizeof(big),
+                 "version 1;\njob \"S\" {\n trigger manual;\n"
+                 " network.ping(host: \"nas.local\", timeout: 3s) as r;\n"
+                 "}\n");
+        jobs_build_t sb;
+        memset(&sb, 0, sizeof(sb));
+        CHECK(jobs_build_load(&sb, big, strlen(big)));
+        jobs_build_row_t sr[JOBS_BUILD_ROWS];
+        CHECK(jobs_build_rows(&sb, sr, JOBS_BUILD_ROWS) == 1);
+        const jobs_node_t *act = sr[0].node;
+        bool okall = true;
+        for (int i = 0; i < 400; i++) {
+            char host[64];
+            snprintf(host, sizeof(host), "host-%d.local", i);
+            /* what app_jobs form_commit does per defocus: every parameter */
+            if (!jobs_build_set_arg_str(&sb, act, "host", host)) okall = false;
+            if (!jobs_build_set_arg_duration(&sb, act, "timeout", 1000 + i)) okall = false;
+            if (!jobs_build_set_output(&sb, act, "r")) okall = false;
+            const char *cur = jobs_build_arg_text(act, "host");
+            if (!cur || strcmp(cur, host) != 0) { okall = false; break; }
+        }
+        CHECK(okall);                             /* 400 commits of 2 fields still land */
+        CHECK(jobs_build_revalidate(&sb));
+        char so[1024];
+        CHECK(jobs_build_source(&sb, so, sizeof(so)) > 0);
+        CHECK(strstr(so, "host-399.local") != NULL);
+        CHECK(strstr(so, "1399ms") != NULL);
+        jobs_build_free(&sb);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

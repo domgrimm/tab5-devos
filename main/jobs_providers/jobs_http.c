@@ -32,18 +32,11 @@ static const char *arg_str(const devos_action_args_t *args, int i)
     const devos_value_t *v = &args->args[i];
     return v->type == DEVOS_VAL_STR && v->v.str.s ? v->v.str.s : NULL;
 }
-static int64_t arg_ms(const devos_action_args_t *args, int i, int64_t def)
-{
-    if (!args || i >= args->arg_count) return def;
-    const devos_value_t *v = &args->args[i];
-    return v->type == DEVOS_VAL_DURATION ? v->v.ms : def;
-}
-static int64_t arg_int(const devos_action_args_t *args, int i, int64_t def)
-{
-    if (!args || i >= args->arg_count) return def;
-    const devos_value_t *v = &args->args[i];
-    return v->type == DEVOS_VAL_INT ? v->v.i : def;
-}
+/* "Authorization: Bearer " (22) + token + CRLF (2) + NUL. A token longer than
+ * the room here would be silently truncated into a wrong header (a 401 that
+ * looks like bad credentials), so it is refused instead. */
+#define JOBS_HTTP_AUTH_CAP 300
+#define JOBS_HTTP_TOKEN_MAX (JOBS_HTTP_AUTH_CAP - 25)
 
 static devos_err_t http_start(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op)
 {
@@ -52,10 +45,14 @@ static devos_err_t http_start(const devos_action_args_t *args, const devos_actio
     if (!url || !url[0]) return DEVOS_ERR_INVALID_ARG;
     if (s_active >= JOBS_HTTP_MAX_ACTIVE) return DEVOS_ERR_INVALID_STATE;
 
-    char auth[300];
+    char auth[JOBS_HTTP_AUTH_CAP];
     auth[0] = '\0';
     const char *tok = arg_str(args, 4);          /* bearer_token (credential) */
-    if (tok && tok[0]) snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n", tok);
+    if (tok && tok[0]) {
+        if (strlen(tok) > JOBS_HTTP_TOKEN_MAX) return DEVOS_ERR_INVALID_ARG;
+        int n = snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n", tok);
+        if (n < 0 || n >= (int)sizeof(auth)) return DEVOS_ERR_INVALID_ARG;
+    }
 
     devos_http_req_t req;
     memset(&req, 0, sizeof(req));
@@ -64,8 +61,9 @@ static devos_err_t http_start(const devos_action_args_t *args, const devos_actio
     req.headers = auth[0] ? auth : NULL;
     req.body = arg_str(args, 5);
     req.body_len = req.body ? strlen(req.body) : 0;
-    req.timeout_ms = (int)arg_ms(args, 2, 10000);
-    req.max_body = (size_t)arg_int(args, 3, 16384);
+    req.timeout_ms = (int)jobs_arg_ms(args, 2, 10000);
+    req.max_body = (size_t)jobs_arg_int(args, 3, 16384);
+    req.max_redirects = 5;                       /* devos_http returns 3xx with 0 */
 
     int job = devos_http_submit(&req);
     memset(auth, 0, sizeof(auth));               /* the secret copy is devos_http's now */
@@ -102,7 +100,17 @@ static devos_err_t http_poll(void *op, devos_action_state_t *state, devos_action
     if (o->done) { http_fill(o, result); *state = DEVOS_ACT_DONE; return DEVOS_OK; }
     int rc = devos_http_poll(o->job, &o->resp);
     if (rc == 0) { *state = DEVOS_ACT_PENDING; return DEVOS_OK; }
-    if (rc < 0) { *state = DEVOS_ACT_FAILED; return DEVOS_OK; }
+    if (rc < 0) {
+        /* The job slot is gone (e.g. the worker reclaimed a cancelled/aborted
+         * request). Bind the declared outputs anyway so the job reads a real
+         * error instead of the runtime's bare "action failed". */
+        if (!o->resp.error[0])
+            snprintf(o->resp.error, sizeof(o->resp.error), "HTTP request did not complete");
+        http_fill(o, result);
+        snprintf(result->error, sizeof(result->error), "%s", o->resp.error);
+        *state = DEVOS_ACT_FAILED;
+        return DEVOS_OK;
+    }
     o->done = true;
     o->have_resp = true;
     http_fill(o, result);
@@ -113,6 +121,9 @@ static devos_err_t http_poll(void *op, devos_action_state_t *state, devos_action
 static devos_err_t http_cancel(void *op)
 {
     http_op_t *o = op;
+    /* HTTP is retry_safe = true: a request already sent is harmless to repeat,
+     * so the provider never claims a mutating CANCELLED state for it. The
+     * worker abandons the job; a subsequent poll reports it FAILED. */
     devos_http_cancel(o->job);
     return DEVOS_OK;
 }
@@ -130,7 +141,7 @@ static const devos_action_param_t HTTP_P[] = {
     { .name = "url", .type = DEVOS_VAL_STR, .required = true, .expression = true, .max_len = 1024 },
     { .name = "timeout", .type = DEVOS_VAL_DURATION, .expression = true, .min = 200, .max = 120000 },
     { .name = "max_body", .type = DEVOS_VAL_INT, .expression = true, .min = 1, .max = 65536 },
-    { .name = "bearer_token", .type = DEVOS_VAL_STR, .credential = true },
+    { .name = "bearer_token", .type = DEVOS_VAL_STR, .credential = true, .max_len = 256 },
     { .name = "body", .type = DEVOS_VAL_STR, .expression = true, .max_len = 8192 },
 };
 static const devos_action_out_t HTTP_O[] = {

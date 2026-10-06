@@ -4,6 +4,7 @@
  *
  *   gcc -O2 -Icomponents/devos_netdiag -Icomponents/devos_net -Icomponents/devos_config \
  *       -Imain/include tools/wol_test.c components/devos_netdiag/nd_wol.c \
+ *       components/devos_netdiag/nd_common.c \
  *       -o /tmp/wol_test && /tmp/wol_test
  *
  * The two devos_net functions the send path uses are stubbed below: the
@@ -22,6 +23,13 @@ int devos_net_resolve(const char *hostname, char *out_ip, size_t out_len)
 }
 
 static int fails;
+
+/* nd_common.c owns devos_netdiag_init(), which references the sibling engine
+ * initialisers; this test only links nd_wol.c, so stub them. */
+void nd_ping_init(void) {}
+void nd_dns_init(void) {}
+void nd_scan_init(void) {}
+void nd_probe_init(void) {}
 
 static void check_parse(const char *in, int want_rc, const uint8_t want[6])
 {

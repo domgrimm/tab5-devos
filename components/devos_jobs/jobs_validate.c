@@ -2,6 +2,7 @@
  * (PLAN.md section 6.2/6.3). No side effects; a candidate that fails here is
  * never installed as the active revision. No LVGL/network. */
 #include "jobs_model.h"
+#include "jobs_internal.h"   /* JOBS_MAX_STEPS, JOBS_MAX_ARGS (runtime limits) */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,6 +124,29 @@ static const char *lit_str(const jobs_node_t *n)
     return n->a->u.str.s;
 }
 
+/* True when `n` is a literal of exactly `want` (a string literal must also have
+ * no ${...}). The runtime's trigger/policy readers accept only literals here. */
+static bool literal_of(const jobs_node_t *n, ty_t want)
+{
+    if (!n) return false;
+    if (want == TY_STR) return lit_str(n) != NULL;
+    if (n->kind != JN_EXPR_LIT) return false;
+    return val_to_ty(n->u.lit.type) == want;
+}
+
+/* The magnitude of a numeric literal however it was written, for bounds: a
+ * duration literal is its milliseconds, an int/number literal its value. */
+static bool lit_magnitude(const jobs_node_t *n, double *out)
+{
+    if (!n || n->kind != JN_EXPR_LIT) return false;
+    switch (n->u.lit.type) {
+    case DEVOS_VAL_DURATION: *out = (double)n->u.lit.v.ms; return true;
+    case DEVOS_VAL_INT:      *out = (double)n->u.lit.v.i;  return true;
+    case DEVOS_VAL_NUM:      *out = n->u.lit.v.n;          return true;
+    default:                 return false;
+    }
+}
+
 static ty_t expr_type(V *v, const jobs_node_t *n, bool *tainted, bool as_value);
 
 /* Resolve a dotted reference path. Returns false and reports on failure. */
@@ -162,12 +186,11 @@ static bool resolve_ref(V *v, const jobs_node_t *n, ty_t *type, bool *is_obj)
         if (!field) { *is_obj = true; *type = TY_OBJ; return true; }
         static const struct { const char *n; ty_t t; } ef[] = {
             { "topic", TY_STR }, { "source", TY_STR }, { "payload", TY_STR },
-            { "retain", TY_BOOL }, { "qos", TY_INT }, { "truncated", TY_BOOL },
-            { "seq", TY_INT },
+            { "retain", TY_BOOL }, { "truncated", TY_BOOL }, { "seq", TY_INT },
         };
         for (size_t i = 0; i < sizeof(ef) / sizeof(ef[0]); i++)
             if (strcmp(ef[i].n, field) == 0) { *is_obj = false; *type = ef[i].t; return true; }
-        verr(v, n, "unknown event field '%s'", field);
+        verr(v, n, "unknown event field '%s' (available: topic, source, payload, seq, truncated, retain)", field);
         return false;
     }
     if (strcmp(base, "system") == 0) {
@@ -323,15 +346,19 @@ static void check_call_args(V *v, const jobs_node_t *action, const devos_action_
         }
         if (p->max_len && ls && strlen(ls) > p->max_len)
             verr(v, a, "'%s' is longer than %u bytes", p->name, (unsigned)p->max_len);
-        if (p->type == DEVOS_VAL_INT && a->a->kind == JN_EXPR_LIT && a->a->u.lit.type == DEVOS_VAL_INT) {
-            double x = (double)a->a->u.lit.v.i;
-            if (p->max > p->min && (x < p->min || x > p->max))
-                verr(v, a, "'%s' must be between %g and %g", p->name, p->min, p->max);
-        }
-        if (p->type == DEVOS_VAL_DURATION && a->a->kind == JN_EXPR_LIT && a->a->u.lit.type == DEVOS_VAL_DURATION) {
-            double x = (double)a->a->u.lit.v.ms;
-            if (p->max > p->min && (x < p->min || x > p->max))
-                verr(v, a, "'%s' must be between %g and %g ms", p->name, p->min, p->max);
+        /* Apply declared bounds to any numeric literal the parameter accepts:
+         * a DURATION parameter may be given a bare INT/NUM (the runtime reads
+         * it as milliseconds, matching the app's parse_dur), and an INT/NUM
+         * parameter may be given a duration; the magnitude is the same number
+         * either way, so the bounds must not depend on how it was written. */
+        if (p->max > p->min) {
+            double x;
+            if (lit_magnitude(a->a, &x) && (x < p->min || x > p->max)) {
+                if (p->type == DEVOS_VAL_DURATION)
+                    verr(v, a, "'%s' must be between %g and %g ms", p->name, p->min, p->max);
+                else if (p->type == DEVOS_VAL_INT || p->type == DEVOS_VAL_NUM)
+                    verr(v, a, "'%s' must be between %g and %g", p->name, p->min, p->max);
+            }
         }
     }
     for (int i = 0; i < d->param_count && i < 32; i++) {
@@ -349,6 +376,14 @@ static void check_action(V *v, jobs_node_t *n)
             verr(v, n, "unknown action 'call' (reusable jobs are called with run \"name\"(...))");
         else
             verr(v, n, "unknown action '%s'", n->u.str.s);
+        return;
+    }
+    /* The runtime stack-allocates JOBS_MAX_ARGS values and rejects a wider
+     * descriptor as "unknown action" at run time; refuse it up front instead so
+     * a definition never validates and then fails every run. */
+    if (d->param_count > JOBS_MAX_ARGS) {
+        verr(v, n, "%s declares %d arguments, more than the %d the runtime supports",
+             d->id, d->param_count, JOBS_MAX_ARGS);
         return;
     }
     check_call_args(v, n, d, true);
@@ -380,11 +415,18 @@ static void check_stmt(V *v, jobs_node_t *n)
         ty_t t = expr_type(v, n->a, &tainted, true);
         if (t == TY_OBJ) verr(v, n, "'set' cannot store a whole output");
         if (tainted) verr(v, n, "'set' cannot store a secret");
-        if (is_numeric(t) || t == TY_BOOL || t == TY_STR || t == TY_ANY) {
+        if (is_numeric(t) || t == TY_BOOL || t == TY_STR || t == TY_NULL || t == TY_ANY) {
             sym_t *ex = sym_find(v, n->u.str.s);
             if (ex) {
                 if (ex->readonly) verr(v, n, "'%s' is a read-only loop variable", n->u.str.s);
-                else if (!compatible(t, ex->type)) verr(v, n, "'%s' changes type (%s -> %s)", n->u.str.s, ty_name(ex->type), ty_name(t));
+                /* null is the untyped seed: it adopts the first concrete type
+                 * assigned (and a concrete variable may be reset to null), like
+                 * the runtime's var_set. A change between real types stays an
+                 * error. */
+                else if (t != TY_NULL && ex->type != TY_NULL && !compatible(t, ex->type))
+                    verr(v, n, "'%s' changes type (%s -> %s)", n->u.str.s, ty_name(ex->type), ty_name(t));
+                else if (t != TY_NULL && ex->type == TY_NULL)
+                    ex->type = t;
             } else if (!sym_add(v, n->u.str.s, t, false, NULL)) {
                 verr(v, n, "too many variables (max %d)", JOBS_MAX_VARS);
             }
@@ -492,11 +534,20 @@ static void check_trigger(V *v, jobs_node_t *t)
             static const struct { const char *n; ty_t t; } ea[] = {
                 { "topic", TY_STR }, { "include_retained", TY_BOOL }, { "debounce", TY_DUR },
             };
-            bool ok = false;
-            for (size_t i = 0; i < sizeof(ea) / sizeof(ea[0]); i++) if (strcmp(ea[i].n, a->u.str.s) == 0) ok = true;
-            if (!ok) { verr(v, a, "unknown event argument '%s'", a->u.str.s); continue; }
+            ty_t want = TY_ANY;
+            bool known = false;
+            for (size_t i = 0; i < sizeof(ea) / sizeof(ea[0]); i++)
+                if (strcmp(ea[i].n, a->u.str.s) == 0) { known = true; want = ea[i].t; }
+            if (!known) { verr(v, a, "unknown event argument '%s'", a->u.str.s); continue; }
             bool tainted = false;
-            expr_type(v, a->a, &tainted, true);
+            ty_t got = expr_type(v, a->a, &tainted, true);
+            if (!compatible(got, want))
+                verr(v, a, "'%s' wants %s, got %s", a->u.str.s, ty_name(want), ty_name(got));
+            /* jobs_schedule.c read_trigger reads these only from a literal node
+             * of the declared type; a variable/expression would silently keep
+             * the default, so require a literal here too. */
+            else if (!literal_of(a->a, want))
+                verr(v, a, "'%s' must be a literal %s", a->u.str.s, ty_name(want));
         }
         if (t->b) {
             bool tainted = false;
@@ -515,12 +566,14 @@ static void check_policy(V *v, jobs_node_t *pol)
     if (!pol) return;
     for (jobs_node_t *a = pol->a; a; a = a->next) {
         bool tainted = false;
-        if (strcmp(a->u.str.s, "timeout") == 0) {
+        if (strcmp(a->u.str.s, "timeout") == 0 || strcmp(a->u.str.s, "cooldown") == 0) {
             ty_t t = expr_type(v, a->a, &tainted, true);
-            if (t != TY_DUR && t != TY_ANY) verr(v, a, "timeout wants a duration");
-        } else if (strcmp(a->u.str.s, "cooldown") == 0) {
-            ty_t t = expr_type(v, a->a, &tainted, true);
-            if (t != TY_DUR && t != TY_ANY) verr(v, a, "cooldown wants a duration");
+            /* The runtime's policy_dur_arg reads only a literal duration, so a
+             * bare integer or an expression would silently keep the default. */
+            if (t != TY_DUR)
+                verr(v, a, "%s wants a duration, got %s", a->u.str.s, ty_name(t));
+            else if (!literal_of(a->a, TY_DUR))
+                verr(v, a, "%s must be a literal duration", a->u.str.s);
         } else if (strcmp(a->u.str.s, "overlap") == 0) {
             const char *ls = lit_str(a->a);
             if (!ls || (strcmp(ls, "skip") != 0 && strcmp(ls, "queue_one") != 0))
@@ -529,6 +582,74 @@ static void check_policy(V *v, jobs_node_t *pol)
             verr(v, a, "unknown policy '%s'", a->u.str.s);
         }
     }
+}
+
+/* ---- worst-case step budget -------------------------------------------- *
+ * The interpreter (jobs_runtime.c) charges one step per executed statement and
+ * one more when an action completes, against JOBS_MAX_STEPS; when the budget
+ * runs out it fails the run *after* any partial side effects. A definition that
+ * cannot fit must be refused here instead. This walk mirrors the interpreter's
+ * accounting for every construct it can see:
+ *   ACTION = 2 (statement + completion); SET/WAIT/RETURN = 1;
+ *   IF = 1 + max(then, else); REPEAT = 1 + count x body;
+ *   BLOCK = 1 (a bare block is itself an executed statement) + body.
+ * A `run` executes a separate definition this validation cannot see, so charge
+ * one conservative call chain (JOBS_MAX_CALL_DEPTH frames) - enough to refuse a
+ * job whose call structure alone cannot fit, while one ordinary call stays
+ * affordable. The total is saturating, so it cannot overflow, and the parser
+ * already caps nesting, so the recursion is bounded. */
+#define JOBS_RUN_STEP_ALLOWANCE (JOBS_MAX_STEPS / (JOBS_MAX_CALL_DEPTH + 1))
+#define JOBS_RUN_STEPS          (1 + JOBS_MAX_CALL_DEPTH * JOBS_RUN_STEP_ALLOWANCE)
+#define JOBS_STEP_CAP           (JOBS_MAX_STEPS + 1)   /* any total over budget */
+
+static int64_t steps_add(int64_t a, int64_t b)
+{
+    if (a >= JOBS_STEP_CAP || b >= JOBS_STEP_CAP) return JOBS_STEP_CAP;
+    if (a > JOBS_STEP_CAP - b) return JOBS_STEP_CAP;
+    return a + b;
+}
+
+static int64_t steps_mul(int64_t a, int64_t b)
+{
+    if (a <= 0 || b <= 0) return 0;
+    if (a >= JOBS_STEP_CAP || b >= JOBS_STEP_CAP) return JOBS_STEP_CAP;
+    if (a > JOBS_STEP_CAP / b) return JOBS_STEP_CAP;
+    int64_t r = a * b;
+    return r > JOBS_STEP_CAP ? JOBS_STEP_CAP : r;
+}
+
+static int64_t body_steps(const jobs_node_t *b);
+
+static int64_t stmt_steps(const jobs_node_t *n)
+{
+    if (!n) return 0;
+    switch (n->kind) {
+    case JN_ACTION: return 2;
+    case JN_SET: case JN_WAIT: case JN_RETURN: return 1;
+    case JN_IF: {
+        int64_t a = body_steps(n->b), b = body_steps(n->c);
+        return steps_add(1, a > b ? a : b);
+    }
+    case JN_REPEAT: {
+        int64_t c = n->count;
+        if (c < 0) c = 0;
+        if (c > JOBS_MAX_REPEAT) c = JOBS_MAX_REPEAT;
+        return steps_add(1, steps_mul(c, body_steps(n->a)));
+    }
+    case JN_BLOCK: return steps_add(1, body_steps(n));
+    case JN_RUN:   return JOBS_RUN_STEPS;
+    default:       return 1;
+    }
+}
+
+static int64_t body_steps(const jobs_node_t *b)
+{
+    int64_t total = 0;
+    for (const jobs_node_t *s = b ? b->a : NULL; s; s = s->next) {
+        total = steps_add(total, stmt_steps(s));
+        if (total >= JOBS_STEP_CAP) break;   /* already fatal: stop early */
+    }
+    return total;
 }
 
 bool jobs_validate(jobs_ast_t *ast)
@@ -560,6 +681,13 @@ bool jobs_validate(jobs_ast_t *ast)
     }
     check_block(&v, job->c);
     pop_scope(&v);
+
+    /* Fail a body whose worst case cannot fit before it is ever installed: the
+     * runtime would otherwise run part of it and only then die "step budget
+     * exceeded", after partial side effects. */
+    if (body_steps(job->c) > JOBS_MAX_STEPS)
+        verr(&v, job->c ? job->c : job,
+             "worst case exceeds the %d-step run budget: reduce repeat counts or nesting", JOBS_MAX_STEPS);
 
     return ast->diag_count == 0;
 }

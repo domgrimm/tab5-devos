@@ -37,6 +37,13 @@ int main(void)
     jobs_system_register();                      /* only the system provider is linked here */
     CHECK(devos_actions_find("system.log") != NULL);
     CHECK(devos_actions_find("system.notify") != NULL);
+    /* system.log mutates the local log ring, so it is declared MUTATE like
+     * system.notify (a dry run is still allowed; only the class changes). Both
+     * are declared local_only: a dry run must not warn about a local sink. */
+    CHECK(devos_actions_find("system.log")->effect == DEVOS_EFFECT_MUTATE);
+    CHECK(devos_actions_find("system.notify")->effect == DEVOS_EFFECT_MUTATE);
+    CHECK(devos_actions_find("system.log")->local_only);
+    CHECK(devos_actions_find("system.notify")->local_only);
 
     /* system.log records a line and reports recorded=true */
     devos_value_t a[2] = { vs("hello from a job") };
@@ -65,6 +72,18 @@ int main(void)
     CHECK(jobs_system_take_notice(msg, sizeof(msg), &level));
     CHECK(strcmp(msg, "NAS offline") == 0 && level == 1);
     CHECK(!jobs_system_take_notice(msg, sizeof(msg), &level));   /* queue drained */
+
+    /* the success level is its own value (the UI maps it to the green tick) */
+    devos_value_t sargs[2] = { vs("Backup done"), vs("success") };
+    CHECK(run_bool("system.notify", sargs, 2));
+    CHECK(jobs_system_take_notice(msg, sizeof(msg), &level));
+    CHECK(strcmp(msg, "Backup done") == 0 && level == 3);
+    CHECK(!jobs_system_take_notice(msg, sizeof(msg), &level));
+
+    /* an unknown level falls back to info rather than failing the run */
+    devos_value_t uargs[2] = { vs("odd"), vs("banana") };
+    CHECK(run_bool("system.notify", uargs, 2));
+    CHECK(jobs_system_take_notice(msg, sizeof(msg), &level) && level == 0);
 
     /* availability is reported for a real provider */
     char why[64];

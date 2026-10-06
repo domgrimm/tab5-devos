@@ -312,8 +312,62 @@ int main(void)
         memset(&res, 0, sizeof(res));
         for (int i = 0; i < 80 && st == DEVOS_ACT_PENDING; i++) { usleep(25 * 1000); devos_action_poll(h, &st, &res); }
         CHECK(st == DEVOS_ACT_DONE);
-        CHECK(res.out_count == 2 && res.outs[0].v.b == true && res.outs[1].v.b == true);
+        CHECK(res.out_count == 3 && res.outs[0].v.b == true && res.outs[1].v.b == true);
+        CHECK(res.outs[2].v.str.len == 0);                 /* acknowledged: no diagnostic */
         devos_action_release(h);
+    }
+
+    /* QoS 1 through the runtime with the PUBACK withheld: DONE with sent=true,
+     * ack=false and the reason bound into the declared `error` output, so a
+     * history/trace is never silent about the missing acknowledgement. */
+    {
+        s_puback = 0;
+        devos_value_t a[5];
+        a[0].type = DEVOS_VAL_STR; a[0].v.str.s = "home/light"; a[0].v.str.len = 10;
+        a[1].type = DEVOS_VAL_STR; a[1].v.str.s = "withheld"; a[1].v.str.len = 8;
+        a[2].type = DEVOS_VAL_BOOL; a[2].v.b = false;
+        a[3].type = DEVOS_VAL_INT; a[3].v.i = 1;
+        a[4].type = DEVOS_VAL_DURATION; a[4].v.ms = 500;
+        devos_action_args_t args = { .args = a, .arg_count = 5 };
+        devos_action_handle_t h;
+        CHECK(devos_action_start("mqtt.publish", &args, NULL, &h) == DEVOS_OK);
+        devos_action_state_t st = DEVOS_ACT_PENDING;
+        devos_action_result_t res;
+        memset(&res, 0, sizeof(res));
+        for (int i = 0; i < 80 && st == DEVOS_ACT_PENDING; i++) { usleep(25 * 1000); devos_action_poll(h, &st, &res); }
+        CHECK(st == DEVOS_ACT_DONE);
+        CHECK(res.out_count == 3 && res.outs[0].v.b == true && res.outs[1].v.b == false);
+        CHECK(res.outs[2].v.str.len > 0);
+        devos_action_release(h);
+        s_puback = 1;
+    }
+
+    /* cancel a publish already on the wire: UNKNOWN (the broker may receive
+     * it), never a clean CANCELLED */
+    {
+        s_puback = 0;
+        devos_value_t a[5];
+        a[0].type = DEVOS_VAL_STR; a[0].v.str.s = "home/light"; a[0].v.str.len = 10;
+        a[1].type = DEVOS_VAL_STR; a[1].v.str.s = "cancel-me"; a[1].v.str.len = 9;
+        a[2].type = DEVOS_VAL_BOOL; a[2].v.b = false;
+        a[3].type = DEVOS_VAL_INT; a[3].v.i = 1;
+        a[4].type = DEVOS_VAL_DURATION; a[4].v.ms = 5000;
+        devos_action_args_t args = { .args = a, .arg_count = 5 };
+        devos_action_handle_t h;
+        int before = s_got_publish;
+        CHECK(devos_action_start("mqtt.publish", &args, NULL, &h) == DEVOS_OK);
+        for (int i = 0; i < 120 && s_got_publish == before; i++) usleep(25 * 1000);
+        CHECK(s_got_publish > before);                     /* it reached the broker */
+        CHECK(devos_action_cancel(h) == DEVOS_OK);
+        devos_action_state_t st = DEVOS_ACT_PENDING;
+        devos_action_result_t res;
+        memset(&res, 0, sizeof(res));
+        CHECK(devos_action_poll(h, &st, &res) == DEVOS_OK);
+        CHECK(st == DEVOS_ACT_UNKNOWN);
+        CHECK(res.out_count == 3 && res.outs[0].v.b == true && res.outs[1].v.b == false);
+        CHECK(res.outs[2].v.str.len > 0);
+        devos_action_release(h);
+        s_puback = 1;
     }
 
     /* drop the session: an unfinished QoS 1 publish resolves as LOST */

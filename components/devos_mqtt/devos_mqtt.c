@@ -502,6 +502,32 @@ void devos_mqtt_ticket_release(uint32_t id)
     UNLOCK();
 }
 
+/* Stop a publish that has been accepted locally but is not yet on the wire.
+ * Returns true only when a queued copy was actually removed; once the worker
+ * has dequeued it (state SENT or later) the broker may already have it, so a
+ * caller must treat a false result as "outcome unknown", never "cancelled". */
+bool devos_mqtt_ticket_cancel(uint32_t id)
+{
+    if (!id) return false;
+    bool stopped = false;
+    LOCK();
+    ticket_t *t = ticket_find_locked(id);
+    if (t && t->state == DEVOS_MQTT_TICKET_QUEUED) {
+        for (int i = 0; i < s_pub_n; i++) {
+            if (s_pubq[i].ticket == id) {
+                free(s_pubq[i].payload);
+                memmove(&s_pubq[i], &s_pubq[i + 1], (size_t)(s_pub_n - i - 1) * sizeof(s_pubq[0]));
+                s_pub_n--;
+                stopped = true;
+                break;
+            }
+        }
+        if (stopped) t->state = DEVOS_MQTT_TICKET_FAILED;   /* never reaches the broker */
+    }
+    UNLOCK();
+    return stopped;
+}
+
 static void ticket_mark_sent(uint32_t id, unsigned pid, bool sent)
 {
     LOCK();
