@@ -2993,13 +2993,26 @@ static void jobs_show(void)
 {
     if (!s_ctx.screen) return;
     lv_obj_remove_flag(s_ctx.screen, LV_OBJ_FLAG_HIDDEN);
-    /* An intent may ask for a new job (the command palette does). */
+    /* An intent may ask for a new job, a reload, or a specific job to select
+     * (the command palette, and the REST app's "create a job from this
+     * request"). */
     char action[24] = "", arg[64] = "";
-    if (devos_core_take_intent("jobs", action, sizeof(action), arg, sizeof(arg))) {
-        if (strcmp(action, "new") == 0) act_new();
-        else if (strcmp(action, "reload") == 0) act_reload();
-    }
+    bool intent = devos_core_take_intent("jobs", action, sizeof(action), arg, sizeof(arg));
+    if (intent && strcmp(action, "new") == 0) act_new();
+    else if (intent && strcmp(action, "reload") == 0) act_reload();
+
     list_refresh();
+    /* `select` runs after the list is rebuilt, so a job created a moment ago is
+     * already in it. */
+    if (intent && strcmp(action, "select") == 0 && arg[0]) {
+        for (int i = 0; i < s_ctx.n; i++) {
+            if (strcmp(s_ctx.ids[i], arg) == 0) {
+                s_ctx.sel = i;
+                list_highlight();
+                break;
+            }
+        }
+    }
     load_selected();
     if (s_ctx.tab == TAB_BUILDER) set_mode(MODE_BUILDER);
     else if (s_ctx.tab == TAB_OVERVIEW) refresh_overview();

@@ -19,12 +19,15 @@
 #include "devos_config.h"
 #include "devos_icons.h"
 #include "devos_core.h"
+#include "devos_cmdpal.h"
 #include "devos_focus.h"
 #include "devos_theme.h"
 #include "devos_widgets.h"
 #include "devos_codeview.h"
 #include "devos_http.h"
 #include "devos_json.h"
+#include "devos_jobs.h"
+#include "devos_toast.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -377,6 +380,121 @@ static void refresh_side(void)
     devos_vlist_set_count(&s_side, s_nreq);
     if (s_nreq) lv_obj_add_flag(lbl_side_empty, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(lbl_side_empty, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ---- create a job from this request (Jobs) ------------------------------ */
+#define JOB_SRC_MAX (16 * 1024)
+
+/* Append `in` to dst[o..cap) escaped for a Jobs string literal. Returns the new
+ * offset; the buffer is kept NUL-terminated. */
+static size_t append_escaped(char *dst, size_t cap, size_t o, const char *in)
+{
+    for (const char *p = in; *p && o + 2 < cap; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') { dst[o++] = '\\'; dst[o++] = (char)c; }
+        else if (c == '\n') { dst[o++] = '\\'; dst[o++] = 'n'; }
+        else if (c == '\t') { dst[o++] = '\\'; dst[o++] = 't'; }
+        else if (c == '\r' || c < 32) continue;              /* dropped */
+        else dst[o++] = (char)c;
+    }
+    if (o < cap) dst[o] = '\0';
+    return o;
+}
+
+/* The REST app is the nicer editor for an HTTP request, so this is the bridge
+ * from "I got it working here" to "run it on a schedule": build a Jobs
+ * definition from the request on screen and create the job. It composes exactly
+ * what the app would send - variables expanded, the Content-Type the app would
+ * add - so the job does not quietly differ. */
+static void send_to_jobs(void)
+{
+    if (devos_jobs_state() != DEVOS_JOBS_READY) {
+        flash("Jobs is off - enable it in Settings > Apps");
+        return;
+    }
+
+    /* PSRAM scratch: a request body plus its escapes is a few KiB. */
+    static EXT_RAM_BSS_ATTR char url[URL_MAX * 2];
+    static EXT_RAM_BSS_ATTR char hdrs[HDR_MAX * 2 + 128];
+    static EXT_RAM_BSS_ATTR char body[BODY_MAX * 2];
+    static EXT_RAM_BSS_ATTR char src[JOB_SRC_MAX];
+    static EXT_RAM_BSS_ATTR char name[64];
+
+    char missing[48] = "";
+    bool had_vars = strstr(lv_textarea_get_text(ta_url), "{{") ||
+                    strstr(lv_textarea_get_text(ta_headers), "{{") ||
+                    strstr(lv_textarea_get_text(ta_body), "{{");
+    expand(lv_textarea_get_text(ta_url), url, sizeof(url), missing, sizeof(missing));
+    char *u = url;
+    while (*u == ' ') u++;
+    if (!*u) { flash("Enter a URL first"); devos_focus_set(&s_f, ta_url); return; }
+
+    const char *m = METHODS[lv_dropdown_get_selected(dd_method)];
+    size_t hl = expand(lv_textarea_get_text(ta_headers), hdrs, sizeof(hdrs) - 128, missing, sizeof(missing));
+    int bt = (int)lv_dropdown_get_selected(dd_btype);
+    size_t bl = 0;
+    bool has_body = strcasecmp(m, "GET") && strcasecmp(m, "HEAD");
+    if (has_body || lv_textarea_get_text(ta_body)[0])
+        bl = expand(lv_textarea_get_text(ta_body), body, sizeof(body), missing, sizeof(missing));
+    if (bl && CTYPES[bt]) {                     /* the app adds it only with a body */
+        bool has_ct = false;
+        for (const char *p = hdrs; *p;) {
+            while (*p == ' ' || *p == '\n' || *p == '\r') p++;
+            if (!strncasecmp(p, "Content-Type:", 13)) has_ct = true;
+            p += strcspn(p, "\n");
+        }
+        if (!has_ct) snprintf(hdrs + hl, sizeof(hdrs) - hl, "%sContent-Type: %s", hl ? "\n" : "", CTYPES[bt]);
+    }
+    if (missing[0]) { flash("A {{VAR}} isn't set - add it under Variables"); return; }
+
+    const char *host = strstr(u, "://");
+    snprintf(name, sizeof(name), "%s %.40s", m, host ? host + 3 : u);
+
+    /* snprintf returns the length it *would* have written, so guard each append
+     * against the buffer being full. */
+    size_t o = 0;
+#define APPEND(...) do { if (o < sizeof(src)) o += (size_t)snprintf(src + o, sizeof(src) - o, __VA_ARGS__); } while (0)
+    APPEND("version 1;\njob \"");
+    o = append_escaped(src, sizeof(src), o, name);
+    APPEND("\" {\n    trigger manual;\n    http.request(method: \"%s\", url: \"", m);
+    o = append_escaped(src, sizeof(src), o, u);
+    if (hdrs[0]) {
+        APPEND("\", headers: \"");
+        o = append_escaped(src, sizeof(src), o, hdrs);
+    }
+    if (bl) {
+        APPEND("\", body: \"");
+        o = append_escaped(src, sizeof(src), o, body);
+    }
+    if (lv_obj_has_state(cb_insecure, LV_STATE_CHECKED)) APPEND("\", insecure: true");
+    APPEND("\") as r;\n}\n");
+#undef APPEND
+    if (o >= sizeof(src)) { flash("That request is too large for a job"); return; }
+
+    char id[DEVOS_JOBS_ID_MAX];
+    for (int k = 1; k < 1000; k++) {
+        snprintf(id, sizeof(id), "rest%d", k);
+        bool taken = false;
+        for (int i = 0; i < devos_jobs_count(); i++) {
+            devos_job_summary_t s;
+            if (devos_jobs_summary_at(i, &s) && strcmp(s.id, id) == 0) { taken = true; break; }
+        }
+        if (!taken) break;
+    }
+    if (devos_jobs_apply(id, src, strlen(src), NULL) != DEVOS_OK) {
+        flash("Jobs refused that request");
+        return;
+    }
+
+    /* Say what the translation changed, if anything. */
+    if (had_vars)
+        devos_toast_show("Job created - REST variables were expanded in (use secret() for credentials)",
+                         DEVOS_TOAST_WARN, 0);
+    else if (!lv_obj_has_state(cb_redir, LV_STATE_CHECKED))
+        devos_toast_show("Job created - it will follow redirects", DEVOS_TOAST_WARN, 0);
+    else
+        devos_toast_show("Job created from this request", DEVOS_TOAST_OK, 0);
+    devos_core_open_with("jobs", "select", id);          /* show it, selected */
 }
 
 static void load_req(int i)
@@ -807,6 +925,7 @@ static bool rest_key(uint32_t key, uint8_t mods)
     if (dialog_key(&s_dlg_del, &s_fdel, key, mods, del_ok, false)) return true;
 
     if ((mods & DEVOS_MOD_FN) && (key == 'l' || key == 'L')) { side_toggle(); return true; }
+    if ((mods & DEVOS_MOD_FN) && (key == 'j' || key == 'J')) { send_to_jobs(); return true; }
     if ((mods & DEVOS_MOD_CTRL) && (key == '\r' || key == '\n')) { if (s_job) cancel_job(); else send_now(); return true; }
     if (mods & DEVOS_MOD_CTRL) {
         if (key == 's' || key == 'S') { save_quick(); return true; }
@@ -870,6 +989,14 @@ static lv_obj_t *dialog_buttons(devos_w_dialog_t *d, const char *ok_text, lv_eve
     if (cancel_out) *cancel_out = bc;
     return bok;
 }
+
+/* Command palette: the same bridge as Sym+J. */
+static void cmd_rest_to_jobs(void *ud) { (void)ud; devos_core_open_with("rest", "tojobs", NULL); }
+static const devos_command_t CMD_TOJOBS = {
+    .title = "REST: Create a job from this request",
+    .keywords = "rest http webhook jobs automation schedule create",
+    .hint = "REST", .icon = LV_SYMBOL_UPLOAD, .run = cmd_rest_to_jobs,
+};
 
 static void rest_init(void)
 {
@@ -994,6 +1121,7 @@ static void rest_init(void)
     s_flash_until = 0;
     show_response();
     layout();
+    devos_cmdpal_add(&CMD_TOJOBS);
     lv_timer_create(tick_cb, 100, NULL);
 }
 
@@ -1001,17 +1129,21 @@ static void rest_show(void)
 {
     char action[24], arg[512];
     if (devos_core_take_intent("rest", action, sizeof(action), arg, sizeof(arg))) {
-        req_t r;
-        memset(&r, 0, sizeof(r));
-        snprintf(r.method, sizeof(r.method), "%s", !strcasecmp(action, "post") ? "POST" : "GET");
-        snprintf(r.url, sizeof(r.url), "%s", arg);
-        r.redirects = true;
-        form_from(&r);
-        s_loaded = -1;
-        s_side_focus = false;
-        s_side.active = false;
-        devos_focus_set(&s_f, ta_url);
-        send_now();
+        if (strcmp(action, "tojobs") == 0) {
+            send_to_jobs();
+        } else {
+            req_t r;
+            memset(&r, 0, sizeof(r));
+            snprintf(r.method, sizeof(r.method), "%s", !strcasecmp(action, "post") ? "POST" : "GET");
+            snprintf(r.url, sizeof(r.url), "%s", arg);
+            r.redirects = true;
+            form_from(&r);
+            s_loaded = -1;
+            s_side_focus = false;
+            s_side.active = false;
+            devos_focus_set(&s_f, ta_url);
+            send_now();
+        }
     } else if (!devos_focus_get(&s_f) && !s_side_focus) {
         devos_focus_set(&s_f, ta_url);
     }
@@ -1048,7 +1180,8 @@ static const char *rest_shortcuts(void)
         "Up / Down\tPick a request\n"
         "Enter\tLoad it\n"
         "D / Del\tDelete it\n"
-        "Esc / Tab\tBack to the request\n";
+        "Esc / Tab\tBack to the request\n"
+        "Sym+J\tCreate a Jobs job from this request\n";
 }
 
 devos_app_descriptor_t *app_rest_get_descriptor(void)

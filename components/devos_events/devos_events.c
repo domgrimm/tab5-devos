@@ -7,6 +7,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
+#include "esp_attr.h"          /* EXT_RAM_BSS_ATTR */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 static SemaphoreHandle_t s_mx;
@@ -19,6 +20,10 @@ static pthread_mutex_t s_mx = PTHREAD_MUTEX_INITIALIZER;
 #define EV_LOCK()   pthread_mutex_lock(&s_mx)
 #define EV_UNLOCK() pthread_mutex_unlock(&s_mx)
 static void *ev_alloc(size_t n) { return malloc(n); }
+#endif
+
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
 #endif
 
 typedef struct {
@@ -219,38 +224,44 @@ devos_err_t devos_events_publish(const devos_event_t *ev, const void *payload, u
     return DEVOS_OK;
 }
 
+/* Drain scratch. These used to be locals: 5120 bytes on the caller's stack, and
+ * the only caller is the Jobs scheduler task (8192 bytes total), so the first
+ * received event overflowed it and rebooted the device. File-scope and in PSRAM
+ * instead - which means devos_events_drain() must not be called concurrently.
+ * It has exactly one caller (the Jobs tick) plus single-threaded host tests. */
+static EXT_RAM_BSS_ATTR queued_t s_batch[DEVOS_EVENTS_QUEUE];
+static EXT_RAM_BSS_ATTR sub_t s_subs_snapshot[DEVOS_EVENTS_SUBS_MAX];
+
 /* Deliver up to max queued events to the subscribers present at the start of
  * the call. Callbacks run outside the lock. */
 int devos_events_drain(int max)
 {
     if (max <= 0) max = DEVOS_EVENTS_QUEUE;
-    queued_t batch[DEVOS_EVENTS_QUEUE];
-    sub_t subs[DEVOS_EVENTS_SUBS_MAX];
     int n = 0;
     EV_LOCK();
     int take = s_q_n < max ? s_q_n : max;
     for (int i = 0; i < take; i++) {
         int idx = (s_q_head + i) % DEVOS_EVENTS_QUEUE;
-        batch[i] = s_q[idx];
+        s_batch[i] = s_q[idx];
         s_q[idx].payload = NULL;
     }
     s_q_head = (s_q_head + take) % DEVOS_EVENTS_QUEUE;
     s_q_n -= take;
     s_stats.queued = s_q_n;
-    memcpy(subs, s_subs, sizeof(subs));
+    memcpy(s_subs_snapshot, s_subs, sizeof(s_subs_snapshot));
     n = take;
     EV_UNLOCK();
 
     for (int i = 0; i < n; i++) {
         for (int s = 0; s < DEVOS_EVENTS_SUBS_MAX; s++) {
-            if (!subs[s].used) continue;
-            if (!topic_match(subs[s].pattern, batch[i].ev.topic)) continue;
-            subs[s].cb(&batch[i].ev, subs[s].user);
+            if (!s_subs_snapshot[s].used) continue;
+            if (!topic_match(s_subs_snapshot[s].pattern, s_batch[i].ev.topic)) continue;
+            s_subs_snapshot[s].cb(&s_batch[i].ev, s_subs_snapshot[s].user);
             EV_LOCK();
             s_stats.delivered++;
             EV_UNLOCK();
         }
-        free(batch[i].payload);
+        free(s_batch[i].payload);
     }
     return n;
 }

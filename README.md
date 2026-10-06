@@ -30,7 +30,7 @@ action with its parameters and outputs, events, credentials, limits and troubles
 | **WireGuard** | Brings up tunnels from standard `wg-quick` config files |
 | **MQTT** | Broker monitor and publisher (MQTT 3.1.1) with JSON pretty-printing |
 | **Network** | Ping, DNS lookup, port scan, Wi-Fi survey, mDNS browser and Wake-on-LAN (magic packets to a sleeping machine, broadcast or routed over the VPN, with a remembered list) |
-| **REST** | REST and webhook client with saved requests and `{{variables}}` |
+| **REST** | REST and webhook client with saved requests and `{{variables}}`; **Sym+J** turns the request on screen into a Jobs job |
 | **Docker** | Docker Engine / Portainer console: containers, logs, start / stop, plus background Jobs `docker.inspect` / `start` / `stop` / `restart` actions |
 | **Coder** | Offline developer toolkit: Base64 / Base64 URL / Hex / URL / Base58 encode & decode, SHA-1/256/384/512 and HMAC hashes, CRC-32, a JWT decoder with optional HS256/384/512 signature verification, random UUID v4, Unix-time conversion both ways, an IPv4 subnet calculator, a cron explainer (with the next runs), a regex tester, and hashing a file off the SD card |
 | **ADS-B** | Radar view of aircraft from a dump1090 / readsb / tar1090 `aircraft.json` feed, over an OpenStreetMap underlay cached on the SD card |

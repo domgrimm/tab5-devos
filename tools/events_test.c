@@ -131,6 +131,42 @@ int main(void)
         devos_events_unsubscribe(bsub);
     }
 
+    /* A full batch delivered to a full subscriber table: this is exactly the
+     * path the Jobs scheduler runs on every tick, and the drain's scratch used
+     * to live on that task's 8 KB stack, so the first received event rebooted
+     * the device. */
+    {
+        int subs[DEVOS_EVENTS_SUBS_MAX];
+        int nsubs = 0;
+        while (nsubs < DEVOS_EVENTS_SUBS_MAX) {
+            int s = devos_events_subscribe("#", cb, NULL);
+            if (s <= 0) break;
+            subs[nsubs++] = s;
+        }
+        CHECK(nsubs > 0);
+
+        s_hits = 0;
+        int pub = 0;
+        for (int i = 0; i < DEVOS_EVENTS_QUEUE; i++) {
+            devos_event_t e;
+            memset(&e, 0, sizeof(e));
+            snprintf(e.topic, sizeof(e.topic), "bulk/%d", i);
+            if (devos_events_publish(&e, "payload", 7) != DEVOS_OK) break;
+            pub++;
+        }
+        CHECK(pub == DEVOS_EVENTS_QUEUE);                /* queue accepted them all */
+        CHECK(devos_events_drain(0) == DEVOS_EVENTS_QUEUE);
+        CHECK(s_hits == pub * nsubs);                    /* every sub saw every event */
+        devos_events_stats(&st);
+        CHECK(st.queued == 0);
+
+        for (int i = 0; i < nsubs; i++) devos_events_unsubscribe(subs[i]);
+        s_hits = 0;
+        devos_events_publish(&ev, NULL, 0);
+        devos_events_drain(0);
+        CHECK(s_hits == 0);
+    }
+
     printf("%s: %d of %d checks failed\n", fails ? "FAILED" : "OK", fails, checks);
     return fails ? 1 : 0;
 }

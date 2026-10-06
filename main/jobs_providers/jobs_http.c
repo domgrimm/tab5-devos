@@ -14,6 +14,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"          /* EXT_RAM_BSS_ATTR */
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
+
 #define JOBS_HTTP_MAX_ACTIVE 2
 
 static int s_active;
@@ -38,6 +45,13 @@ static const char *arg_str(const devos_action_args_t *args, int i)
 #define JOBS_HTTP_AUTH_CAP 300
 #define JOBS_HTTP_TOKEN_MAX (JOBS_HTTP_AUTH_CAP - 25)
 
+/* The bearer token plus the caller's extra header lines, combined for
+ * devos_http (which copies them on submit, so this is wiped right after).
+ * File-scope and in PSRAM: this runs on the Jobs scheduler task, whose stack
+ * is 8 KiB, and the header text can be a couple of KiB. */
+#define JOBS_HTTP_HDR_CAP (JOBS_HTTP_AUTH_CAP + 2048 + 8)
+static EXT_RAM_BSS_ATTR char s_hdrs[JOBS_HTTP_HDR_CAP];
+
 static devos_err_t http_start(const devos_action_args_t *args, const devos_action_context_t *ctx, void **op)
 {
     (void)ctx;
@@ -45,28 +59,41 @@ static devos_err_t http_start(const devos_action_args_t *args, const devos_actio
     if (!url || !url[0]) return DEVOS_ERR_INVALID_ARG;
     if (s_active >= JOBS_HTTP_MAX_ACTIVE) return DEVOS_ERR_INVALID_STATE;
 
-    char auth[JOBS_HTTP_AUTH_CAP];
-    auth[0] = '\0';
+    s_hdrs[0] = '\0';
+    size_t ho = 0;
     const char *tok = arg_str(args, 4);          /* bearer_token (credential) */
     if (tok && tok[0]) {
         if (strlen(tok) > JOBS_HTTP_TOKEN_MAX) return DEVOS_ERR_INVALID_ARG;
-        int n = snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n", tok);
-        if (n < 0 || n >= (int)sizeof(auth)) return DEVOS_ERR_INVALID_ARG;
+        int n = snprintf(s_hdrs, sizeof(s_hdrs), "Authorization: Bearer %s\r\n", tok);
+        if (n < 0 || n >= (int)sizeof(s_hdrs)) { memset(s_hdrs, 0, sizeof(s_hdrs)); return DEVOS_ERR_INVALID_ARG; }
+        ho = (size_t)n;
+    }
+    const char *extra = arg_str(args, 6);        /* headers: "Name: value" lines */
+    if (extra && extra[0]) {
+        size_t el = strlen(extra);
+        if (ho + el + 2 > sizeof(s_hdrs)) { memset(s_hdrs, 0, sizeof(s_hdrs)); return DEVOS_ERR_INVALID_ARG; }
+        memcpy(s_hdrs + ho, extra, el);
+        ho += el;
+        /* devos_http takes LF- or CRLF-separated lines; terminate the block so
+         * a header appended after the token cannot run into it. */
+        if (s_hdrs[ho - 1] != '\n') s_hdrs[ho++] = '\n';
+        s_hdrs[ho] = '\0';
     }
 
     devos_http_req_t req;
     memset(&req, 0, sizeof(req));
     req.method = arg_str(args, 0) ? arg_str(args, 0) : "GET";
     req.url = url;
-    req.headers = auth[0] ? auth : NULL;
+    req.headers = s_hdrs[0] ? s_hdrs : NULL;
     req.body = arg_str(args, 5);
     req.body_len = req.body ? strlen(req.body) : 0;
     req.timeout_ms = (int)jobs_arg_ms(args, 2, 10000);
     req.max_body = (size_t)jobs_arg_int(args, 3, 16384);
+    req.insecure = jobs_arg_bool(args, 7, false);   /* https: accept any certificate */
     req.max_redirects = 5;                       /* devos_http returns 3xx with 0 */
 
     int job = devos_http_submit(&req);
-    memset(auth, 0, sizeof(auth));               /* the secret copy is devos_http's now */
+    memset(s_hdrs, 0, sizeof(s_hdrs));           /* the secret copy is devos_http's now */
     if (job < 0) return DEVOS_ERR_NO_MEM;
 
     http_op_t *o = calloc(1, sizeof(*o));
@@ -143,6 +170,10 @@ static const devos_action_param_t HTTP_P[] = {
     { .name = "max_body", .type = DEVOS_VAL_INT, .expression = true, .min = 1, .max = 65536 },
     { .name = "bearer_token", .type = DEVOS_VAL_STR, .credential = true, .max_len = 256 },
     { .name = "body", .type = DEVOS_VAL_STR, .expression = true, .max_len = 8192 },
+    { .name = "headers", .type = DEVOS_VAL_STR, .expression = true, .max_len = 2048,
+      .help = "extra header lines, one per line: Name: value" },
+    { .name = "insecure", .type = DEVOS_VAL_BOOL,
+      .help = "https: accept any certificate (self-signed LAN services)" },
 };
 static const devos_action_out_t HTTP_O[] = {
     { .name = "ok", .type = DEVOS_VAL_BOOL },
@@ -154,7 +185,7 @@ static const devos_action_out_t HTTP_O[] = {
 };
 static const devos_action_descriptor_t HTTP_D = {
     .id = "http.request", .schema_version = 1, .provider_uid = "rest", .category = "network",
-    .label = "HTTP request", .params = HTTP_P, .param_count = 6, .outs = HTTP_O, .out_count = 6,
+    .label = "HTTP request", .params = HTTP_P, .param_count = 8, .outs = HTTP_O, .out_count = 6,
     .effect = DEVOS_EFFECT_NET_SEND, .retry_safe = true, .recommended_timeout_ms = 15000,
     .ops = &HTTP_OPS,
 };

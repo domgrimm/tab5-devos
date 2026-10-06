@@ -323,12 +323,34 @@ expression as well as a literal. `as name` binds the outputs.
 | `max_body` | int, expression | 1 … 65536 bytes of response body kept (default 16384) |
 | `bearer_token` | string, **credential** | must be `secret("name")` |
 | `body` | string, expression | request body, up to 8192 bytes |
+| `headers` | string, expression | extra header lines, one per line: `Name: value` (up to 2048 bytes) |
+| `insecure` | bool | `https`: accept any certificate (self-signed LAN services) |
 
 Outputs: `ok`, `status`, `body`, `truncated`, `duration_ms`, `error`.
 
 `ok` means the request completed, not that the status was 2xx — check `status` when it matters. A
 redirect is followed (up to five hops). A transport failure still binds `error`, so
 `if !r.ok { system.log(message: r.error); }` tells you why.
+
+Webhooks that need their own headers take them here, one per line:
+
+```text
+http.request(method: "POST", url: "https://ntfy.sh/tab5",
+             headers: "Content-Type: text/plain\nX-Priority: 4",
+             body: "Backup finished") as r;
+```
+
+`insecure` skips certificate verification for a self-signed LAN service. A credential still
+belongs in `bearer_token` as `secret("name")` — a token written into `headers` would sit in the
+job source in clear text.
+
+**From the REST app.** You can author a request in **REST** (its form, `{{variables}}` and response
+viewer are friendlier than a text field) and turn it into a job with **Sym+J** there, or the
+command palette's *REST: Create a job from this request*. It builds the `http.request` call above
+from what is on screen — method, URL, headers, body and the certificate check, with the
+Content-Type the app would have added — creates the job and opens it in Jobs. Variables are
+expanded as they are when sending, and if any were used the toast says so: use `secret("name")`
+for credentials instead.
 
 ### `network.ping` — Ping a host
 
